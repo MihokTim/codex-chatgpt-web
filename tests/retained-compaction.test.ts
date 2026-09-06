@@ -291,6 +291,7 @@ test("active compaction drains an MCP call already queued without an outer Codex
 test("a completed retained agent returns an exact checkpoint and its browser is physically retired", async () => {
   expect(MAX_COMPACTION_HANDOFF_TIMEOUT_MS).toBe(5 * 60_000);
   const sourceRequest = request(false);
+  sourceRequest.options.reasoning = "max";
   const conversationKey = chatGptConversationKey(sourceRequest, "provider")!;
   const source = new ChatGptTurnSession({
     mode: "read-only",
@@ -334,9 +335,11 @@ test("a completed retained agent returns an exact checkpoint and its browser is 
     },
   };
 
+  const compactRequest = request(true);
+  compactRequest.options.reasoning = "max";
   await expect(requestRetainedCompactionHandoff(
     worker as never,
-    request(true),
+    compactRequest,
     source,
     broker,
     { localToolsEnabled: true, solAvailable: true, proAvailable: true },
@@ -345,6 +348,8 @@ test("a completed retained agent returns an exact checkpoint and its browser is 
     60 * 60_000,
   )).resolves.toBe("Retained agent checkpoint");
   expect(captured?.conversationKey).toBe(conversationKey);
+  expect(captured?.reasoning).toBe("max");
+  expect(captured?.browserEffortOverride).toBe("xhigh");
   expect(captured?.requireRetainedConversation).toBeTrue();
   expect(captured?.nativeConnector).toBeTrue();
   expect(captured?.capabilities.localToolsEnabled).toBeFalse();
@@ -1446,6 +1451,7 @@ test("structured compact rebuilds canonical context when its retained browser di
   const worker = ChatGptBrowserWorker.forProvider(provider);
   const originalRun = worker.run.bind(worker);
   const sourceRequest = request(false);
+  sourceRequest.options.reasoning = "max";
   const namespace = chatGptWebExecutionNamespace(provider);
   const sourceKey = `${namespace}:${chatGptTurnExecutionKey(sourceRequest)}`;
   chatGptTurnSessions.getOrCreate(sourceKey, () => ({
@@ -1463,6 +1469,8 @@ test("structured compact rebuilds canonical context when its retained browser di
   let browserStarts = 0;
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     browserStarts += 1;
+    expect(turn.reasoning).toBe("max");
+    expect(turn.browserEffortOverride).toBe("xhigh");
     if (turn.requireRetainedConversation) throw chatGptRetainedConversationUnavailableError();
     const prepared = await turn.prepare();
     expect(prepared.text).toContain("Original task");
@@ -1470,9 +1478,11 @@ test("structured compact rebuilds canonical context when its retained browser di
     return "Fallback checkpoint after retained browser loss";
   };
   const events: AdapterEvent[] = [];
+  const compactRequest = request(true);
+  compactRequest.options.reasoning = "max";
   try {
     await createChatGptWebAdapter(provider).runTurn!(
-      request(true),
+      compactRequest,
       { headers: new Headers() },
       event => events.push(event),
     );

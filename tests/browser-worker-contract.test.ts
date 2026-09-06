@@ -3365,11 +3365,24 @@ test("the daemon prefers the browser helper that shipped beside its own entrypoi
   expect(client).toContain('this.helperFeatures.has("progress")');
   expect(client).toContain('this.helperFeatures.has("tool-boundary-ack")');
   expect(client).toContain('this.helperFeatures.has("completion-fence")');
+  expect(client).toContain('this.helperFeatures.has("browser-effort-override")');
+  expect(helper).toContain('"browser-effort-override"');
   expect(helper).toMatch(/message\.type === "run"/);
   expect(helper).toContain("Browser helper received an unsupported message type");
 
   // A malformed liveness hint is not authoritative evidence that the active turn failed.
   expect(helper).toContain("discarded an invalid MCP progress frame");
+});
+
+test("connector catalog refresh keeps the already resolved physical browser effort", () => {
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  const refresh = worker.slice(
+    worker.indexOf('"connector_catalog_refresh"'),
+    worker.indexOf('await diagnostics.capture(page, "connector-catalog-refreshed")'),
+  );
+  expect(refresh).toContain("requestedMode.effort");
+  expect(refresh).toContain("browserCapabilities");
+  expect(refresh).not.toContain("turn.reasoning");
 });
 
 

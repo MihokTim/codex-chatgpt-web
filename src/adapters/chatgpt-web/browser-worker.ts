@@ -1128,6 +1128,8 @@ export interface BrowserTurn {
   traceId: string;
   modelId: string;
   reasoning?: string;
+  /** One-shot physical ChatGPT selector override. Canonical Codex model/reasoning stays unchanged. */
+  browserEffortOverride?: "xhigh";
   capabilities: ChatGptWebCapabilities;
   prepare: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
   prepareResume?: () => Promise<CompiledChatGptWebPrompt & { release: () => void }>;
@@ -4157,7 +4159,11 @@ export class ChatGptBrowserWorker {
     const browserCapabilities = turn.nativeConnector
       ? { ...turn.capabilities, localToolsEnabled: true }
       : turn.capabilities;
-    const requestedMode = resolveChatGptWebModelMode(turn.modelId, turn.reasoning, browserCapabilities);
+    const requestedMode = resolveChatGptWebModelMode(
+      turn.modelId,
+      turn.browserEffortOverride ?? turn.reasoning,
+      browserCapabilities,
+    );
     const prepare = reuseConversation ? turn.prepareResume : turn.prepare;
     if (!prepare) throw new Error("The retained ChatGPT conversation has no continuation prompt");
     const prepared = await prepare();
@@ -4548,8 +4554,8 @@ export class ChatGptBrowserWorker {
               mode = await this.selectModelAndEffort(
                 page,
                 turn.modelId,
-                turn.reasoning,
-                turn.capabilities,
+                requestedMode.effort,
+                browserCapabilities,
                 checkpoint => diagnostics.capture(page, checkpoint),
               );
               submissionBaseline = await this.captureSubmissionBaseline(page);

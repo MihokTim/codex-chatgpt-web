@@ -217,6 +217,11 @@ export class LauncherBrowserHelperClient {
         "Launcher browser helper does not support multipart acknowledgement forwarding; update or restart the launcher",
       );
     }
+    if (turn.browserEffortOverride && !this.helperFeatures.has("browser-effort-override")) {
+      throw new Error(
+        "Launcher browser helper does not support the ChatGPT browser effort override; update or restart the launcher",
+      );
+    }
     if (turn.externalProgress && !this.helperFeatures.has("tool-boundary-ack")) {
       throw new Error(
         "Launcher browser helper does not support causal Codex tool-boundary acknowledgement; update or restart the launcher",
@@ -276,6 +281,7 @@ export class LauncherBrowserHelperClient {
             traceId: turn.traceId,
             modelId: turn.modelId,
             reasoning: turn.reasoning,
+            ...(turn.browserEffortOverride ? { browserEffortOverride: turn.browserEffortOverride } : {}),
             capabilities: turn.capabilities,
             ...(turn.nativeConnector ? { nativeConnector: true } : {}),
             ...(turn.prepareResume ? { resumeAvailable: true } : {}),

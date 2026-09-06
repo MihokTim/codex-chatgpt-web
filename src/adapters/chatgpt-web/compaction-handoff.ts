@@ -7,7 +7,7 @@ import type {
 import { extractChatGptCompactionSourceRevision } from "./environment";
 import type { ChatGptBrowserWorker } from "./browser-worker";
 import type { CompactionTransactionHandle } from "./compaction-transaction";
-import type { ChatGptWebCapabilities } from "./model";
+import { CHATGPT_WEB_MODEL_ID, type ChatGptWebCapabilities } from "./model";
 import {
   activeCompactionToolResultInstruction,
   structuredCompactionHandoffInstruction,
@@ -315,6 +315,9 @@ export async function requestRetainedCompactionHandoff(
       traceId,
       modelId: parsed.modelId,
       reasoning: parsed.options.reasoning,
+      ...(parsed.modelId === CHATGPT_WEB_MODEL_ID && parsed.options.reasoning === "max"
+        ? { browserEffortOverride: "xhigh" as const }
+        : {}),
       // The retained connector exposes only the one-shot control token embedded above. It does
       // not receive an ordinary Codex tool environment for this checkpoint message.
       capabilities: { ...capabilities, localToolsEnabled: false },

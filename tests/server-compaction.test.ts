@@ -75,7 +75,7 @@ test("compacts ChatGPT Web v1 through a dedicated read-only browser summarizatio
   ]);
 });
 
-test("compacts a Pro task with Pro effort", async () => {
+test("keeps canonical Pro max effort on a compaction request", async () => {
   const config = defaultConfig("full");
   config.proAvailable = true;
   const response = await compactRequest(new Request("http://127.0.0.1:17841/v1/responses/compact", {
@@ -96,6 +96,53 @@ test("compacts a Pro task with Pro effort", async () => {
   }));
 
   expect(response.status).toBe(200);
+});
+
+test("a Pro continuation keeps canonical max reasoning after compaction", async () => {
+  const config = defaultConfig("full");
+  config.proAvailable = true;
+  const metadata = { thread_id: "thread_pro_continuation", turn_id: "turn_pro_continuation" };
+  const source = {
+    type: "message",
+    role: "user",
+    id: "msg_pro_source",
+    content: [{ type: "input_text", text: "Continue the Pro task" }],
+    internal_chat_message_metadata_passthrough: { turn_id: "turn_before_pro_compaction" },
+  };
+  const original = {
+    model: "chatgpt-web/pro",
+    stream: false,
+    input: [source],
+    client_metadata: { "x-codex-turn-metadata": JSON.stringify(metadata) },
+  };
+  const compact = await compactRequest(new Request("http://127.0.0.1/v1/responses/compact", {
+    method: "POST",
+    body: JSON.stringify(original),
+  }), config, () => ({
+    name: "pro-compaction-canonical-check",
+    async runTurn(parsed, _incoming, emit) {
+      expect(parsed._compactionRequest).toBe(true);
+      expect(parsed.options.reasoning).toBe("max");
+      emit({ type: "text_delta", text: summary, phase: "final_answer" });
+      emit({ type: "done", stopReason: "stop", endTurn: true });
+    },
+  }));
+  expect(compact.status).toBe(200);
+  const compacted = await compact.json() as { output: unknown[] };
+
+  const continuation = await responseRequest(new Request("http://127.0.0.1/v1/responses", {
+    method: "POST",
+    body: JSON.stringify({ ...original, input: compacted.output }),
+  }), config, () => ({
+    name: "pro-continuation-canonical-check",
+    async runTurn(parsed, _incoming, emit) {
+      expect(parsed._compactionRequest).not.toBe(true);
+      expect(parsed.options.reasoning).toBe("max");
+      emit({ type: "text_delta", text: "Pro continuation", phase: "final_answer" });
+      emit({ type: "done", stopReason: "stop", endTurn: true });
+    },
+  }));
+  expect(continuation.status).toBe(200);
 });
 
 test("preserves canonical Codex turn metadata from the compact endpoint header", async () => {

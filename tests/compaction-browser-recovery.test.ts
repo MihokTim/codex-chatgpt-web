@@ -6,7 +6,15 @@ import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker
 import { resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
 import { ChatGptExternalTurnProgress } from "../src/adapters/chatgpt-web/turn-progress";
 
-test.each([[true, false, true], [false, false, true], [true, true, true], [true, false, false]])("browser turns preserve recovery, ordering and final-only tools (owned=%s, tools=%s, multipart=%s)", async (owned, tools, multipart) => {
+test.each([
+  [true, false, true, "high", undefined],
+  [false, false, true, "high", undefined],
+  [true, true, true, "high", undefined],
+  [true, false, false, "high", undefined],
+  [true, false, true, "max", "xhigh"],
+  [true, false, false, "max", "xhigh"],
+  [true, true, false, "max", undefined],
+] as const)("browser turns preserve recovery, ordering and physical effort (owned=%s, tools=%s, multipart=%s, canonical=%s, override=%s)", async (owned, tools, multipart, reasoning, browserEffortOverride) => {
   const diagnostics = mkdtempSync(join(tmpdir(), "compaction-observation-"));
   const finalResponse = new Error("fixture reached final response observation");
   const capabilities = { localToolsEnabled: tools, solAvailable: true, proAvailable: true };
@@ -60,7 +68,8 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [true,
     await expect(worker.runBrowserTurn({
       traceId: "compaction_recovery_fixture",
       modelId: "gpt-5.6-sol",
-      reasoning: "high",
+      reasoning,
+      ...(browserEffortOverride ? { browserEffortOverride } : {}),
       capabilities,
       compaction: !tools,
       externalProgress: progress,
@@ -79,7 +88,7 @@ test.each([[true, false, true], [false, false, true], [true, true, true], [true,
         "attach:plain", "send", "observe", "ack",
         "attach:plain", "send", "observe", "ack",
       ] : []),
-      "effort:high",
+      `effort:${browserEffortOverride ?? reasoning}`,
       tools ? "attach:tools" : "attach:plain", "files", "send", "observe",
     ]);
     expect(sendBudgets).toEqual(multipart ? [180_000, 180_000, 180_000] : [20_000]);

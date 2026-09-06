@@ -24,6 +24,7 @@ interface RunMessage {
     traceId: string;
     modelId: string;
     reasoning?: string;
+    browserEffortOverride?: BrowserTurn["browserEffortOverride"];
     capabilities: ChatGptWebCapabilities;
     nativeConnector?: boolean;
     resumeAvailable?: boolean;
@@ -155,6 +156,9 @@ async function run(message: RunMessage): Promise<void> {
   if (message.turn.resumeAvailable !== undefined && typeof message.turn.resumeAvailable !== "boolean") {
     throw new Error("Browser helper resume availability is invalid");
   }
+  if (message.turn.browserEffortOverride !== undefined && message.turn.browserEffortOverride !== "xhigh") {
+    throw new Error("Browser helper effort override is invalid");
+  }
   if (message.turn.nativeConnector !== undefined && typeof message.turn.nativeConnector !== "boolean") {
     throw new Error("Browser helper native connector flag is invalid");
   }
@@ -210,6 +214,7 @@ async function run(message: RunMessage): Promise<void> {
     traceId: message.turn.traceId,
     modelId: message.turn.modelId,
     reasoning: message.turn.reasoning,
+    ...(message.turn.browserEffortOverride ? { browserEffortOverride: message.turn.browserEffortOverride } : {}),
     capabilities: message.turn.capabilities,
     ...(message.turn.nativeConnector ? { nativeConnector: true } : {}),
     prepare: prepareSelected,
@@ -515,4 +520,7 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack"] });
+writeProtocol({
+  type: "ready",
+  features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "browser-effort-override"],
+});

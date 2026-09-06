@@ -20,6 +20,8 @@ test("daemon streams browser lifecycle through the real helper process", async (
     import { ChatGptBrowserWorker } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url).href)};
     // Substitute only the browser. Both sides of the production IPC protocol run unchanged.
     ChatGptBrowserWorker.prototype.run = async turn => {
+      if (turn.reasoning !== "max") throw new Error("Canonical Pro effort was not preserved");
+      if (turn.browserEffortOverride !== "xhigh") throw new Error("Browser effort override was not transported");
       await turn.onPreparedSelected(false);
       const prepared = await turn.prepare();
       if (prepared.multipart.parts.length !== 3) throw new Error("Multipart context was lost");
@@ -87,8 +89,10 @@ test("daemon streams browser lifecycle through the real helper process", async (
     const result = await client.run({
       traceId: "abcdef123456",
       modelId: "gpt-5.6-sol",
-      reasoning: "high",
-      capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: false },
+      reasoning: "max",
+      browserEffortOverride: "xhigh",
+      capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+      compaction: true,
       prepare: async () => ({
         text: "inspect", images: [],
         multipart: { parts: ["part one", "part two", "part three"], commit: "inspect" },
@@ -143,6 +147,7 @@ test("launcher helper protocol preserves multipart context and the compaction fl
   const internal = client as unknown as {
     pending: Map<string, { resolve(value: string): void }>;
     child?: unknown;
+    helperFeatures: Set<string>;
     ensureChild(): Promise<void>;
     send(message: Record<string, unknown>): Promise<void>;
     finish(id: string): void;
@@ -150,6 +155,7 @@ test("launcher helper protocol preserves multipart context and the compaction fl
   };
   const child = {};
   internal.child = child;
+  internal.helperFeatures = new Set(["browser-effort-override"]);
   internal.ensureChild = async () => {};
   internal.send = async message => {
     sent.push(message);
@@ -173,7 +179,8 @@ test("launcher helper protocol preserves multipart context and the compaction fl
   await expect(client.run({
     traceId: "multipart-123",
     modelId: "gpt-5.6-sol",
-    reasoning: "high",
+    reasoning: "max",
+    browserEffortOverride: "xhigh",
     capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
     compaction: true,
     prepare: async () => ({
@@ -190,6 +197,8 @@ test("launcher helper protocol preserves multipart context and the compaction fl
     type: "run",
     turn: {
       compaction: true,
+      reasoning: "max",
+      browserEffortOverride: "xhigh",
     },
   });
   expect(sent[1]).toMatchObject({
@@ -200,6 +209,36 @@ test("launcher helper protocol preserves multipart context and the compaction fl
         trimmedCompactionMessages: 4,
     },
   });
+});
+
+test("launcher helper fails closed when the browser effort override is unsupported", async () => {
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2 DEV",
+    browserHost: "launcher",
+    browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused-state.json",
+    chromeExecutablePath: "/durable/unused-chrome",
+    turnTimeoutMs: 60_000,
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  const internal = client as unknown as {
+    helperFeatures: Set<string>;
+    ensureChild(): Promise<void>;
+  };
+  internal.helperFeatures = new Set();
+  internal.ensureChild = async () => {};
+
+  await expect(client.run({
+    traceId: "override-old-helper",
+    modelId: "gpt-5.6-sol",
+    reasoning: "max",
+    browserEffortOverride: "xhigh",
+    capabilities: { localToolsEnabled: false, solAvailable: true, proAvailable: true },
+    compaction: true,
+    prepare: async () => ({ text: "compact", images: [], release() {} }),
+    onTextDelta() {},
+  })).rejects.toThrow("does not support the ChatGPT browser effort override");
 });
 
 test("an abort dispatched during run submission cannot overtake the run frame", async () => {
