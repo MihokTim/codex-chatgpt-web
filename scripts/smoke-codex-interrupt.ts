@@ -1,3 +1,4 @@
+import { webCodexEnvironment } from "../src/web-codex";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -29,7 +30,7 @@ const root = join(tmpdir(), `codex-chatgpt-web-interrupt-${process.pid}-${Date.n
 const codexHome = join(root, "codex");
 const appHome = join(root, "app");
 mkdirSync(codexHome, { recursive: true });
-process.env.CODEX_HOME = codexHome;
+process.env.CODEX_WEB_GPT_CODEX_HOME = codexHome;
 process.env.CODEX_CHATGPT_WEB_HOME = appHome;
 
 let adapterStarted = false;
@@ -101,7 +102,7 @@ class AppServerClient {
   constructor() {
     const child = Bun.spawn([codex, "app-server"], {
       cwd: root,
-      env: { ...process.env, CODEX_HOME: codexHome, OPENAI_API_KEY: "local-interrupt-smoke" },
+      env: { ...webCodexEnvironment(), OPENAI_API_KEY: "local-interrupt-smoke" },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
@@ -268,7 +269,7 @@ try {
   chatGptTurnSessions.clear();
   await server.stop(true);
   rmSync(root, { recursive: true, force: true });
-  delete process.env.CODEX_HOME;
+  delete process.env.CODEX_WEB_GPT_CODEX_HOME;
   delete process.env.CODEX_CHATGPT_WEB_HOME;
   if (smokeError) {
     throw new Error(`${smokeError instanceof Error ? smokeError.message : String(smokeError)}\nCodex stderr:\n${stderr.slice(-8_000)}`);

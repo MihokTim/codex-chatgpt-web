@@ -1,3 +1,4 @@
+import { restoreWebProfile, verifyWebProfile } from "./codex-web-profile";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
@@ -281,6 +282,7 @@ export function installRoute(
 }
 
 export function verifyInstalledRoute(text: string, journal: ManagedRouteJournal): void {
+  if (journal.version === 10 && journal.webProfile) verifyWebProfile(text, journal.webProfile, true);
   const lines = splitLines(text);
   const current = assignments(lines);
   if (current.openai_base_url.value !== journal.installed.openai_base_url) {
@@ -333,6 +335,7 @@ export function verifyRestoredRoute(
   text: string,
   journal: CodexIntegrationJournal | LegacyCodexIntegrationJournalV9 | LegacyCodexIntegrationJournalV8 | LegacyCodexIntegrationJournalV7 | LegacyCodexIntegrationJournalV6 | LegacyCodexIntegrationJournalV5 | LegacyCodexIntegrationJournalV4,
 ): void {
+  if (journal.version === 10 && journal.webProfile) verifyWebProfile(text, journal.webProfile, false);
   const lines = splitLines(text);
   const current = assignments(lines);
   const keys = journal.version === 7 || journal.version === 8 || journal.version === 9 || journal.version === 10
@@ -472,7 +475,7 @@ export function restoreManagedRoute(text: string, journal: ManagedRouteJournal):
   const restoredRoute = renderDocument(document);
   if (journal.version === 8 || journal.version === 9 || journal.version === 10) {
     const evidence = compatibilityV1Evidence(journal);
-    return evidence
+    const restored = evidence
       ? restoreCompatibilityV1Features(
           restoredRoute,
           evidence.previousMultiAgent,
@@ -481,6 +484,7 @@ export function restoreManagedRoute(text: string, journal: ManagedRouteJournal):
           evidence.installedAgentMaxDepth,
         )
       : restoredRoute;
+    return restoreWebProfile(restored, journal.version === 10 ? journal.webProfile : undefined);
   }
   return journal.version === 5 || journal.version === 6
     ? restoreManagedFeatures(restoredRoute, journal)

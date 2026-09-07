@@ -60,7 +60,7 @@ const PACKAGED_RENDERER_URL = pathToFileURL(path.join(__dirname, "..", "dist", "
 const APP_ICON_PATH = path.join(__dirname, "..", "assets", "icon.png");
 
 process.env.CODEX_CHATGPT_WEB_HOME = CORE_HOME;
-process.env.CODEX_HOME = LAUNCHER_PROFILE.codexHome;
+process.env.CODEX_WEB_GPT_CODEX_HOME = LAUNCHER_PROFILE.codexHome;
 app.setName(LAUNCHER_PROFILE.displayName);
 if (process.platform === "win32") {
   app.setAppUserModelId(IS_DEV_PROFILE ? "dev.codexwebgpt.launcher.dev" : "dev.codexwebgpt.launcher");

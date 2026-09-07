@@ -13,7 +13,7 @@ const webDefaults = process.argv.includes("--web-defaults");
 const explicitChildModel = webDefaults ? "chatgpt-web/pro" : "gpt-5.6-sol";
 const explicitChildReasoningEffort = webDefaults ? "ultra" : "max";
 const codexArg = process.argv.slice(2).find(argument => !argument.startsWith("--"));
-const codex = resolve(codexArg ?? "/Applications/ChatGPT.app/Contents/Resources/codex");
+const codex = resolve(codexArg ?? process.env.CODEX_EXECUTABLE ?? Bun.which("codex") ?? "/Applications/ChatGPT.app/Contents/Resources/codex");
 if (!existsSync(codex)) throw new Error(`Codex executable is missing: ${codex}`);
 
 const bundled = spawnSync(codex, ["debug", "models", "--bundled"], {
@@ -30,7 +30,9 @@ const catalogConfig = defaultConfig("browser-only");
 catalogConfig.solAvailable = true;
 catalogConfig.proAvailable = true;
 catalogConfig.subagentProtocol = protocol === "v1" ? "compatibility-v1" : "native";
+const originalCatalog = JSON.stringify(sourceCatalog);
 const catalog = augmentNativeModelCatalog(sourceCatalog, catalogConfig);
+if (JSON.stringify(sourceCatalog) !== originalCatalog) throw new Error("Web augmentation mutated the native catalog");
 
 const root = join(tmpdir(), `codex-chatgpt-web-subagents-${process.pid}-${Date.now()}`);
 const codexHome = join(root, "codex");
@@ -218,7 +220,12 @@ function responseFor(role: Role, step: number, body: Record<string, unknown>): A
     if (step === 1) return toolCall("wait_agent", protocol === "v1"
       ? { targets: [spawnedAgentId(body)], timeout_ms: 500 }
       : { timeout_ms: 500 });
-    if (step === 2) return finalAnswer("CHILD_LIFECYCLE_OK");
+    if (webDefaults && step === 2) return toolCall(protocol === "v1" ? "send_input" : "followup_task", protocol === "v1" ? {
+      target: spawnedAgentId(body), message: "GRANDCHILD_LIFECYCLE: acknowledge one follow-up.", interrupt: true,
+    } : { target: "/root/lifecycle_child/lifecycle_grandchild", message: "GRANDCHILD_LIFECYCLE: acknowledge one follow-up." });
+    if (webDefaults && step === 3) return toolCall("wait_agent", protocol === "v1"
+      ? { targets: [spawnedAgentId(body)], timeout_ms: 500 } : { timeout_ms: 500 });
+    if (step === (webDefaults ? 4 : 2)) return finalAnswer("CHILD_LIFECYCLE_OK");
     return finalAnswer("CHILD_FOLLOWUP_OK");
   }
   return finalAnswer("GRANDCHILD_LIFECYCLE_OK");
@@ -363,29 +370,22 @@ try {
     "root:0", "root:1", "root:2", "root:3", "root:4",
     "child:0", "child:1", "child:2", "child:3",
     "grandchild:0",
+    ...(webDefaults ? ["grandchild:1", "child:4", "child:5"] : []),
   ]) {
     if (!observed.has(required)) failures.push(`missing lifecycle step ${required}`);
   }
-  for (const role of ["child", "grandchild"] as const) {
-    const firstRequest = requestLog.find(entry => entry.role === role && entry.step === 0);
-    const expectedModel = webDefaults && role === "child" ? "chatgpt-web/extra-high" : explicitChildModel;
-    const expectedEffort = webDefaults && role === "child" ? "xhigh" : explicitChildReasoningEffort;
-    if (firstRequest?.model !== expectedModel) {
-      failures.push(`${role} used ${firstRequest?.model ?? "no model"}, expected ${expectedModel}`);
+  for (const request of requestLog) {
+    const { role, step } = request;
+    if (role !== "root" || webDefaults) {
+      const expectedModel = webDefaults && role === "child" ? "chatgpt-web/extra-high" : webDefaults ? "chatgpt-web/pro" : explicitChildModel;
+      if (request.model !== expectedModel) failures.push(`${role}:${step} model ${request.model} != ${expectedModel}`);
+      if (!webDefaults && request.reasoningEffort !== explicitChildReasoningEffort) failures.push(`${role}:${step} effort ${request.reasoningEffort} != ${explicitChildReasoningEffort}`);
     }
-    if (!webDefaults && firstRequest?.reasoningEffort !== expectedEffort) {
-      failures.push(
-        `${role} used reasoning ${firstRequest?.reasoningEffort ?? "none"}, expected ${expectedEffort}`,
-      );
-    }
-  }
-  if (webDefaults) {
-    for (const role of ["root", "child", "grandchild"] as const) {
-      const first = requestLog.find(entry => entry.role === role && entry.step === 0)!;
-      const parsed = { modelId: first.model, options: { reasoning: first.reasoningEffort } } as CodexParsedRequest;
+    if (webDefaults) {
+      const parsed = { modelId: request.model, options: { reasoning: request.reasoningEffort } } as CodexParsedRequest;
       routeChatGptWebRequest(parsed, catalogConfig);
       const expected = role === "child" ? "xhigh" : "max";
-      if (parsed.options.reasoning !== expected) failures.push(`${role} browser effort ${parsed.options.reasoning} != ${expected}`);
+      if (parsed.options.reasoning !== expected) failures.push(`${role}:${step} browser effort ${parsed.options.reasoning} != ${expected}`);
     }
   }
   if (failures.length > 0) {

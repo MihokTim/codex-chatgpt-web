@@ -88,6 +88,7 @@ test("installed launcher discovery has explicit platform candidates", () => {
     platform: "win32",
     homeDirectory: "C:\\Users\\tester",
     environment: { LOCALAPPDATA: "C:\\Users\\tester\\AppData\\Local" },
+    windowsInstallLocation: "C:\\Users\\tester\\AppData\\Local\\Programs\\Codex Web GPT",
   })).toEqual([
     "C:\\Users\\tester\\AppData\\Local\\Programs\\Codex Web GPT\\Codex Web GPT.exe",
   ]);
@@ -112,7 +113,7 @@ test("DEV launcher child cannot inherit production home or browser-profile overr
   expect(devLauncherEnvironment(paths, {
     KEEP_ME: "yes",
     CODEX_CHATGPT_WEB_HOME: paths.home,
-    CODEX_HOME: "/Users/tester/production-codex",
+    CODEX_WEB_GPT_CODEX_HOME: "/Users/tester/production-codex",
     CODEX_WEB_GPT_LAUNCHER_DATA_DIR: "/Users/tester/production-launcher",
   })).toEqual({
     KEEP_ME: "yes",

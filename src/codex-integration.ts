@@ -1,3 +1,5 @@
+import { planHomeMigration, migrateHome } from "./codex-home-migration";
+import { installWebProfile, verifyWebProfile } from "./codex-web-profile";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AppConfig } from "./config";
@@ -58,6 +60,7 @@ function installConfiguredRoute(
   replaceExistingRealtimeRoute: boolean,
 ): {
   text: string;
+  webProfile: NonNullable<CodexIntegrationJournal["webProfile"]>;
   previous: CodexIntegrationJournal["previous"];
   previousRealtimeWebrtcCallBaseUrl: CodexIntegrationJournal["previousRealtimeWebrtcCallBaseUrl"];
   previousMultiAgent?: CodexIntegrationJournal["previousMultiAgent"];
@@ -66,8 +69,9 @@ function installConfiguredRoute(
   installedAgentMaxDepth?: number;
   interruptHook: CodexIntegrationJournal["interruptHook"];
 } {
+  const profile = installWebProfile(baseline);
   const route = installRoute(
-    baseline,
+    profile.text,
     installedUrl,
     replaceExistingRoute,
     replaceExistingRealtimeRoute,
@@ -89,7 +93,7 @@ function installConfiguredRoute(
   const hook = "interruptHookCommand" in config
     ? installCodexInterruptHookCommand(configured.text, getCodexConfigPath(), config.interruptHookCommand)
     : installCodexInterruptHook(configured.text, getCodexConfigPath(), config);
-  return { ...configured, text: hook.text, interruptHook: hook.installed };
+  return { ...configured, webProfile: profile.webProfile, text: hook.text, interruptHook: hook.installed };
 }
 
 function journalProtocol(journal: Exclude<AnyCodexIntegrationJournal, { version: 2 }>): AppConfig["subagentProtocol"] {
@@ -169,6 +173,7 @@ export function preflightCodexIntegration(
   config: AppConfig,
   options: InstallCodexIntegrationOptions = {},
 ): void {
+  if (planHomeMigration()) { installConfiguredRoute("", routeUrl(config), config, false, false); return; }
   const configPath = getCodexConfigPath();
   const configExists = existsSync(configPath);
   const currentText = configExists ? readFileSync(configPath, "utf8") : "";
@@ -196,7 +201,7 @@ export function preflightCodexIntegration(
       );
       return;
     }
-    if (existing.version === 10) return;
+    if (existing.version === 10 && existing.webProfile) return;
     const baseline = managedJournalIsActive(existing)
       ? restoreManagedRoute(currentText, existing)
       : currentText;
@@ -228,6 +233,8 @@ export function installCodexIntegration(
   config: AppConfig,
   options: InstallCodexIntegrationOptions = {},
 ): CodexIntegrationJournal {
+  const migration = planHomeMigration();
+  if (migration) return migrateHome(migration, () => installCodexIntegration(config, options));
   const configPath = getCodexConfigPath();
   mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
   const configExists = existsSync(configPath);
@@ -242,6 +249,7 @@ export function installCodexIntegration(
   }
 
   if (hasManagedJournal && existing && existing.version !== 2) {
+    if (existing.version === 10 && existing.webProfile) verifyWebProfile(currentText, existing.webProfile, existing.active);
     let baseline: string;
     let preservePrevious = true;
     try {
@@ -286,6 +294,7 @@ export function installCodexIntegration(
       previousRealtimeWebrtcCallBaseUrl: preservePrevious && (existing.version === 9 || existing.version === 10)
         ? existing.previousRealtimeWebrtcCallBaseUrl
         : patched.previousRealtimeWebrtcCallBaseUrl,
+      webProfile: patched.webProfile,
       interruptHook: patched.interruptHook,
       ...(config.subagentProtocol === "compatibility-v1" ? {
         previousMultiAgent: patched.previousMultiAgent,
@@ -324,6 +333,7 @@ export function installCodexIntegration(
         agent_max_depth: patched.installedAgentMaxDepth,
       } : {}),
     },
+    webProfile: patched.webProfile,
     previous: patched.previous,
     previousRealtimeWebrtcCallBaseUrl: patched.previousRealtimeWebrtcCallBaseUrl,
     interruptHook: patched.interruptHook,
@@ -423,6 +433,7 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
     previousRealtimeWebrtcCallBaseUrl: existing.version === 9 || existing.version === 10
       ? existing.previousRealtimeWebrtcCallBaseUrl
       : route.previousRealtimeWebrtcCallBaseUrl,
+    webProfile: route.webProfile,
     interruptHook: route.interruptHook,
     ...(protocol === "compatibility-v1" ? {
       previousMultiAgent: route.previousMultiAgent,

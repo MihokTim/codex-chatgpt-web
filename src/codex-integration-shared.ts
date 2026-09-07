@@ -1,3 +1,4 @@
+import { resolveWebHome } from "../launcher/electron/web-home.cjs";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
@@ -51,6 +52,7 @@ export interface InstalledCodexInterruptHook {
 }
 
 export interface CodexIntegrationJournal {
+  webProfile?: import("./codex-web-profile").WebProfileJournal;
   version: 10;
   active: boolean;
   configPath: string;
@@ -241,9 +243,15 @@ export interface CodexModelContextOverride {
   contextWindow: number;
 }
 
+let legacyHome: string | undefined;
+/** Only the migration transaction may address the previous journal target. */
+export function withLegacyCodexHome<T>(home: string, action: () => T): T {
+  const previous = legacyHome;
+  legacyHome = home;
+  try { return action(); } finally { legacyHome = previous; }
+}
 export function getCodexHome(): string {
-  const configured = process.env.CODEX_HOME?.trim();
-  return resolve(expandUserPath(configured || join(getConfigDir(), "codex-home")));
+  return legacyHome ?? resolveWebHome(getConfigDir());
 }
 
 export function getCodexConfigPath(): string {

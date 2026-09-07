@@ -51,6 +51,8 @@ jobs:
       - name: Prepare owned AppImage toolset
         if: runner.os == 'Linux'
         run: bun run launcher/scripts/prepare-linux-appimage-tools.cjs
+      - name: Install Codex for offline subagent lifecycle verification
+        run: bun install --global @openai/codex@0.153.4
       - run: bun run verify
       - run: bun run app:package
       - name: Verify Linux AppImage ABI on current Arch

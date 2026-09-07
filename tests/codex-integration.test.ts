@@ -1,3 +1,4 @@
+import { restoreWebProfile } from "../src/codex-web-profile";
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -47,20 +48,20 @@ function fixture(): { root: string; codexHome: string; appHome: string } {
   const appHome = join(root, "app");
   mkdirSync(codexHome, { recursive: true });
   roots.push(root);
-  process.env.CODEX_HOME = codexHome;
+  process.env.CODEX_WEB_GPT_CODEX_HOME = codexHome;
   process.env.CODEX_CHATGPT_WEB_HOME = appHome;
   return { root, codexHome, appHome };
 }
 
 afterEach(() => {
-  delete process.env.CODEX_HOME;
+  delete process.env.CODEX_WEB_GPT_CODEX_HOME;
   delete process.env.CODEX_CHATGPT_WEB_HOME;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe("reversible native Codex route integration", () => {
   test("expands a configured tilde Codex home consistently with launcher paths", () => {
-    process.env.CODEX_HOME = "~/custom-codex-home";
+    process.env.CODEX_WEB_GPT_CODEX_HOME = "~/custom-codex-home";
     expect(getCodexHome()).toBe(join(homedir(), "custom-codex-home"));
   });
 
@@ -666,7 +667,7 @@ describe("reversible native Codex route integration", () => {
 
     const legacy = JSON.parse(readFileSync(getCodexJournalPath(), "utf8"));
     const interruptFragment = legacy.interruptHook.fragment as string;
-    const legacyConfig = readFileSync(configPath, "utf8").replace(interruptFragment, "");
+    const legacyConfig = restoreWebProfile(readFileSync(configPath, "utf8").replace(interruptFragment, ""), legacy.webProfile);
     legacy.version = 9;
     delete legacy.interruptHook;
     const legacyJournal = `${JSON.stringify(legacy, null, 2)}\n`;
@@ -784,7 +785,7 @@ describe("reversible native Codex route integration", () => {
     delete legacy.installed.experimental_realtime_webrtc_call_base_url;
     delete legacy.previousRealtimeWebrtcCallBaseUrl;
     const legacyJournal = `${JSON.stringify(legacy, null, 2)}\n`;
-    const legacyConfig = readFileSync(configPath, "utf8").replace(interruptFragment, "")
+    const legacyConfig = restoreWebProfile(readFileSync(configPath, "utf8").replace(interruptFragment, ""), legacy.webProfile)
       .replace(MANAGED_ROUTE_COMMENT, MANAGED_COMMENT)
       .replace(/^experimental_realtime_webrtc_call_base_url\s*=.*$/m, customVoiceLine);
     writeFileSync(configPath, legacyConfig);
@@ -847,7 +848,7 @@ describe("reversible native Codex route integration", () => {
     installCodexIntegration(nativeConfig("browser-only"));
     const previous = JSON.parse(readFileSync(getCodexJournalPath(), "utf8"));
     const interruptFragment = previous.interruptHook.fragment as string;
-    const legacyInstalled = readFileSync(configPath, "utf8").replace(interruptFragment, "")
+    const legacyInstalled = restoreWebProfile(readFileSync(configPath, "utf8").replace(interruptFragment, ""), previous.webProfile)
       .replace(MANAGED_ROUTE_COMMENT, MANAGED_COMMENT)
       .replace(/^experimental_realtime_webrtc_call_base_url\s*=.*\n/gm, "")
       .replace(/^(?:remote_compaction_v2 = false|multi_agent = true|multi_agent_v2 = false).*\n/gm, "");
@@ -912,6 +913,6 @@ describe("reversible native Codex route integration", () => {
 
 test("default integration home belongs to the Web runtime, not native Codex", () => {
   const { appHome } = fixture();
-  delete process.env.CODEX_HOME;
+  delete process.env.CODEX_WEB_GPT_CODEX_HOME;
   expect(getCodexHome()).toBe(join(appHome, "codex-home"));
 });

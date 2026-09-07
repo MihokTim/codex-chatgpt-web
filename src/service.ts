@@ -1,3 +1,4 @@
+import { getCodexHome } from "./codex-integration-shared";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
@@ -56,7 +57,7 @@ async function waitForServiceUnloaded(timeoutMs = 20_000): Promise<void> {
   if (getServiceStatus().loaded) throw new Error(`launchd did not unload ${LABEL} after ${timeoutMs}ms`);
 }
 
-function plist(config: AppConfig): string {
+export function plist(config: AppConfig): string {
   const logDir = join(getConfigDir(), "logs");
   const args = [...config.runtimeCommand, "serve"];
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -71,6 +72,10 @@ ${args.map(arg => `    <string>${xml(arg)}</string>`).join("\n")}
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>CODEX_WEB_GPT_NATIVE_HOME</key>
+    <string>${xml(process.env.CODEX_WEB_GPT_NATIVE_HOME || process.env.CODEX_HOME || join(homedir(), ".codex"))}</string>
+    <key>CODEX_WEB_GPT_CODEX_HOME</key>
+    <string>${xml(getCodexHome())}</string>
     <key>CODEX_CHATGPT_WEB_HOME</key>
     <string>${xml(getConfigDir())}</string>
   </dict>

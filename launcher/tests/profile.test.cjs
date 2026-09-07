@@ -71,8 +71,15 @@ test("production uses a Web-only Codex home unless explicitly overridden", () =>
   assert.equal(profile.codexHome, path.join(coreHome, "codex-home"));
   assert.notEqual(profile.codexHome, path.join(homeDir, ".codex"));
   const explicit = resolveLauncherProfile({
-    argv: ["electron", "."], env: { CODEX_HOME: path.join(homeDir, "explicit") }, homeDir,
+    argv: ["electron", "."], env: { CODEX_WEB_GPT_CODEX_HOME: path.join(homeDir, "explicit") }, homeDir,
     appData: path.join(homeDir, "appdata"),
   });
   assert.equal(explicit.codexHome, path.join(homeDir, "explicit"));
 });
+ test("production ignores ambient native CODEX_HOME and refuses Web override collisions", () => {
+  const homeDir = path.resolve("/Users/tester");
+  const env = { CODEX_HOME: path.join(homeDir, ".codex") };
+  const options = { env, homeDir, appData: path.join(homeDir, "appdata") };
+  assert.equal(resolveLauncherProfile(options).codexHome, path.join(homeDir, ".codex-chatgpt-web", "codex-home"));
+  assert.throws(() => resolveLauncherProfile({ ...options, env: { ...env, CODEX_WEB_GPT_CODEX_HOME: env.CODEX_HOME } }), /must differ/);
+ });

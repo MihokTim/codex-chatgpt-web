@@ -41,7 +41,7 @@ test("setup validates the port before performing runtime work", async () => {
       "--acknowledge-unofficial",
     ], {
       ...process.env,
-      CODEX_HOME: join(root, "codex"),
+      CODEX_WEB_GPT_CODEX_HOME: join(root, "codex"),
       CODEX_CHATGPT_WEB_HOME: join(root, "app"),
     });
     const { stderr } = result;
@@ -65,7 +65,7 @@ test("setup browser-interaction flags are explicit and mutually exclusive", asyn
       "--acknowledge-unofficial",
     ], {
       ...process.env,
-      CODEX_HOME: join(root, "codex"),
+      CODEX_WEB_GPT_CODEX_HOME: join(root, "codex"),
       CODEX_CHATGPT_WEB_HOME: join(root, "app"),
     });
     expect(result.exitCode).toBe(1);
@@ -80,7 +80,7 @@ test("setup browser-interaction flags are explicit and mutually exclusive", asyn
       "--acknowledge-unofficial",
     ], {
       ...process.env,
-      CODEX_HOME: join(root, "codex"),
+      CODEX_WEB_GPT_CODEX_HOME: join(root, "codex"),
       CODEX_CHATGPT_WEB_HOME: join(root, "app"),
     });
     expect(profileConflict.exitCode).toBe(1);
@@ -95,7 +95,7 @@ test("manual setup rejects capability refresh and Bigger Context", async () => {
   try {
     const env = {
       ...process.env,
-      CODEX_HOME: join(root, "codex"),
+      CODEX_WEB_GPT_CODEX_HOME: join(root, "codex"),
       CODEX_CHATGPT_WEB_HOME: join(root, "app"),
     };
     const refresh = await runCli([
@@ -157,7 +157,7 @@ test("DEV chat list works without starting launcher, broker, or Responses servic
       ...process.env,
       CODEX_WEB_GPT_DEV_HOME: join(root, "dev"),
       CODEX_CHATGPT_WEB_HOME: join(root, "app"),
-      CODEX_HOME: join(root, "codex"),
+      CODEX_WEB_GPT_CODEX_HOME: join(root, "codex"),
     });
     expect(result).toEqual({ exitCode: 0, stdout: "No named DEV chats yet.\n", stderr: "" });
     expect(existsSync(join(root, "codex", "config.toml"))).toBe(false);
@@ -173,7 +173,7 @@ test("DEV help exposes separate history-fill and live composer-fill operations",
       ...process.env,
       CODEX_WEB_GPT_DEV_HOME: join(root, "dev"),
       CODEX_CHATGPT_WEB_HOME: join(root, "app"),
-      CODEX_HOME: join(root, "codex"),
+      CODEX_WEB_GPT_CODEX_HOME: join(root, "codex"),
     });
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("/fill TOKENS");
@@ -192,7 +192,7 @@ test("DEV status reports the isolated home without creating a Codex route", asyn
       ...process.env,
       CODEX_WEB_GPT_DEV_HOME: devHome,
       CODEX_CHATGPT_WEB_HOME: join(root, "production"),
-      CODEX_HOME: join(root, "production-codex"),
+      CODEX_WEB_GPT_CODEX_HOME: join(root, "production-codex"),
     });
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
@@ -299,7 +299,7 @@ test("DEV browser-only setup persists only the isolated harness profile", async 
       ...process.env,
       CODEX_WEB_GPT_DEV_HOME: devHome,
       CODEX_CHATGPT_WEB_HOME: join(root, "production"),
-      CODEX_HOME: join(root, "production-codex"),
+      CODEX_WEB_GPT_CODEX_HOME: join(root, "production-codex"),
     });
     expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
     expect(result.stdout).toContain("No Codex route, Responses listener, or system service was installed");
@@ -351,7 +351,7 @@ test("DEV setup accepts explicit browser-interaction flags and preserves manual 
       ...process.env,
       CODEX_WEB_GPT_DEV_HOME: devHome,
       CODEX_CHATGPT_WEB_HOME: join(root, "production"),
-      CODEX_HOME: join(root, "production-codex"),
+      CODEX_WEB_GPT_CODEX_HOME: join(root, "production-codex"),
     };
 
     const manualBrowserOnly = await runCli([
@@ -440,7 +440,7 @@ test("browser check uses metadata-only launcher liveness in Zero Risk", async ()
     const result = await runCli(["browser", "check"], {
       ...process.env,
       CODEX_CHATGPT_WEB_HOME: appHome,
-      CODEX_HOME: join(root, "codex"),
+      CODEX_WEB_GPT_CODEX_HOME: join(root, "codex"),
     });
     expect({ exitCode: result.exitCode, stderr: result.stderr }).toEqual({ exitCode: 0, stderr: "" });
     expect(result.stdout).toContain("DOM inspection is intentionally disabled");
@@ -481,7 +481,7 @@ test("terminal uninstall refuses to race a launcher-owned runtime", async () => 
       "--yes",
     ], {
       ...process.env,
-      CODEX_HOME: join(root, "codex"),
+      CODEX_WEB_GPT_CODEX_HOME: join(root, "codex"),
       CODEX_CHATGPT_WEB_HOME: appHome,
     });
     expect(result.exitCode).toBe(1);
@@ -552,7 +552,7 @@ test("authorized launcher uninstall does not re-probe an already stopped full ru
       "--launcher-control",
     ], {
       ...process.env,
-      CODEX_HOME: codexHome,
+      CODEX_WEB_GPT_CODEX_HOME: codexHome,
       CODEX_CHATGPT_WEB_HOME: appHome,
       CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: descriptorPath,
       CODEX_WEB_GPT_LAUNCHER_CONTROL_TOKEN: token,

@@ -16,7 +16,10 @@ const sessions = [root,...children].map(id=>{
   const file=files.find(file=>file.includes(id));
   if(!file)throw new Error(`Missing session ${id}`);
   const records=readLines(file);
-  const ctx=records.find(e=>e.type === "turn_context")?.payload;
+  const contexts=records.filter(e=>e.type === "turn_context").map(e=>e.payload);
+  const ctx=contexts[0];
+  if(!ctx) throw new Error(`Missing turn context: ${id}`);
+  if(contexts.some(c=>c.model!==ctx.model||c.effort!==ctx.effort)) throw new Error(`Routing drift in session: ${id}`);
   const end=records.filter(e=>e.type === "event_msg"&&e.payload?.type === "task_complete").at(-1)?.payload;
   if(!end?.last_agent_message || end.error)throw new Error(`Session did not complete: ${id}`);
   return {id,model:ctx?.model,effort:ctx?.effort,multiAgent:ctx?.multi_agent_version,final:normalize(end.last_agent_message),records};

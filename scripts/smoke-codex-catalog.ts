@@ -27,15 +27,15 @@ if (!sourceCatalog.models?.some(model => model && typeof model === "object" && (
 }
 
 const root = join(tmpdir(), `codex-chatgpt-web-codex-smoke-${process.pid}-${Date.now()}`);
-process.env.CODEX_HOME = join(root, "codex");
+process.env.CODEX_WEB_GPT_CODEX_HOME = join(root, "codex");
 process.env.CODEX_CHATGPT_WEB_HOME = join(root, "app");
-mkdirSync(process.env.CODEX_HOME, { recursive: true });
+mkdirSync(process.env.CODEX_WEB_GPT_CODEX_HOME, { recursive: true });
 const config = defaultConfig("browser-only");
 config.proAvailable = true;
 config.subagentProtocol = "compatibility-v1";
 const catalogPath = join(root, "augmented-models.json");
 writeFileSync(catalogPath, `${JSON.stringify(augmentNativeModelCatalog(sourceCatalog, config))}\n`);
-writeFileSync(join(process.env.CODEX_HOME, "config.toml"), [
+writeFileSync(join(process.env.CODEX_WEB_GPT_CODEX_HOME, "config.toml"), [
   `model_catalog_json = ${JSON.stringify(catalogPath)}`,
   "",
   "[features]",
@@ -44,7 +44,7 @@ writeFileSync(join(process.env.CODEX_HOME, "config.toml"), [
   "",
 ].join("\n"));
 try {
-  const isolatedEnv = { ...process.env, CODEX_HOME: process.env.CODEX_HOME };
+  const isolatedEnv = { ...process.env, CODEX_HOME: process.env.CODEX_WEB_GPT_CODEX_HOME };
   const result = runCodex(["debug", "models"], isolatedEnv);
   const catalog = JSON.parse(result.stdout) as {
     models?: Array<{

@@ -14,6 +14,7 @@ function hostFor(existingConfig, interactionMode = "automatic") {
     },
     logger: { info() {}, warn() {}, error() {} },
     sourceRoot: "/source",
+    coreHome: path.join(os.tmpdir(), "runtime-host-unit-no-install"),
     browserDescriptorPath: "/runtime/launcher-browser.json",
     supervisor: {
       readConfig: () => existingConfig,
@@ -577,6 +578,7 @@ function bridgeFixture({ active }) {
     app: { getPath: () => path.join(os.tmpdir(), "codex-web-gpt-bridge-test") },
     logger: { info() {}, warn() {}, error() {} },
     sourceRoot: "/source",
+    coreHome: path.join(os.tmpdir(), "runtime-host-unit-no-install"),
     browserDescriptorPath: "/runtime/launcher-browser.json",
     supervisor,
   });
@@ -641,6 +643,7 @@ test("failed runtime cleanup during removal still restores the previous Codex ro
     app: { getPath: () => path.join(os.tmpdir(), "codex-web-gpt-uninstall-fail-safe") },
     logger: { info() {}, warn() {}, error() {} },
     sourceRoot: "/source",
+    coreHome: path.join(os.tmpdir(), "runtime-host-unit-no-install"),
     browserDescriptorPath: "/runtime/launcher-browser.json",
     supervisor: {
       readConfig: () => config,
@@ -679,6 +682,7 @@ test("integration removal is accepted only after a new status process observes i
     app: { getPath: () => path.join(os.tmpdir(), "codex-web-gpt-uninstall-success") },
     logger: { info() {}, warn() {}, error() {} },
     sourceRoot: "/source",
+    coreHome: path.join(os.tmpdir(), "runtime-host-unit-no-install"),
     browserDescriptorPath: "/runtime/launcher-browser.json",
     supervisor: {
       readConfig: () => config,
@@ -714,6 +718,7 @@ test("integration removal rejects a command that leaves an inactive journal behi
     app: { getPath: () => path.join(os.tmpdir(), "codex-web-gpt-uninstall-stale") },
     logger: { info() {}, warn() {}, error() {} },
     sourceRoot: "/source",
+    coreHome: path.join(os.tmpdir(), "runtime-host-unit-no-install"),
     browserDescriptorPath: "/runtime/launcher-browser.json",
     supervisor: {
       readConfig: () => config,
@@ -915,6 +920,7 @@ test("a browser-mode commit failure restores the previous runtime inside setup",
     },
     logger: { info() {}, warn() {}, error() {} },
     sourceRoot: "/source",
+    coreHome: path.join(os.tmpdir(), "runtime-host-unit-no-install"),
     browserDescriptorPath: "/runtime/launcher-browser.json",
     supervisor: {
       readSetupConfig: () => previousConfig,
@@ -962,6 +968,7 @@ test("launcher delegates an existing terminal-managed installation to the migrat
     app: { getPath: () => path.join(os.tmpdir(), "codex-web-gpt-runtime-host-migration") },
     logger: { info() {}, warn() {}, error() {} },
     sourceRoot: "/source",
+    coreHome: path.join(os.tmpdir(), "runtime-host-unit-no-install"),
     browserDescriptorPath: "/runtime/launcher-browser.json",
     codexHome: path.join(coreHome, "codex"),
     launchAgentsDir: path.join(coreHome, "LaunchAgents"),
@@ -986,6 +993,7 @@ test("failed terminal migration verifies the unchanged previous runtime instead 
     app: { getPath: () => path.join(os.tmpdir(), "codex-web-gpt-runtime-host-migration-failure") },
     logger: { info() {}, warn() {}, error() {} },
     sourceRoot: "/source",
+    coreHome: path.join(os.tmpdir(), "runtime-host-unit-no-install"),
     browserDescriptorPath: "/runtime/launcher-browser.json",
     codexHome: path.join(coreHome, "codex"),
     launchAgentsDir: path.join(coreHome, "LaunchAgents"),
@@ -1041,7 +1049,7 @@ test("failed launcher update restores every mutable setup file before restarting
     fs.mkdirSync(path.dirname(file), { recursive: true });
   }
   fs.writeFileSync(configPath, `${JSON.stringify(oldConfig)}\n`, { mode: 0o600 });
-  fs.writeFileSync(journalPath, "old journal\n", { mode: 0o600 });
+  fs.writeFileSync(journalPath, JSON.stringify({ configPath: codexConfigPath }), { mode: 0o600 });
   fs.writeFileSync(recoveryJournalPath, "old recovery journal\n", { mode: 0o600 });
   fs.writeFileSync(keyPath, "old key\n", { mode: 0o600 });
   fs.writeFileSync(profilePath, "old profile\n", { mode: 0o600 });
@@ -1091,7 +1099,7 @@ test("failed launcher update restores every mutable setup file before restarting
     );
     assert.equal(startAttempts, 2);
     assert.deepEqual(readConfig(), oldConfig);
-    assert.equal(fs.readFileSync(journalPath, "utf8"), "old journal\n");
+    assert.equal(fs.readFileSync(journalPath, "utf8"), JSON.stringify({ configPath: codexConfigPath }));
     assert.equal(fs.readFileSync(recoveryJournalPath, "utf8"), "old recovery journal\n");
     assert.equal(fs.readFileSync(keyPath, "utf8"), "old key\n");
     assert.equal(fs.readFileSync(profilePath, "utf8"), "old profile\n");
@@ -1255,4 +1263,39 @@ test("passkey sign-in is rejected outside macOS even if IPC is invoked directly"
   const fixture = hostFor(null).host;
   fixture.platform = "win32";
   assert.throws(() => fixture.passkeyChromeExecutable(), /supported only on macOS/);
+});
+
+test("same-version launcher upgrade runs for an unisolated journal", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "web-same-version-"));
+  try {
+    const fixture = hostFor({ mode: "browser-only", browserHost: "launcher", releaseVersion: "1.1.3" });
+    fixture.host.coreHome = root;
+    fs.mkdirSync(path.join(root, "codex"));
+    fs.writeFileSync(path.join(root, "codex", "integration-journal.json"), JSON.stringify({ version: 9, configPath: path.join(root, "native", "config.toml") }));
+    assert.equal((await fixture.host.upgradeManagedRuntime()).updated, true);
+    assert.equal(fixture.invocation().name, "runtime-upgrade");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+test("setup checkpoint restores native config/cache and newly copied Web credentials", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "web-native-checkpoint-"));
+  try {
+    const fixture = hostFor({ mode: "browser-only", browserHost: "launcher", releaseVersion: "1.1.3" });
+    const native = path.join(root, "native");
+    const web = path.join(root, "web");
+    fs.mkdirSync(native); fs.mkdirSync(web); fs.mkdirSync(path.join(root, "codex"));
+    fixture.host.codexHome = web;
+    fixture.host.supervisor.configPath = path.join(root, "config.json");
+    fixture.host.supervisor.coreHome = root;
+    fs.writeFileSync(path.join(root, "codex", "integration-journal.json"), JSON.stringify({ configPath: path.join(native, "config.toml") }));
+    fs.writeFileSync(path.join(native, "config.toml"), "native-before");
+    fs.writeFileSync(path.join(native, "models_cache.json"), "cache-before");
+    const checkpoint = fixture.host.captureSetupCheckpoint(fixture.host.runtimeConfigSnapshot());
+    fs.writeFileSync(path.join(native, "config.toml"), "native-after");
+    fs.rmSync(path.join(native, "models_cache.json"));
+    fs.writeFileSync(path.join(web, "auth.json"), "copied-auth");
+    fixture.host.restoreSetupCheckpoint(checkpoint);
+    assert.equal(fs.readFileSync(path.join(native, "config.toml"), "utf8"), "native-before");
+    assert.equal(fs.readFileSync(path.join(native, "models_cache.json"), "utf8"), "cache-before");
+    assert.equal(fs.existsSync(path.join(web, "auth.json")), false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

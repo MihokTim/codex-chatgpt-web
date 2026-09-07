@@ -84,7 +84,39 @@ const config = {
 writeFileSync(join(appHome, "config.json"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 writeFileSync(config.storageStatePath, "{}\n", { mode: 0o600 });
 
-const env = { ...process.env, CODEX_CHATGPT_WEB_HOME: appHome, CODEX_HOME: codexHome };
+const env = { ...process.env, CODEX_CHATGPT_WEB_HOME: appHome, CODEX_WEB_GPT_CODEX_HOME: codexHome };
+// Execute the relocated CLI's real lifecycle, with a native ambient home and no Web override.
+for (const legacy of [false, true]) {
+  const fixtureCore = join(root, legacy ? "legacy-core" : "fresh-core");
+  const nativeHome = join(root, legacy ? "legacy-native" : "fresh-native");
+  mkdirSync(fixtureCore, { recursive: true }); mkdirSync(nativeHome, { recursive: true });
+  writeFileSync(join(fixtureCore, "config.json"), JSON.stringify({ ...config, solAvailable: true }));
+  const original = 'model = "gpt-6-astra"\n';
+  writeFileSync(join(nativeHome, "config.toml"), original);
+  if (legacy) {
+    const previous = Object.fromEntries(["openai_base_url", "model_provider", "model_catalog_json"].map(key => [key, { present: false }]));
+    const journal = { version: 3, configPath: join(nativeHome, "config.toml"), installed: { openai_base_url: `http://127.0.0.1:${port}/v1` }, previous, format: { lineEnding: "\n", trailingNewline: true } };
+    mkdirSync(join(fixtureCore, "codex"));
+    for (const name of ["integration-journal.json", "integration-journal.recovery.json"]) writeFileSync(join(fixtureCore, "codex", name), JSON.stringify(journal));
+    writeFileSync(join(nativeHome, "config.toml"), original + '# Managed by codex-chatgpt-web; `codex-chatgpt-web uninstall` restores prior values.\n' + `openai_base_url = "http://127.0.0.1:${port}/v1"\n`);
+  }
+  const fixtureEnv: NodeJS.ProcessEnv = { ...process.env, CODEX_CHATGPT_WEB_HOME: fixtureCore, CODEX_HOME: nativeHome };
+  delete fixtureEnv.CODEX_WEB_GPT_CODEX_HOME;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = Bun.spawnSync([...runtimeCommand, "isolation", "ensure"], { env: fixtureEnv, stdout: "pipe", stderr: "pipe" });
+    if (result.exitCode !== 0) throw new Error(`Packaged home lifecycle failed: ${result.stderr.toString()}`);
+  }
+  const environmentProbe = join(fixtureCore, "client-env.ts");
+  writeFileSync(environmentProbe, 'console.log(JSON.stringify({home:process.env.CODEX_HOME,native:process.env.CODEX_WEB_GPT_NATIVE_HOME}))');
+  const client = Bun.spawnSync([...runtimeCommand, "codex", "--executable", runtimeExecutable, "--", environmentProbe], { env: fixtureEnv, stdout: "pipe", stderr: "pipe" });
+  if (client.exitCode !== 0) throw new Error(`Packaged Web client failed: ${client.stderr.toString()}`);
+  const clientEnvironment = JSON.parse(client.stdout.toString());
+  if (clientEnvironment.home !== join(fixtureCore, "codex-home") || clientEnvironment.native !== nativeHome) throw new Error("Packaged Codex environment handoff failed");
+  const web: any = Bun.TOML.parse(readFileSync(join(fixtureCore, "codex-home", "config.toml"), "utf8"));
+  if (web.model !== "chatgpt-web/pro" || web.agents?.default_subagent_model !== "chatgpt-web/extra-high" || web.agents?.default_subagent_reasoning_effort !== undefined) throw new Error("Packaged Web defaults are missing");
+  if (readFileSync(join(nativeHome, "config.toml"), "utf8") !== original) throw new Error("Packaged setup contaminated native config");
+}
+process.stdout.write("PACKAGED_HOME_LIFECYCLE_OK\n");
 const child = Bun.spawn([...runtimeCommand, "serve"], { env, stdout: "pipe", stderr: "pipe" });
 let stoppedGracefully = false;
 try {

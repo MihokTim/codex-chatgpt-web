@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { startWebCodex } from "./web-codex";
 import { createInterface } from "node:readline/promises";
 import { Writable } from "node:stream";
 import { timingSafeEqual } from "node:crypto";
@@ -16,6 +17,7 @@ import {
   activateCodexIntegration,
   deactivateCodexIntegration,
   inspectCodexIntegration,
+  installCodexIntegration,
   readCodexSubagentProtocol,
   setCodexSubagentProtocol,
   uninstallCodexIntegration,
@@ -31,7 +33,10 @@ import { getTunnelServiceStatus, restartTunnelService, startTunnelService, stopT
 import { VERSION } from "./version";
 import { runDevCommand } from "./dev-chat/cli";
 
-const HELP = `codex-chatgpt-web ${VERSION}
+const HELP = `
+Web isolation: isolation ensure (idempotent; restart existing Codex processes afterwards)
+Web Codex: codex [--desktop] [--executable PATH] -- [Codex arguments]
+codex-chatgpt-web ${VERSION}
 
 Focused ChatGPT web-backed models for the native Codex harness.
 
@@ -556,6 +561,22 @@ async function main(): Promise<void> {
     throw new Error("--home does not apply to DEV mode; use CODEX_WEB_GPT_DEV_HOME for an explicit isolated DEV profile");
   }
   if (command === "help") stdout.write(HELP);
+  else if (command === "codex") {
+    const desktop = takeFlag(args, "--desktop");
+    const executable = takeOption(args, "--executable") || Bun.which("codex");
+    if (!executable) throw new Error("Specify the Codex executable with --executable PATH");
+    if (args[0] === "--") args.shift();
+    process.exitCode = await startWebCodex(executable, args, desktop);
+  }
+  else if (command === "isolation") {
+    const action = args.shift();
+    assertNoArgs(args);
+    if (action !== "ensure") throw new Error("Usage: isolation ensure");
+    installCodexIntegration(loadConfig());
+    const status = inspectCodexIntegration();
+    if (status.errors.length) throw new Error(status.errors.join("; "));
+    stdout.write(JSON.stringify({ active: status.active, configPath: status.configPath, codexRestartRequired: true }) + "\n");
+  }
   else if (command === "setup") await setupCommand(args);
   else if (command === "login") await loginCommand(args);
   else if (command === "doctor" || command === "status") await doctorCommand(args);

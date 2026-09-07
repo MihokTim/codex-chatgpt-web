@@ -1,3 +1,4 @@
+const { resolveWebHome } = require("./web-home.cjs");
 const os = require("node:os");
 const path = require("node:path");
 
@@ -33,9 +34,7 @@ function resolveLauncherProfile({
       kind: PRODUCTION_PROFILE,
       displayName: "Codex Web GPT",
       coreHome,
-      codexHome: env.CODEX_HOME?.trim()
-        ? resolveUserPath(env.CODEX_HOME.trim(), homeDir)
-        : path.join(coreHome, "codex-home"),
+      codexHome: resolveWebHome(coreHome, env, homeDir),
       userData,
       browserPartition: "persist:codex-web-gpt-chatgpt",
     };

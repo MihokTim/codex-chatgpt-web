@@ -173,8 +173,8 @@ class RuntimeHost {
     this.platform = platform;
     this.codexHome = codexHome
       ? resolveUserPath(codexHome)
-      : process.env.CODEX_HOME?.trim()
-        ? resolveUserPath(process.env.CODEX_HOME.trim())
+      : process.env.CODEX_WEB_GPT_CODEX_HOME?.trim()
+        ? resolveUserPath(process.env.CODEX_WEB_GPT_CODEX_HOME.trim())
         : path.join(this.coreHome || path.join(os.homedir(), ".codex-chatgpt-web"), "codex-home");
     this.launchAgentsDir = launchAgentsDir
       ? resolveUserPath(launchAgentsDir)
@@ -392,6 +392,7 @@ class RuntimeHost {
     const childEnvironment = { ...environment };
     delete childEnvironment.CODEX_CHATGPT_WEB_HOME;
     delete childEnvironment.CODEX_HOME;
+    delete childEnvironment.CODEX_WEB_GPT_CODEX_HOME;
     delete childEnvironment.CODEX_WEB_GPT_LAUNCHER_DATA_DIR;
     childEnvironment.CODEX_WEB_GPT_DEV_HOME = this.coreHome;
     return childEnvironment;
@@ -454,6 +455,8 @@ class RuntimeHost {
       path.join(coreHome, "codex", "integration-journal.recovery.json"),
       path.join(this.codexHome, "config.toml"),
       path.join(this.codexHome, "models_cache.json"),
+      path.join(this.codexHome, "auth.json"),
+      path.join(this.codexHome, "AGENTS.md"),
       path.join(coreHome, "secrets", "tunnel-runtime.key"),
       path.join(coreHome, "secrets", "tunnel-runtime-automatic.key"),
       path.join(coreHome, "secrets", "tunnel-runtime-zero-risk.key"),
@@ -462,6 +465,14 @@ class RuntimeHost {
       path.join(coreHome, "tunnel", "profiles", "codex-chatgpt-web-dev.yaml"),
       path.join(coreHome, "tunnel", "profiles", "codex-chatgpt-web-dev-zero-risk.yaml"),
     ]);
+    const oldJournalPath = path.join(coreHome, "codex", "integration-journal.json");
+    if (fs.existsSync(oldJournalPath)) {
+      const oldJournal = JSON.parse(fs.readFileSync(oldJournalPath, "utf8"));
+      if (typeof oldJournal.configPath !== "string" || !path.isAbsolute(oldJournal.configPath)) throw new Error("Invalid legacy journal target");
+      paths.add(oldJournal.configPath);
+      paths.add(path.join(path.dirname(oldJournal.configPath), "models_cache.json"));
+      if (oldJournal.version === 2) paths.add(oldJournal.catalogPath);
+    }
     if (snapshot.owner === "external" && this.platform === "darwin") {
       paths.add(path.join(this.launchAgentsDir, "io.github.codex-chatgpt-web.daemon.plist"));
       paths.add(path.join(this.launchAgentsDir, "io.github.codex-chatgpt-web.tunnel.plist"));
@@ -596,6 +607,7 @@ class RuntimeHost {
           ? { ...options.environment }
           : { ...process.env };
         Object.assign(environment, {
+          CODEX_WEB_GPT_CODEX_HOME: this.codexHome,
           CODEX_CHATGPT_WEB_BROWSER_HOST_DESCRIPTOR: this.browserDescriptorPath,
           ...(options.env || {}),
         });
@@ -1121,6 +1133,11 @@ class RuntimeHost {
     if (this.currentOperation()) throw new Error(`Another launcher operation is active: ${this.currentOperation()}`);
     const existing = this.runtimeConfigSnapshot();
     const currentVersion = this.app.getVersion();
+    const journalPath = path.join(this.coreHome || (this.supervisor.configPath ? path.dirname(this.supervisor.configPath) : path.join(os.homedir(), ".codex-chatgpt-web")), "codex", "integration-journal.json");
+    const journal = fs.existsSync(journalPath) ? JSON.parse(fs.readFileSync(journalPath, "utf8")) : null;
+    const homeMigrationRequired = Boolean(journal && (
+      !journal.webProfile || path.resolve(journal.configPath) !== path.join(this.codexHome, "config.toml")
+    ));
     const connectorMigrationRequired = existing.mode === "full"
       && isLegacyConnectorName(validateConnectorName(existing.config?.appName));
     const interactionMode = existing.config?.browserInteractionMode ?? "automatic";
@@ -1143,6 +1160,7 @@ class RuntimeHost {
     );
     if (existing.owner !== "launcher"
       || (existing.config?.releaseVersion === currentVersion
+        && !homeMigrationRequired
         && !connectorMigrationRequired
         && !tunnelProfileMigrationRequired)) {
       return { updated: false };

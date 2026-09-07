@@ -1,3 +1,4 @@
+import { identity } from "../launcher/electron/web-home.cjs";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { atomicWriteFile, stripUtf8Bom } from "./config";
@@ -200,11 +201,7 @@ export function assertJournalTargetsConfig(
   journal: AnyCodexIntegrationJournal,
   configPath: string,
 ): void {
-  const pathIdentity = (value: string): string => {
-    const normalized = resolve(value);
-    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
-  };
-  if (pathIdentity(journal.configPath) !== pathIdentity(configPath)) {
+  if (identity(journal.configPath) !== identity(configPath)) {
     throw new Error(
       `Codex integration journal belongs to ${journal.configPath}, not the active config ${configPath}`,
     );

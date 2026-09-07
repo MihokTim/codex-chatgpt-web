@@ -96,7 +96,7 @@ export function readDevChatExperimentalFeatures(
 export function activateDevProfileEnvironment(paths = resolveDevProfilePaths()): DevProfilePaths {
   process.env.CODEX_WEB_GPT_DEV_HOME = paths.home;
   process.env.CODEX_CHATGPT_WEB_HOME = paths.home;
-  process.env.CODEX_HOME = paths.codexHome;
+  process.env.CODEX_WEB_GPT_CODEX_HOME = paths.codexHome;
   if (getConfigPath() !== paths.configPath) {
     throw new Error("DEV profile environment did not resolve to its isolated configuration path");
   }
@@ -168,6 +168,7 @@ export function devLauncherEnvironment(
   const childEnvironment = { ...environment };
   delete childEnvironment.CODEX_CHATGPT_WEB_HOME;
   delete childEnvironment.CODEX_HOME;
+  delete childEnvironment.CODEX_WEB_GPT_CODEX_HOME;
   delete childEnvironment.CODEX_WEB_GPT_LAUNCHER_DATA_DIR;
   childEnvironment.CODEX_WEB_GPT_DEV_HOME = paths.home;
   return childEnvironment;

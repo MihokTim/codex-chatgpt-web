@@ -1,3 +1,4 @@
+import { getCodexHome } from "../src/codex-integration-shared";
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -284,7 +285,7 @@ describe("trusted current Codex environment envelope", () => {
   });
 
   test("skill recovery accepts the current task's Codex visualization root", () => {
-    const codexHome = resolve(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
+    const codexHome = getCodexHome();
     const visualizationRoot = join(codexHome, "visualizations", "2026", "08", "25", "thread_current");
     const projectEnvironment = `<environment_context>
   <cwd>${root}</cwd>
@@ -320,7 +321,7 @@ describe("trusted current Codex environment envelope", () => {
   });
 
   test("skill recovery rejects another task's Codex visualization root", () => {
-    const codexHome = resolve(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
+    const codexHome = getCodexHome();
     const visualizationRoot = join(codexHome, "visualizations", "2026", "08", "25", "thread_other");
     const injectedEnvironment = `<environment_context>
   <cwd>${root}</cwd>
