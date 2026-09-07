@@ -510,7 +510,9 @@ export function inspectCodexIntegration(): {
         verifyRestoredRoute(text, journal);
       }
       else if (journal.version === 3 || journal.version === 4 || journal.version === 5 || journal.version === 6 || journal.version === 7 || journal.version === 8 || journal.version === 9 || journal.version === 10) {
-        verifyInstalledRoute(text, journal);
+        // Read-only readiness is independent of user-editable model/effort defaults.
+        // Mutating install/restore paths still verify the complete profile journal.
+        verifyInstalledRoute(text, journal.version === 10 ? { ...journal, webProfile: undefined } : journal);
       }
       else {
         const lines = splitLines(text);

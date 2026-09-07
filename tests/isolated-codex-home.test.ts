@@ -159,3 +159,17 @@ test("profile ownership cannot mistake a multiline prompt example for a root mod
   expect(readFileSync(join(web, "config.toml"), "utf8")).toBe(original);
   expect(existsSync(getCodexJournalPath())).toBe(false);
 }));
+
+
+test("model selection does not invalidate read-only readiness or weaken write conflict protection", () => fixture(({ web, config }) => {
+  installCodexIntegration(config);
+  const path = join(web, "config.toml");
+  const changed = readFileSync(path, "utf8").replace('model = "chatgpt-web/pro"', 'model = "chatgpt-web/extra-high"').replace('model_reasoning_effort = "ultra"', 'model_reasoning_effort = "xhigh"');
+  writeFileSync(path, changed);
+  expect(inspectCodexIntegration()).toMatchObject({ active: true, errors: [] });
+  expect(() => installCodexIntegration(config)).toThrow("Web profile model changed");
+  expect(() => uninstallCodexIntegration()).toThrow("Web profile model changed");
+  expect(readFileSync(path, "utf8")).toBe(changed);
+  writeFileSync(path, changed.replace('http://127.0.0.1:', 'http://localhost:'));
+  expect(inspectCodexIntegration().errors.length).toBeGreaterThan(0);
+}));
