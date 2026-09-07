@@ -909,3 +909,9 @@ describe("reversible native Codex route integration", () => {
   });
 
 });
+
+test("default integration home belongs to the Web runtime, not native Codex", () => {
+  const { appHome } = fixture();
+  delete process.env.CODEX_HOME;
+  expect(getCodexHome()).toBe(join(appHome, "codex-home"));
+});

@@ -175,7 +175,7 @@ class RuntimeHost {
       ? resolveUserPath(codexHome)
       : process.env.CODEX_HOME?.trim()
         ? resolveUserPath(process.env.CODEX_HOME.trim())
-        : path.join(os.homedir(), ".codex");
+        : path.join(this.coreHome || path.join(os.homedir(), ".codex-chatgpt-web"), "codex-home");
     this.launchAgentsDir = launchAgentsDir
       ? resolveUserPath(launchAgentsDir)
       : path.join(os.homedir(), "Library", "LaunchAgents");

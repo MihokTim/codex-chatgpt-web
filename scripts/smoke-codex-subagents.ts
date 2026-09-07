@@ -5,12 +5,14 @@ import { spawnSync } from "node:child_process";
 import { bridgeToResponsesSSE } from "../src/bridge";
 import { defaultConfig } from "../src/config";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
-import type { AdapterEvent } from "../src/types";
+import type { AdapterEvent, CodexParsedRequest } from "../src/types";
+import { routeChatGptWebRequest } from "../src/server";
 
 const protocol = process.argv.includes("--v1") ? "v1" : "v2";
-const explicitChildModel = "gpt-5.6-sol";
-const explicitChildReasoningEffort = "max";
-const codexArg = process.argv.slice(2).find(argument => argument !== "--v1" && argument !== "--v2");
+const webDefaults = process.argv.includes("--web-defaults");
+const explicitChildModel = webDefaults ? "chatgpt-web/pro" : "gpt-5.6-sol";
+const explicitChildReasoningEffort = webDefaults ? "ultra" : "max";
+const codexArg = process.argv.slice(2).find(argument => !argument.startsWith("--"));
 const codex = resolve(codexArg ?? "/Applications/ChatGPT.app/Contents/Resources/codex");
 if (!existsSync(codex)) throw new Error(`Codex executable is missing: ${codex}`);
 
@@ -175,14 +177,14 @@ function responseFor(role: Role, step: number, body: Record<string, unknown>): A
     if (step === 0) return toolCall("spawn_agent", protocol === "v1" ? {
       message: "CHILD_LIFECYCLE: spawn the requested grandchild, wait for it, then report success.",
       fork_context: false,
-      model: explicitChildModel,
-      reasoning_effort: explicitChildReasoningEffort,
+      ...(webDefaults ? {} : { model: explicitChildModel }),
+      ...(webDefaults ? {} : { reasoning_effort: explicitChildReasoningEffort }),
     } : {
       task_name: "lifecycle_child",
       message: "CHILD_LIFECYCLE: spawn the requested grandchild, wait for it, then report success.",
       fork_turns: "none",
-      model: explicitChildModel,
-      reasoning_effort: explicitChildReasoningEffort,
+      ...(webDefaults ? {} : { model: explicitChildModel }),
+      ...(webDefaults ? {} : { reasoning_effort: explicitChildReasoningEffort }),
     });
     if (step === 1) return toolCall("wait_agent", protocol === "v1"
       ? { targets: [spawnedAgentId(body)], timeout_ms: 500 }
@@ -205,13 +207,13 @@ function responseFor(role: Role, step: number, body: Record<string, unknown>): A
       message: "GRANDCHILD_LIFECYCLE: reply with GRANDCHILD_LIFECYCLE_OK.",
       fork_context: false,
       model: explicitChildModel,
-      reasoning_effort: explicitChildReasoningEffort,
+      ...(webDefaults ? {} : { reasoning_effort: explicitChildReasoningEffort }),
     } : {
       task_name: "lifecycle_grandchild",
       message: "GRANDCHILD_LIFECYCLE: reply with GRANDCHILD_LIFECYCLE_OK.",
       fork_turns: "none",
       model: explicitChildModel,
-      reasoning_effort: explicitChildReasoningEffort,
+      ...(webDefaults ? {} : { reasoning_effort: explicitChildReasoningEffort }),
     });
     if (step === 1) return toolCall("wait_agent", protocol === "v1"
       ? { targets: [spawnedAgentId(body)], timeout_ms: 500 }
@@ -307,6 +309,7 @@ writeFileSync(join(codexHome, "config.toml"), [
   "",
   "[agents]",
   "max_depth = 2",
+  ...(webDefaults ? ['default_subagent_model = "chatgpt-web/extra-high"'] : []),
   "",
   "[features]",
   "multi_agent = true",
@@ -327,7 +330,7 @@ try {
     "exec",
     "--skip-git-repo-check",
     "--json",
-    "--dangerously-bypass-approvals-and-sandbox",
+    "--sandbox", "read-only",
     "--model",
     "chatgpt-web/pro",
     "ROOT_LIFECYCLE: complete the nested subagent lifecycle and the follow-up.",
@@ -365,13 +368,24 @@ try {
   }
   for (const role of ["child", "grandchild"] as const) {
     const firstRequest = requestLog.find(entry => entry.role === role && entry.step === 0);
-    if (firstRequest?.model !== explicitChildModel) {
-      failures.push(`${role} used ${firstRequest?.model ?? "no model"}, expected ${explicitChildModel}`);
+    const expectedModel = webDefaults && role === "child" ? "chatgpt-web/extra-high" : explicitChildModel;
+    const expectedEffort = webDefaults && role === "child" ? "xhigh" : explicitChildReasoningEffort;
+    if (firstRequest?.model !== expectedModel) {
+      failures.push(`${role} used ${firstRequest?.model ?? "no model"}, expected ${expectedModel}`);
     }
-    if (firstRequest?.reasoningEffort !== explicitChildReasoningEffort) {
+    if (!webDefaults && firstRequest?.reasoningEffort !== expectedEffort) {
       failures.push(
-        `${role} used reasoning ${firstRequest?.reasoningEffort ?? "none"}, expected ${explicitChildReasoningEffort}`,
+        `${role} used reasoning ${firstRequest?.reasoningEffort ?? "none"}, expected ${expectedEffort}`,
       );
+    }
+  }
+  if (webDefaults) {
+    for (const role of ["root", "child", "grandchild"] as const) {
+      const first = requestLog.find(entry => entry.role === role && entry.step === 0)!;
+      const parsed = { modelId: first.model, options: { reasoning: first.reasoningEffort } } as CodexParsedRequest;
+      routeChatGptWebRequest(parsed, catalogConfig);
+      const expected = role === "child" ? "xhigh" : "max";
+      if (parsed.options.reasoning !== expected) failures.push(`${role} browser effort ${parsed.options.reasoning} != ${expected}`);
     }
   }
   if (failures.length > 0) {

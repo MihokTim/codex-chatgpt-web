@@ -60,3 +60,19 @@ test("DEV launcher ignores generic production path overrides", () => {
   assert.equal(development.codexHome, path.join(homeDir, "isolated-dev", "codex-home"));
   assert.equal(development.userData, path.join(homeDir, "isolated-dev", "launcher"));
 });
+
+test("production uses a Web-only Codex home unless explicitly overridden", () => {
+  const homeDir = path.resolve("/Users/tester");
+  const coreHome = path.join(homeDir, "custom-web");
+  const profile = resolveLauncherProfile({
+    argv: ["electron", "."], env: { CODEX_CHATGPT_WEB_HOME: coreHome }, homeDir,
+    appData: path.join(homeDir, "appdata"),
+  });
+  assert.equal(profile.codexHome, path.join(coreHome, "codex-home"));
+  assert.notEqual(profile.codexHome, path.join(homeDir, ".codex"));
+  const explicit = resolveLauncherProfile({
+    argv: ["electron", "."], env: { CODEX_HOME: path.join(homeDir, "explicit") }, homeDir,
+    appData: path.join(homeDir, "appdata"),
+  });
+  assert.equal(explicit.codexHome, path.join(homeDir, "explicit"));
+});

@@ -91,7 +91,10 @@ irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install
 1. ランチャー内蔵の ChatGPT ブラウザーで直接サインインします。ログインページと ID プロバイダーの
    ウィンドウは、同じランチャー管理の非公開ブラウザープロファイル内に保持されます。ブラウザー間でセッションをコピーしません。
 2. ブラウザーのスモークテストを実行します。
-3. **モデルをインストール**を押し、Codex を一度再起動して、**ChatGPT Web — …** モデルを選択します。
+3. **モデルをインストール**を押し、Web専用のCodexを起動して、**ChatGPT Web — …** モデルを選択します。
+
+通常のnative CodexとWebの設定・cacheを分離します。既存環境の移行、Windowsの起動入口、
+Web Proのchild routingは [Native / Web分離](docs/native-web-isolation.md) を参照してください。
 
 セットアップ時に、ランチャーが現在のアカウントの ChatGPT コントロールを検出します。
 Free/Go アカウントでは Luna のみが表示され、Pro はサインイン中のアカウントで利用可能な場合にのみ表示されます。

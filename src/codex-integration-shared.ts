@@ -243,7 +243,7 @@ export interface CodexModelContextOverride {
 
 export function getCodexHome(): string {
   const configured = process.env.CODEX_HOME?.trim();
-  return resolve(expandUserPath(configured || join(homedir(), ".codex")));
+  return resolve(expandUserPath(configured || join(getConfigDir(), "codex-home")));
 }
 
 export function getCodexConfigPath(): string {
