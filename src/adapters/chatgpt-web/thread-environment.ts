@@ -4,23 +4,14 @@ import { atomicWriteFile } from "../../config";
 import { getCodexHome } from "../../codex-integration-shared";
 import type { CodexParsedRequest } from "../../types";
 import {
-  extractChatGptTurnEnvironment,
-  extractChatGptCompactionSourceRevision,
-  extractChatGptContinuationEnvironmentClaim,
-  extractChatGptSteeringEnvironmentClaim,
-  extractChatGptEnvironmentRefreshClaims,
   extractChatGptTurnIdentity,
   extractChatGptThreadSpawnLineage,
-  extractChatGptRootThreadMetadata,
-  hasCurrentChatGptEnvironmentContext,
   hasRawChatGptEnvironmentContext,
-  unattributedChatGptEnvironmentMessages,
-  isChatGptCompactionContinuation,
   MissingTrustedCodexEnvironmentError,
   type ChatGptSandboxPolicy,
   type ChatGptTurnEnvironment,
 } from "./environment";
-import { resolveCurrentCodexRolloutEnvironment } from "./codex-rollout-environment";
+import { resolveChatGptRequestEnvironment } from "./codex-rollout-environment";
 
 interface StoredThreadEnvironment {
   cwd: string;
@@ -119,19 +110,6 @@ function authority(environment: ChatGptTurnEnvironment, updatedAt: number): Stor
   };
 }
 
-function sameAuthority(left: ChatGptTurnEnvironment, right: ChatGptTurnEnvironment): boolean {
-  const samePaths = (a: string[], b: string[]): boolean => {
-    const expected = new Set(b.map(pathIdentity));
-    return a.length === expected.size && a.every(path => expected.has(pathIdentity(path)));
-  };
-  return pathIdentity(left.cwd) === pathIdentity(right.cwd)
-    && samePaths(left.roots, right.roots)
-    && samePaths(left.writableRoots, right.writableRoots)
-    && left.sandboxPolicy.type === right.sandboxPolicy.type
-    && (left.sandboxPolicy.type === "dangerFullAccess" || (right.sandboxPolicy.type !== "dangerFullAccess"
-      && left.sandboxPolicy.networkAccess === right.sandboxPolicy.networkAccess));
-}
-
 /**
  * Codex emits its trusted environment envelope when a task starts or its environment changes,
  * not on every follow-up. This store carries only that trusted authority across turns. Tool
@@ -151,46 +129,15 @@ export class ChatGptThreadEnvironmentStore {
   resolve(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
     const identity = extractChatGptTurnIdentity(parsed);
     try {
-      const environment = extractChatGptTurnEnvironment(parsed);
+      const environment = resolveChatGptRequestEnvironment(parsed, {
+        codexHome: this.codexHome,
+        ...(this.sqliteHome ? { sqliteHome: this.sqliteHome } : {}),
+      });
       if (identity.threadId) this.set(identity.threadId, environment);
       return environment;
     } catch (error) {
       if (!(error instanceof MissingTrustedCodexEnvironmentError) || !identity.threadId) throw error;
-      const hasCurrentContext = hasCurrentChatGptEnvironmentContext(parsed);
       const lineage = extractChatGptThreadSpawnLineage(parsed);
-      const currentCompaction = hasCurrentContext && isChatGptCompactionContinuation(parsed);
-      const historicalMessages = hasCurrentContext && !currentCompaction && lineage
-        ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
-      const steeringClaim = hasCurrentContext && !currentCompaction
-        ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
-      const refreshClaims = hasCurrentContext && !currentCompaction
-        ? extractChatGptEnvironmentRefreshClaims(parsed) : undefined;
-      if (hasCurrentContext && !currentCompaction && !historicalMessages && !steeringClaim && !refreshClaims) throw error;
-      const currentClaims = currentCompaction ? [extractChatGptContinuationEnvironmentClaim(parsed)]
-        : refreshClaims ?? (steeringClaim ? [steeringClaim] : []);
-      const rolloutIdentity = lineage ?? extractChatGptRootThreadMetadata(parsed);
-      // Automatic compaction has a current turn_context; standalone compaction has only its
-      // source turn_context. Either must be the latest native record, never an arbitrary ancestor.
-      const compactionSourceTurnId = parsed._compactionRequest
-        ? extractChatGptCompactionSourceRevision(parsed).turnId : undefined;
-      if (rolloutIdentity && identity.turnId) {
-        const rolloutEnvironment = resolveCurrentCodexRolloutEnvironment({
-          codexHome: this.codexHome,
-          ...(this.sqliteHome ? { sqliteHome: this.sqliteHome } : {}),
-          lineage: rolloutIdentity,
-          turnId: identity.turnId,
-          ...(compactionSourceTurnId ? { compactionSourceTurnId } : {}),
-          ...(historicalMessages ? { historicalEnvironmentMessages: historicalMessages } : {}),
-          tools: parsed.context.tools,
-        });
-        if (rolloutEnvironment) {
-          if (currentClaims.some(claim => !sameAuthority(claim, rolloutEnvironment))) {
-            throw new Error(`${currentCompaction ? "Compaction continuation" : refreshClaims ? "Native refresh" : "Steering"} environment conflicts with its current Codex rollout`);
-          }
-          this.set(rolloutIdentity.threadId, rolloutEnvironment);
-          return rolloutEnvironment;
-        }
-      }
       // Only a current native rollout can supersede an unrecognized historical envelope. Without
       // that proof, do not turn arbitrary history or an invalid update into cached authority.
       if (hasRawChatGptEnvironmentContext(parsed)) throw error;

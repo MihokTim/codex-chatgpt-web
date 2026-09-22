@@ -14,7 +14,14 @@ import { basename, isAbsolute, join, relative, resolve, toNamespacedPath } from 
 import { isDeepStrictEqual } from "node:util";
 import { expandUserPath } from "../../config";
 import { findTopLevelAssignment } from "../../codex-integration-document";
-import type { CodexTool } from "../../types";
+import type { CodexParsedRequest, CodexTool } from "../../types";
+import {
+  extractChatGptCompactionSourceRevision,
+  extractChatGptRootThreadMetadata,
+  extractChatGptThreadSpawnLineage,
+  extractChatGptTurnIdentity,
+} from "./environment";
+import { planChatGptEnvironmentResolution, sameChatGptEnvironmentAuthority } from "./environment-resolution-policy";
 import type {
   ChatGptRootThreadMetadata,
   ChatGptThreadSpawnLineage,
@@ -23,6 +30,38 @@ import type {
 } from "./environment";
 
 type RolloutIdentity = ChatGptRootThreadMetadata | ChatGptThreadSpawnLineage;
+
+/** Shared request resolution; native deliveries always require their canonical destination. */
+export function resolveChatGptRequestEnvironment(parsed: CodexParsedRequest, options: {
+  codexHome: string;
+  sqliteHome?: string;
+  nativeDelegations?: Record<string, unknown>[];
+}): ChatGptTurnEnvironment {
+  const plan = planChatGptEnvironmentResolution(parsed);
+  if (plan.kind === "trusted" && !options.nativeDelegations) return plan.environment;
+  const identity = extractChatGptTurnIdentity(parsed);
+  const lineage = extractChatGptThreadSpawnLineage(parsed) ?? extractChatGptRootThreadMetadata(parsed);
+  // Standalone compaction can authenticate only its latest source turn, never an arbitrary ancestor.
+  const compactionSourceTurnId = parsed._compactionRequest
+    ? extractChatGptCompactionSourceRevision(parsed).turnId : undefined;
+  const environment = lineage && identity.turnId ? resolveCurrentCodexRolloutEnvironment({
+    ...options, lineage, turnId: identity.turnId, tools: parsed.context.tools,
+    ...(compactionSourceTurnId ? { compactionSourceTurnId } : {}),
+    ...(plan.historicalEnvironmentMessages ? { historicalEnvironmentMessages: plan.historicalEnvironmentMessages } : {}),
+  }) : undefined;
+  if (environment) {
+    if (plan.claims.some(claim => !sameChatGptEnvironmentAuthority(claim, environment))) {
+      throw new Error(options.nativeDelegations
+        ? "Codex app delegation environment conflicts with its native destination"
+        : `${plan.conflictLabel} environment conflicts with its current Codex rollout`);
+    }
+    return environment;
+  }
+  if (options.nativeDelegations) throw new Error("Codex app delegation requires its native destination rollout");
+  // The store alone may carry prior authority forward, and only when no raw update is present.
+  if (plan.kind === "rollout") throw plan.missingError;
+  return plan.environment;
+}
 
 const CODEX_ID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const CODEX_ID = new RegExp(`^${CODEX_ID_SOURCE}$`, "i");

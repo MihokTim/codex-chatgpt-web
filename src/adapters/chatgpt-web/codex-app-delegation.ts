@@ -1,16 +1,12 @@
 import { getCodexHome } from "../../codex-integration-shared";
-import { resolve, toNamespacedPath } from "node:path";
 import { parseRequest } from "../../responses/parser";
 import type { CodexParsedRequest } from "../../types";
 import {
-  extractChatGptCompactionSourceRevision,
   extractChatGptRootThreadMetadata,
   extractChatGptThreadSpawnLineage,
   extractChatGptTurnIdentity,
-  extractChatGptTurnEnvironment,
-  hasCurrentChatGptEnvironmentContext,
 } from "./environment";
-import { resolveCurrentCodexRolloutEnvironment } from "./codex-rollout-environment";
+import { resolveChatGptRequestEnvironment } from "./codex-rollout-environment";
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -63,25 +59,6 @@ export function normalizeCodexAppDelegations(
     }),
   });
   normalized._replayPrefixLen = parsed._replayPrefixLen;
-  const compactionSourceTurnId = normalized._compactionRequest
-    ? extractChatGptCompactionSourceRevision(normalized).turnId : undefined;
-  const environment = resolveCurrentCodexRolloutEnvironment({
-    codexHome, lineage, turnId: identity.turnId, tools: parsed.context.tools, nativeDelegations: deliveries,
-    ...(compactionSourceTurnId ? { compactionSourceTurnId } : {}),
-  });
-  if (!environment) throw new Error("Codex app delegation requires its native destination rollout");
-  if (hasCurrentChatGptEnvironmentContext(normalized)) {
-    const claim = extractChatGptTurnEnvironment(normalized);
-    const paths = (values: string[]) => values.map(value => process.platform === "win32"
-      ? toNamespacedPath(resolve(value)).toLowerCase() : resolve(value)).sort();
-    const samePaths = (left: string[], right: string[]) => JSON.stringify(paths(left)) === JSON.stringify(paths(right));
-    if (!samePaths([claim.cwd], [environment.cwd]) || !samePaths(claim.roots, environment.roots)
-      || !samePaths(claim.writableRoots, environment.writableRoots)
-      || claim.sandboxPolicy.type !== environment.sandboxPolicy.type
-      || (claim.sandboxPolicy.type !== "dangerFullAccess" && environment.sandboxPolicy.type !== "dangerFullAccess"
-        && claim.sandboxPolicy.networkAccess !== environment.sandboxPolicy.networkAccess)) {
-      throw new Error("Codex app delegation environment conflicts with its native destination");
-    }
-  }
+  resolveChatGptRequestEnvironment(normalized, { codexHome, nativeDelegations: deliveries });
   return normalized;
 }
