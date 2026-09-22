@@ -17,6 +17,7 @@ import {
 } from "./native-compaction-control";
 import type { BrokerToolResult, TurnBroker, TurnBrokerOwner } from "./turn-broker";
 import type { ChatGptTurnSession } from "./turn-execution";
+import { nativeToolResultProof } from "./failed-thinking-recovery";
 
 export const LATEST_USER_PROMPT_MARKER = "CODEX_LATEST_USER_PROMPT_JSON";
 
@@ -193,7 +194,7 @@ export async function settleActiveCompactionSource(
           toolResult(result),
         );
         source.runtime.externalProgress.recordToolResult();
-        source.markResultDelivered(request.callId);
+        source.markResultDelivered(request.callId, nativeToolResultProof(result));
       }
       const browserOutcome = await withCompactionAbort(source.browserOutcome, signal);
       if (browserOutcome.type === "error") throw browserOutcome.error;
@@ -255,7 +256,7 @@ export async function settleActiveZeroRiskCompactionSource(
             : canonical,
         );
         source.runtime.externalProgress.recordToolResult();
-        source.markResultDelivered(request.callId);
+        source.markResultDelivered(request.callId, nativeToolResultProof(result));
       }
       const browserOutcome = await withCompactionAbort(source.browserOutcome, signal);
       if (browserOutcome.type === "error") throw browserOutcome.error;

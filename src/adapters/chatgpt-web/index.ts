@@ -29,7 +29,7 @@ import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { failedThinkingRecoveryPolicy, hasCompleteRecoveryHistory, nativeToolResultProof } from "./failed-thinking-recovery";
-import { retireActiveCompactionBoundary } from "./compaction-source-history";
+import { hasCompleteCompactionHistory, retireActiveCompactionBoundary } from "./compaction-source-history";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnRoundKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
 import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
@@ -1077,6 +1077,11 @@ export function createChatGptWebAdapter(
                   } catch (error) {
                     const retainedKey = source?.conversationKey();
                     if (!retainedKey) throw error;
+                    const canRebuildFailedThinking = !manualRequest
+                      && error instanceof ChatGptWebAdapterError && error.code === "chatgpt_failed_thinking"
+                      && !operationSignal.aborted && !source!.wasCancelled() && !source!.supersededError
+                      && source!.runtime.submission?.phase === "accepted"
+                      && hasCompleteCompactionHistory(parsed, source!);
                     let handoffError = error instanceof Error ? error : new Error(String(error));
                     try {
                       // Operator cancellation ends the logical compaction, but cancel-all must not
@@ -1097,6 +1102,11 @@ export function createChatGptWebAdapter(
                     if (handoffError instanceof ChatGptWebAdapterError
                       && handoffError.code === "compaction_source_unavailable") {
                       return await runFreshCompactionFallback("source_disappeared_before_handoff");
+                    }
+                    if (canRebuildFailedThinking && handoffError === error) {
+                      // One summary-only rebuild after a proven ChatGPT failure. This is inside
+                      // the shared exact-request owner; failure of this fresh summary is terminal.
+                      return await runFreshCompactionFallback("failed_thinking_with_verified_history");
                     }
                     throw handoffError;
                   } finally {
