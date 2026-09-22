@@ -170,6 +170,22 @@ test("assistant tracking rebinds only one proven replacement after React detache
   )).toThrow("2 new conversation turns");
 });
 
+test("ambiguous response identities preserve their phase across IPC without exposing raw IDs", () => {
+  let failure: unknown;
+  try {
+    chatGptReboundTurnIdentity(["private-old-user", "private-preparation-answer"],
+      "private-bound-answer", ["private-remounted-preparation", "private-replacement-answer"]);
+  } catch (error) { failure = error; }
+  expect(failure).toMatchObject({ code: "chatgpt_turn_identity_conflict", status: 502, retryable: false });
+  const message = (failure as Error).message;
+  expect(message).toContain('"stage":"assistant_rebind"');
+  expect(message).toContain('"initialCount":2');
+  expect(message).toContain('"currentCount":2');
+  expect(message).toContain('"bound":');
+  expect(message).not.toContain("private-");
+  expect(message.length).toBeLessThan(1_024);
+});
+
 test("response caching rechecks CSS visibility without requiring a DOM mutation", async () => {
   const { createWindow } = require("@mixmark-io/domino");
   const dom = createWindow();

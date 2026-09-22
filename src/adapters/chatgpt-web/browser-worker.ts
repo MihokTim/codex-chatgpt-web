@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { skillFileTokens, validateSkillFiles } from "./skill-attachments";
@@ -1435,11 +1435,25 @@ export async function setChatGptThinkMode(
 export function chatGptNewTurnIdentity(
   initial: readonly string[],
   current: readonly string[],
+  stage: "new_turn" | "assistant_bind" | "assistant_rebind" = "new_turn",
+  boundIdentity?: string,
 ): string | undefined {
   const previous = new Set(initial);
   const added = current.filter(identity => !previous.has(identity));
   if (added.length > 1) {
-    throw new Error(`ChatGPT exposed ${added.length} new conversation turns for one submitted message`);
+    // Stable, bounded hashes expose remounted/changed identities without persisting raw ChatGPT
+    // message IDs or page text. Keep this in the message: helper IPC does not preserve Error.cause.
+    const hash = (identity: string) => createHash("sha256").update(identity).digest("hex").slice(0, 16);
+    const diagnostic = JSON.stringify({
+      stage, initialCount: initial.length, currentCount: current.length,
+      initial: initial.slice(-16).map(hash), current: current.slice(-16).map(hash),
+      ...(boundIdentity === undefined ? {} : { bound: hash(boundIdentity) }),
+    });
+    throw new ChatGptWebAdapterError(
+      `ChatGPT exposed ${added.length} new conversation turns for one submitted message. `
+      + `The response could not be identified safely. [${diagnostic}]`,
+      { status: 502, errorType: "server_error", code: "chatgpt_turn_identity_conflict", retryable: false },
+    );
   }
   return added[0];
 }
@@ -1450,7 +1464,7 @@ export function chatGptReboundTurnIdentity(
   current: readonly string[],
 ): string | undefined {
   if (current.includes(boundIdentity)) return boundIdentity;
-  return chatGptNewTurnIdentity(initial, current);
+  return chatGptNewTurnIdentity(initial, current, "assistant_rebind", boundIdentity);
 }
 
 export class ChatGptCompletionTracker {
@@ -2986,6 +3000,7 @@ export class ChatGptBrowserWorker {
       const identity = chatGptNewTurnIdentity(
         observationBaseline.initialTurnIdentities,
         state.responseIdentities,
+        "assistant_bind",
       );
       if (progress
         && externalProgress

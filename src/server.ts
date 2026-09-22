@@ -1,8 +1,8 @@
-import { chatGptWebTraceId, createChatGptWebAdapter } from "./adapters/chatgpt-web";
+import { chatGptWebExecutionNamespace, chatGptWebTraceId, createChatGptWebAdapter } from "./adapters/chatgpt-web";
 import { closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worker";
 import { closeTurnBrokers, TurnBroker } from "./adapters/chatgpt-web/turn-broker";
 import { timingSafeEqual } from "node:crypto";
-import { chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
+import { chatGptTurnExecutionKey, chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
 import {
   cancelAllStructuredCompactions,
   cancelStructuredCompactionNativeTurn,
@@ -45,6 +45,7 @@ import {
 } from "./responses/compaction";
 import { parseRequest } from "./responses/parser";
 import { expandPreviousResponseInput, flushResponseState, rememberResponseState } from "./responses/state";
+import { TerminalFailureReplays } from "./responses/terminal-failure-replay";
 import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "./types";
 import type { CodexProviderConfig } from "./types";
 import type { ProviderAdapter } from "./adapters/base";
@@ -352,6 +353,7 @@ export class HttpTurnCounter {
 }
 
 type ChatGptWebAdapterFactory = (provider: CodexProviderConfig) => ProviderAdapter;
+const terminalFailureReplays = new TerminalFailureReplays();
 
 export interface ResponseRequestOptions {
   /** DEV and other in-process harnesses can keep continuation state in their own canonical store. */
@@ -610,6 +612,14 @@ export async function responseRequest(
       headers: { "content-type": "application/json" },
     });
   }
+  // Validate native identity first. A retry can append already-emitted commentary to its input,
+  // so key terminal failures by canonical instruction/execution and conversation epoch, not the
+  // changing round body. Include the public route: Sol Pro and Astra Pro share model/effort.
+  const terminalReplayKey = traceId
+    ? `${chatGptWebExecutionNamespace(provider)}:${route.slug}:${chatGptTurnExecutionKey(parsed)}:${traceId}`
+    : undefined;
+  const terminalReplay = terminalFailureReplays.response(terminalReplayKey);
+  if (terminalReplay) return terminalReplay;
   const adapter = adapterFactory(provider);
   const queue = new AsyncEventQueue<AdapterEvent>();
   const abort = new AbortController();
@@ -618,6 +628,7 @@ export async function responseRequest(
   const run = async () => {
     try {
       await adapter.runTurn!(parsed, { headers: req.headers, abortSignal: abort.signal }, event => {
+        terminalFailureReplays.remember(terminalReplayKey, event);
         options.onAdapterEvent?.(event);
         queue.push(event);
       });
