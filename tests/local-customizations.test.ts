@@ -3,6 +3,7 @@ import { chromium } from "playwright-core";
 import { CHATGPT_WEB_MODEL_ROUTES } from "../src/chatgpt-web-models";
 import { compactionBrowserEffortOverride, selectExplicitWebFamily } from "../src/adapters/chatgpt-web/browser-customizations";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
+import { readJsonRequestBody } from "../src/http-body";
 import { defaultConfig } from "../src/config";
 import { routeChatGptWebRequest } from "../src/server";
 import type { CodexParsedRequest } from "../src/types";
@@ -40,6 +41,14 @@ test("public routes bind explicit browser families without trusting a stale call
     expect(input.modelId).toBe(CHATGPT_WEB_MODEL_ID);
     expect(input.options).toMatchObject({ browserModelFamily: family, reasoning: effort });
   }
+});
+
+test("extended encoded body limit accepts the former boundary but still rejects oversized declarations", async () => {
+  const make = (size: number) => new Request("http://127.0.0.1/v1/responses", {
+    method: "POST", body: "{}", headers: { "content-length": String(size) },
+  });
+  expect(await readJsonRequestBody(make(65 * 1024 * 1024))).toEqual({});
+  await expect(readJsonRequestBody(make(129 * 1024 * 1024))).rejects.toThrow("Encoded request body exceeds");
 });
 
 test("explicit family selection switches actual Chromium DOM radio state and rejects ambiguity", async () => {

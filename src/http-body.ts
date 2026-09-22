@@ -1,5 +1,5 @@
-const MAX_ENCODED_REQUEST_BYTES = 64 * 1024 * 1024;
-const MAX_DECODED_REQUEST_BYTES = 128 * 1024 * 1024;
+const MAX_ENCODED_REQUEST_BYTES = 128 * 1024 * 1024;
+const MAX_DECODED_REQUEST_BYTES = 256 * 1024 * 1024;
 
 function assertWithinLimit(bytes: number, limit: number, label: string): void {
   if (bytes > limit) throw new Error(`${label} exceeds ${limit} bytes`);
