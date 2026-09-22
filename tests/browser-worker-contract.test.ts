@@ -1953,6 +1953,49 @@ test("an aborted connector proof clears its mention before the preflight release
   ]);
 });
 
+test("a transient connector proof miss retries the mention before changing personalization", async () => {
+  const absent = { filter: () => absent, count: async () => 0 };
+  let mentions = 0;
+  let selected = false;
+  let cleanupCalls = 0;
+  let composerText = "";
+  const timeout = new Error("menu not hydrated");
+  timeout.name = "TimeoutError";
+  const appResult = {
+    waitFor: async () => { if (mentions === 1) throw timeout; },
+    count: async () => 1,
+    getAttribute: async () => "",
+  };
+  const composer = {
+    fill: async (text: string) => { composerText = text; },
+    focus: async () => {},
+    pressSequentially: async (text: string) => { composerText = text; mentions++; },
+    evaluate: async () => ({ text: composerText, focused: true }),
+    press: async (key: string) => { expect(key).toBe("Enter"); selected = true; },
+  };
+  const page = {
+    getByRole: () => absent,
+    getByText: () => ({}),
+    locator: (selector: string) => {
+      if (selector.includes("__menu-item")) return { filter: () => appResult };
+      throw new Error("A missing menu is not proof that personalization is disabled");
+    },
+  };
+  const selectConnector = (ChatGptBrowserWorker.prototype as unknown as {
+    selectConnector(page: unknown): Promise<unknown>;
+  }).selectConnector;
+  expect(await selectConnector.call({
+    config: { appName: CHATGPT_CONNECTOR_NAME },
+    activeComposer: async () => composer,
+    connectorIsSelected: async () => selected,
+    selectedConnectorControl: () => ({ waitFor: async () => {} }),
+    clearChatGptComposerState: async () => { cleanupCalls++; composerText = ""; },
+  }, page)).toBe(composer);
+  expect(mentions).toBe(3); // Two proof probes, then one actual selection.
+  expect(cleanupCalls).toBe(2);
+  expect(selected).toBeTrue();
+});
+
 test("a lost connector mention cannot be used as evidence to change personalization", async () => {
   const absent = { filter: () => absent, count: async () => 0 };
   const timeout = new Error("menu absent");

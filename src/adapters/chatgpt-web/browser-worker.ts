@@ -1283,6 +1283,8 @@ interface ChatGptAssistantTurnBinding {
   identity: string;
   locator: Locator;
   acceptedTurnIdentities: readonly string[];
+  /** Proven newly submitted user turn; its outer container survives message virtualization. */
+  userIdentity?: string;
 }
 
 interface ChatGptSubmissionDomState {
@@ -1465,6 +1467,33 @@ export function chatGptReboundTurnIdentity(
 ): string | undefined {
   if (current.includes(boundIdentity)) return boundIdentity;
   return chatGptNewTurnIdentity(initial, current, "assistant_rebind", boundIdentity);
+}
+
+/** Follow the submitted user, not every assistant ID absent from a historical snapshot. */
+export function chatGptAssistantIdentityAfterUser(
+  state: Pick<ChatGptSubmissionDomState, "turnIdentities" | "userIdentities" | "responseIdentities">,
+  userIdentity: string,
+): string | undefined {
+  const index = state.turnIdentities.indexOf(userIdentity);
+  // A detached user section is fine only while its proven logical container still exists.
+  // Losing that anchor is not permission to adopt the latest unowned answer.
+  if (index < 0) return undefined;
+  const following = state.turnIdentities.slice(index + 1);
+  const afterUser = new Set(following);
+  if (state.userIdentities.some(identity => afterUser.has(identity))) {
+    throw new ChatGptWebAdapterError("ChatGPT opened another user turn after the submitted request.", {
+      status: 502, errorType: "server_error", code: "chatgpt_turn_identity_conflict", retryable: false,
+    });
+  }
+  const answers = state.responseIdentities.filter(identity => afterUser.has(identity));
+  if (answers.length === 0) return undefined;
+  if (following.length !== 1 || answers.length !== 1) {
+    throw new ChatGptWebAdapterError(
+      `ChatGPT exposed ambiguous response ownership after the submitted user (containers=${following.length}, answers=${answers.length}).`,
+      { status: 502, errorType: "server_error", code: "chatgpt_turn_identity_conflict", retryable: false },
+    );
+  }
+  return answers[0];
 }
 
 export class ChatGptCompletionTracker {
@@ -2997,11 +3026,10 @@ export class ChatGptBrowserWorker {
       // acknowledging its boundary; the pre-probe snapshot can otherwise leave the broker waiting
       // despite this exact iteration having successfully observed the page.
       progress = externalProgress?.snapshot();
-      const identity = chatGptNewTurnIdentity(
-        observationBaseline.initialTurnIdentities,
-        state.responseIdentities,
-        "assistant_bind",
-      );
+      const userIdentity = chatGptNewTurnIdentity(observationBaseline.initialTurnIdentities, state.userIdentities);
+      const identity = userIdentity
+        ? chatGptAssistantIdentityAfterUser(state, userIdentity)
+        : chatGptNewTurnIdentity(observationBaseline.initialTurnIdentities, state.responseIdentities, "assistant_bind");
       if (progress
         && externalProgress
         && completionTracker?.needsToolBatchObservation(progress.lastToolBatchRevision)) {
@@ -3018,6 +3046,7 @@ export class ChatGptBrowserWorker {
         identity,
         locator: observationPage.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
         acceptedTurnIdentities: state.turnIdentities,
+        ...(userIdentity ? { userIdentity } : {}),
       };
       // A delayed renderer wake can cross the grace while the assistant appears. Only a fresh
       // observation can prove it is still missing; the explicit turn deadline remains above.
@@ -3052,16 +3081,15 @@ export class ChatGptBrowserWorker {
     if (state.userIdentities.some(identity => !acceptedTurns.has(identity))) {
       throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
     }
-    const identity = chatGptReboundTurnIdentity(
-      baseline.initialTurnIdentities,
-      binding.identity,
-      state.responseIdentities,
-    );
+    const identity = binding.userIdentity
+      ? chatGptAssistantIdentityAfterUser(state, binding.userIdentity)
+      : chatGptReboundTurnIdentity(baseline.initialTurnIdentities, binding.identity, state.responseIdentities);
     if (!identity || identity === binding.identity) return binding;
     return {
       identity,
       locator: page.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
       acceptedTurnIdentities: state.turnIdentities,
+      ...(binding.userIdentity ? { userIdentity: binding.userIdentity } : {}),
     };
   }
 
@@ -3226,39 +3254,49 @@ export class ChatGptBrowserWorker {
         let proofResult: boolean | undefined;
         let proofError: unknown;
         try {
-          composer = await this.activeComposer(page, 30_000, personalizationSignal);
-          await composer.fill("", {
-            signal: personalizationSignal,
-            timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-          });
-          await composer.focus({
-            signal: personalizationSignal,
-            timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-          });
-          await withBrowserTurnAbort(settleChatGptUi(), personalizationSignal);
-          await composer.pressSequentially(CHATGPT_CONNECTOR_MENTION_QUERY, {
-            delay: 25,
-            signal: personalizationSignal,
-            timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-          });
-          await capture("personalization-proof-mention-triggered");
-          try {
-            await appResult.waitFor({ state: "visible", timeout: 2_500, signal: personalizationSignal });
-            proofResult = true;
-            await capture("personalization-proof-menu-visible");
-          } catch (error) {
-            if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
-            proofResult = false;
-            await capture("personalization-proof-menu-missing");
-            const mention = await composer.evaluate(element => ({
-              text: element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement
-                ? element.value : element.textContent ?? "",
-              focused: element === document.activeElement,
-            }), undefined, { timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS, signal: personalizationSignal });
-            if (mention.text !== CHATGPT_CONNECTOR_MENTION_QUERY) {
-              throw new ChatGptPromptAttachmentIntegrityError(
-                `ChatGPT did not preserve the connector mention (expectedChars=${CHATGPT_CONNECTOR_MENTION_QUERY.length}, actualChars=${mention.text.length}, focused=${mention.focused})`,
-              );
+          // The mention menu can miss its first hydration while several fresh tabs start.
+          // Re-trigger a verified empty composer before treating a missing menu as disabled
+          // personalization. This is pre-submit UI work, never a model-request replay.
+          for (let proofAttempt = 0; proofAttempt < MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS; proofAttempt += 1) {
+            composer = await this.activeComposer(page, 30_000, personalizationSignal);
+            await composer.fill("", {
+              signal: personalizationSignal,
+              timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+            });
+            await composer.focus({
+              signal: personalizationSignal,
+              timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+            });
+            await withBrowserTurnAbort(settleChatGptUi(), personalizationSignal);
+            await composer.pressSequentially(CHATGPT_CONNECTOR_MENTION_QUERY, {
+              delay: 25,
+              signal: personalizationSignal,
+              timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
+            });
+            await capture("personalization-proof-mention-triggered");
+            try {
+              await appResult.waitFor({ state: "visible", timeout: 2_500, signal: personalizationSignal });
+              proofResult = true;
+              await capture("personalization-proof-menu-visible");
+              break;
+            } catch (error) {
+              if (!(error instanceof Error) || error.name !== "TimeoutError") throw error;
+              proofResult = false;
+              await capture("personalization-proof-menu-missing");
+              const mention = await composer.evaluate(element => ({
+                text: element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement
+                  ? element.value : element.textContent ?? "",
+                focused: element === document.activeElement,
+              }), undefined, { timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS, signal: personalizationSignal });
+              if (mention.text !== CHATGPT_CONNECTOR_MENTION_QUERY) {
+                throw new ChatGptPromptAttachmentIntegrityError(
+                  `ChatGPT did not preserve the connector mention (expectedChars=${CHATGPT_CONNECTOR_MENTION_QUERY.length}, actualChars=${mention.text.length}, focused=${mention.focused})`,
+                );
+              }
+              if (proofAttempt + 1 < MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS) {
+                await this.clearChatGptComposerState(page);
+                await capture("personalization-proof-retry");
+              }
             }
           }
         } catch (error) {

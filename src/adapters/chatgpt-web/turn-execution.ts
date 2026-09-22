@@ -168,6 +168,8 @@ function executionKey(parsed: CodexParsedRequest, payload: unknown): string {
   return createHash("sha256").update(JSON.stringify({
     modelId: parsed.modelId,
     reasoning: parsed.options.reasoning,
+    // Astra Pro and Sol Pro share the adapter model/effort, but must not share a browser execution.
+    browserModelFamily: parsed.options.browserModelFamily,
     payload,
   })).digest("hex");
 }
