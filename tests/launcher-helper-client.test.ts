@@ -259,6 +259,7 @@ test("launcher helper protocol preserves multipart context and the compaction fl
   const internal = client as unknown as {
     pending: Map<string, { resolve(value: string): void }>;
     child?: unknown;
+    helperFeatures: Set<string>;
     ensureChild(): Promise<void>;
     send(message: Record<string, unknown>): Promise<void>;
     finish(id: string): void;
@@ -266,6 +267,7 @@ test("launcher helper protocol preserves multipart context and the compaction fl
   };
   const child = {};
   internal.child = child;
+  internal.helperFeatures = new Set(["multipart-2-6"]);
   internal.ensureChild = async () => {};
   internal.send = async message => {
     sent.push(message);
@@ -315,6 +317,130 @@ test("launcher helper protocol preserves multipart context and the compaction fl
         multipart: { parts: Array.from({ length: 6 }, (_, index) => JSON.stringify({ part: index + 1 })), commit: "commit" },
         trimmedCompactionMessages: 4,
     },
+  });
+});
+
+test("a six-part prompt rejects an older helper before sending the prepared payload", async () => {
+  const sent: Record<string, unknown>[] = [];
+  let released = false;
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2 DEV",
+    browserHost: "launcher",
+    browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused-state.json",
+    chromeExecutablePath: "/durable/unused-chrome",
+    turnTimeoutMs: 60_000,
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  const internal = client as unknown as {
+    child?: unknown;
+    helperFeatures: Set<string>;
+    ensureChild(): Promise<void>;
+    send(message: Record<string, unknown>): Promise<void>;
+    handleLine(child: unknown, line: string): void;
+  };
+  const child = {};
+  internal.child = child;
+  internal.helperFeatures = new Set(["multipart-stage-ack"]);
+  internal.ensureChild = async () => {};
+  internal.send = async message => {
+    sent.push(message);
+    if (typeof message.id !== "string") return;
+    if (message.type === "run") {
+      queueMicrotask(() => internal.handleLine(child, JSON.stringify({
+        type: "event",
+        id: message.id,
+        event: "prepared_selected",
+        reused: false,
+      })));
+    } else if (message.type === "abort") {
+      queueMicrotask(() => internal.handleLine(child, JSON.stringify({
+        type: "error",
+        id: message.id,
+        message: "aborted after incompatible prompt negotiation",
+      })));
+    }
+  };
+
+  await expect(client.run({
+    traceId: "multipart-skew-123",
+    modelId: "gpt-5.6-sol",
+    reasoning: "high",
+    capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    prepare: async () => ({
+      text: "commit",
+      images: [],
+      multipart: { parts: Array.from({ length: 6 }, (_, index) => `part ${index + 1}`), commit: "commit" },
+      release: () => { released = true; },
+    }),
+    onTextDelta() {},
+  })).rejects.toThrow("does not support six-part Bigger Context prompts");
+
+  expect(sent.map(message => message.type)).toEqual(["run", "abort"]);
+  expect(sent.some(message => message.type === "prepared_selected_ack")).toBe(false);
+  expect(released).toBe(true);
+});
+
+test("a two-part prompt remains compatible with an older multipart helper", async () => {
+  const sent: Record<string, unknown>[] = [];
+  const client = new LauncherBrowserHelperClient({
+    appName: "Codex Native2 DEV",
+    browserHost: "launcher",
+    browserHostDescriptorPath: "/durable/launcher.json",
+    storageStatePath: "/durable/unused-state.json",
+    chromeExecutablePath: "/durable/unused-chrome",
+    turnTimeoutMs: 60_000,
+    headed: true,
+    autoApproveToolCalls: false,
+  });
+  const internal = client as unknown as {
+    child?: unknown;
+    helperFeatures: Set<string>;
+    ensureChild(): Promise<void>;
+    send(message: Record<string, unknown>): Promise<void>;
+    handleLine(child: unknown, line: string): void;
+  };
+  const child = {};
+  internal.child = child;
+  internal.helperFeatures = new Set(["multipart-stage-ack"]);
+  internal.ensureChild = async () => {};
+  internal.send = async message => {
+    sent.push(message);
+    if (typeof message.id !== "string") return;
+    if (message.type === "run") {
+      queueMicrotask(() => internal.handleLine(child, JSON.stringify({
+        type: "event",
+        id: message.id,
+        event: "prepared_selected",
+        reused: false,
+      })));
+    } else if (message.type === "prepared_selected_ack") {
+      queueMicrotask(() => internal.handleLine(child, JSON.stringify({
+        type: "result",
+        id: message.id,
+        text: "done",
+      })));
+    }
+  };
+
+  await expect(client.run({
+    traceId: "multipart-two-part-123",
+    modelId: "gpt-5.6-sol",
+    reasoning: "high",
+    capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
+    prepare: async () => ({
+      text: "commit",
+      images: [],
+      multipart: { parts: ["part one", "part two"], commit: "commit" },
+      release() {},
+    }),
+    onTextDelta() {},
+  })).resolves.toBe("done");
+
+  expect(sent.map(message => message.type)).toEqual(["run", "prepared_selected_ack"]);
+  expect(sent[1]).toMatchObject({
+    prepared: { multipart: { parts: ["part one", "part two"], commit: "commit" } },
   });
 });
 

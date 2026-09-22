@@ -530,6 +530,11 @@ export class LauncherBrowserHelperClient {
           if (prepared.skillFiles?.length && !this.helperFeatures.has("skill-attachments")) {
             throw new Error("Launcher browser helper does not support skill attachments; update or restart the launcher");
           }
+          if (prepared.multipart?.parts.length === 6 && !this.helperFeatures.has("multipart-2-6")) {
+            throw new Error(
+              "Launcher browser helper does not support six-part Bigger Context prompts; update or restart the launcher",
+            );
+          }
           return Promise.resolve(pending.turn.onPreparedSelected?.(message.reused)).then(() => {
             if (this.pending.get(message.id) !== pending) return;
             return this.send({
