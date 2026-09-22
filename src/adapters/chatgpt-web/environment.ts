@@ -292,8 +292,9 @@ export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRe
   const body = record(parsed._rawBody);
   const updates = (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
     const item = record(value);
-    if (item?.type !== "message" || item.role !== "user" || itemTurnId(item) !== turnId
-      || typeof item.id !== "string" || !item.id) return [];
+    // Compaction can rebuild an envelope without an item id. Its current-turn provenance and
+    // the caller's exact native rollout comparison authenticate the claim, not a message id.
+    if (!turnId || item?.type !== "message" || item.role !== "user" || itemTurnId(item) !== turnId) return [];
     // Native compaction groups plugins, instructions and environment into sibling content parts.
     // Read the environment part without treating the surrounding preamble as part of its XML.
     const parts = typeof item.content === "string" ? [item.content]
@@ -304,8 +305,13 @@ export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRe
       return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text) ? [text] : [];
     });
   });
-  if (updates.length !== 1) throw new Error("Compaction continuation requires one current native environment claim");
-  return parseChatGptEnvironmentText(parsed, updates[0]!);
+  // Replaying the same envelope does not create a second authority. Distinct claims remain
+  // ambiguous and must not be resolved by arbitrarily trusting the first or last message.
+  const claims = [...new Set(updates)];
+  if (claims.length !== 1) {
+    throw new Error(`Compaction continuation requires one current native environment claim (found ${claims.length} distinct claims in ${updates.length} envelopes)`);
+  }
+  return parseChatGptEnvironmentText(parsed, claims[0]!);
 }
 
 /**
@@ -556,6 +562,10 @@ function hasAssistantOutputBetween(input: unknown[], startIndex: number, endInde
 }
 
 function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
+  // Rebuilt grouped preambles can look like adjacent user instructions, especially when
+  // replayed. A checkpoint continuation must use the store's current-rollout verification
+  // even if that shape happens to satisfy the ordinary environment/prompt adjacency checks.
+  if (isChatGptCompactionContinuation(parsed)) return undefined;
   const body = record(parsed._rawBody);
   const input = Array.isArray(body?.input) ? body.input : [];
   const metadata = clientTurnMetadata(parsed);

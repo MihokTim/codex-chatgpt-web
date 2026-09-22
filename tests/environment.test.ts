@@ -938,7 +938,8 @@ describe("trusted Codex task environment continuity", () => {
     }
   });
 
-  for (const format of ["v1", "v2"]) for (const groupedPreamble of [false, true]) test(`${format} ${groupedPreamble ? "grouped preamble" : "context-only"} continuation requires a matching current rollout, not just a checkpoint`, () => {
+  for (const format of ["v1", "v2"]) for (const groupedPreamble of [false, true])
+    for (const environmentId of ["msg_current_environment", undefined, null]) test(`${format} ${groupedPreamble ? "grouped preamble" : "context-only"} continuation with ${environmentId === undefined ? "omitted" : environmentId === null ? "null" : "present"} environment id requires a matching current rollout, not just a checkpoint`, () => {
     const { codexHome, request, rolloutPath } = resumedRootFixture();
     const body = request._rawBody as { input: Array<Record<string, unknown>> };
     const oldTurnId = "01a06c66-0000-75c6-a0df-318f890ef6de";
@@ -949,7 +950,7 @@ describe("trusted Codex task environment continuity", () => {
     ], summary);
     const environmentPart = { type: "input_text", text: environmentXml };
     const current = {
-      type: "message", role: "user", id: "msg_current_environment",
+      type: "message", role: "user", ...(environmentId !== undefined ? { id: environmentId } : {}),
       content: groupedPreamble ? [
         { type: "input_text", text: "<recommended_plugins>Example plugin</recommended_plugins>" },
         { type: "input_text", text: "# AGENTS.md instructions\n<INSTRUCTIONS>Keep existing changes.</INSTRUCTIONS>" },
@@ -965,6 +966,30 @@ describe("trusted Codex task environment continuity", () => {
     body.input.push(checkpoint);
     const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
     expect(store.resolve(request).cwd).toBe(root);
+    // A parent's compacted continuation must keep resolving while it awaits a child, and
+    // a child completion must not replace the retained human instruction or environment.
+    body.input.push({ type: "function_call", call_id: "pending_child_wait", name: "multi_agent_v2__wait_agent",
+      arguments: JSON.stringify({ targets: ["reviewer"], timeout_ms: 10_000 }) });
+    expect(store.resolve(request).cwd).toBe(root);
+    body.input.push({ type: "function_call_output", call_id: "pending_child_wait", output: "Reviewer completed" },
+      format === "v2"
+        ? { type: "agent_message", id: "child_completion", author: "/root/reviewer", recipient: "/root", content: "Review completed" }
+        : { type: "message", role: "user", id: "child_completion", content: [
+          { type: "input_text", text: "<subagent_notification>Review completed</subagent_notification>" },
+        ], internal_chat_message_metadata_passthrough: { turn_id: rolloutTurnId } });
+    const completedHistory = structuredClone(body.input);
+    expect(store.resolve(request).cwd).toBe(root);
+    expect(body.input).toEqual(completedHistory);
+    body.input.splice(-3);
+    // Replayed copies describe one claim; message ids are not filesystem authority.
+    body.input.unshift(structuredClone(current));
+    expect(store.resolve(request).cwd).toBe(root);
+    body.input.shift();
+    const conflictingCopy = structuredClone(current);
+    conflictingCopy.content = [{ type: "input_text", text: environmentXml.replaceAll(root, resolve(root, "conflicting-workspace")) }];
+    body.input.unshift(conflictingCopy);
+    expect(() => store.resolve(request)).toThrow();
+    body.input.shift();
     for (const text of [
       environmentXml.replaceAll(root, resolve(root, "another-workspace")),
       environmentXml.replace('<permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile>',
