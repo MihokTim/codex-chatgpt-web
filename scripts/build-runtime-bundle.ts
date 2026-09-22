@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   copyFileSync,
@@ -16,6 +17,21 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { VERSION } from "../src/version";
 
 const root = resolve(import.meta.dir, "..");
+function sourceIdentity(): { commit: string; tree: string; clean: boolean } | null {
+  const git = (args: string[]) => {
+    const result = spawnSync("git", ["-C", root, ...args], { encoding: "utf8", windowsHide: true });
+    return result.status === 0 ? result.stdout.trim() : undefined;
+  };
+  const commit = git(["rev-parse", "HEAD"]);
+  const tree = git(["rev-parse", "HEAD^{tree}"]);
+  const status = git(["status", "--porcelain", "--untracked-files=normal"]);
+  if (!commit || !tree || status === undefined) return null;
+  return { commit, tree, clean: status === "" };
+}
+const source = sourceIdentity();
+if (process.env.CODEX_CHATGPT_WEB_REQUIRE_CLEAN_SOURCE === "1" && !source?.clean) {
+  throw new Error("Deployment runtime requires a clean committed source checkout");
+}
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
   version?: string;
   packageManager?: string;
@@ -141,6 +157,10 @@ if (notices.exitCode !== 0) {
 copyFileSync(join(root, "LICENSE"), join(output, "LICENSE"));
 cpSync(join(root, "LICENSES"), join(output, "LICENSES"), { recursive: true });
 copyFileSync(join(root, "fork-metadata.json"), join(output, "fork-metadata.json"));
+if (JSON.stringify(sourceIdentity()) !== JSON.stringify(source)) {
+  throw new Error("Source checkout changed during runtime build; discard this candidate and rebuild");
+}
+writeFileSync(join(output, "build-source.json"), `${JSON.stringify({ schemaVersion: 1, source }, null, 2)}\n`);
 
 interface RuntimeManifestFile {
   path: string;
