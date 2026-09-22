@@ -16,7 +16,7 @@ import {
 } from "../../config";
 import { estimateTokens } from "../../lib/token-estimate";
 import { CHATGPT_FAILED_THINKING_LABELS, CHATGPT_STOPPED_THINKING_LABELS } from "./ui-labels";
-import { selectExplicitWebFamily } from "./browser-customizations";
+import { focusChatGptEffortControl, selectExplicitWebFamily, verifyExplicitWebFamily } from "./browser-customizations";
 import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
 import {
@@ -60,6 +60,7 @@ import {
   CHATGPT_TEMPORARY_CHAT_URL,
   CHATGPT_USER_TURN_SELECTOR,
   activateChatGptEffortMenu,
+  chatGptEffortMenuForControl,
   detectChatGptAccountCapabilities,
   parseChatGptEffortSliderState,
 } from "../../chatgpt-session";
@@ -842,7 +843,11 @@ export class ChatGptSubmissionRejectionObserver {
 }
 
 type SelectedChatGptWebModelMode = ChatGptWebModelMode & {
-  selection?: { url: string; label: string };
+  selection?: {
+    url: string;
+    label: string;
+    browserFamily?: "sol" | "latest";
+  };
 };
 
 export async function throwIfChatGptTerminalErrorAlert(scope: ChatGptTextScope): Promise<void> {
@@ -1264,6 +1269,7 @@ interface ChatGptSubmissionBaseline {
   userTurns: Locator;
   responseTurns: Locator;
   initialTurnIdentities: readonly string[];
+  initialAssistantTurnCount: number;
   domCache: ChatGptSubmissionDomCache;
 }
 
@@ -1975,6 +1981,10 @@ class ChatGptBrowserDiagnostics {
                 min: integerAttribute(element, "aria-valuemin"),
                 max: integerAttribute(element, "aria-valuemax"),
                 value: integerAttribute(element, "aria-valuenow"),
+                ownerFocused: element.closest('[role="menuitem"]')?.contains(document.activeElement) ?? false,
+                ownerTabIndex: element.closest('[role="menuitem"]')?.getAttribute("tabindex") ?? null,
+                inert: element.closest('[inert]') !== null,
+                disabled: element.closest('[aria-disabled="true"]') !== null,
               })),
             menus: rows('[role="menu"], [role="listbox"], [data-testid="composer-intelligence-picker-content"]', 20),
             connectorRows: exactConnectorRows.slice(-20).map(element => {
@@ -2467,6 +2477,7 @@ export class ChatGptBrowserWorker {
     reasoning: string | undefined,
     capabilities: ChatGptWebCapabilities,
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    recoveryAttempt = 0,
   ): Promise<SelectedChatGptWebModelMode> {
     const mode = resolveChatGptWebModelMode(modelId, reasoning, capabilities);
     const controlError = (stage: string, diagnostic: string, detail?: string,
@@ -2492,6 +2503,14 @@ export class ChatGptBrowserWorker {
       return mode;
     }
     const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).last();
+    // Recover only the controls on this document. In particular, do not replay
+    // a Bigger Context preparation message or restart the browser turn.
+    const recoverControls = async (): Promise<SelectedChatGptWebModelMode> => {
+      await captureDiagnostic?.("effort-controls-reopening");
+      await page.keyboard.press("Escape");
+      await settleChatGptUi();
+      return this.selectModelAndEffort(page, modelId, reasoning, capabilities, captureDiagnostic, recoveryAttempt + 1);
+    };
     const effortWaitAbort = new AbortController();
     try {
       const ready = await Promise.race([
@@ -2512,13 +2531,23 @@ export class ChatGptBrowserWorker {
     await throwIfChatGptRateLimitDialog(page);
     await captureDiagnostic?.("effort-control-ready");
     await throwIfChatGptRateLimitDialog(page);
-    const activation = await activateChatGptEffortMenu(page, currentEffort);
+    let activation = await activateChatGptEffortMenu(page, currentEffort);
     if (activation.method === "pointerdown") {
       await captureDiagnostic?.("effort-menu-pointerdown-fallback");
     }
     await captureDiagnostic?.("effort-menu-open-requested");
     if (capabilities.browserModelFamily) {
       mode.browserFamily = await selectExplicitWebFamily(page, activation, capabilities.browserModelFamily);
+      const familyToggle = activation.menu.locator('[data-model-selection-view] [role="menuitem"][aria-expanded]');
+      if (await familyToggle.getAttribute("aria-expanded") === "true") {
+        // The advanced panel makes both the slider and its old toggle inert.
+        // Close the owned menu normally, then reacquire its default/simple view.
+        await captureDiagnostic?.("family-panel-return-to-effort");
+        await page.keyboard.press("Escape");
+        await settleChatGptUi();
+        activation = await activateChatGptEffortMenu(page, currentEffort);
+        await verifyExplicitWebFamily(activation.menu, capabilities.browserModelFamily);
+      }
     }
     const effortSlider = activation.slider;
     const sliderContainer = activation.sliderContainer;
@@ -2568,6 +2597,23 @@ export class ChatGptBrowserWorker {
     const sliderControl = effortSlider.locator("xpath=ancestor::*[@role='menuitem'][1]");
     while (sliderState.value !== targetValue) {
       await throwIfChatGptRateLimitDialog(page);
+      await throwIfChatGptSessionFailureAlert(page);
+      if (!await focusChatGptEffortControl(sliderControl)) {
+        await captureDiagnostic?.("effort-focus-unavailable");
+        if (recoveryAttempt === 0) return recoverControls();
+        throw controlError("effort-focus", "ChatGPT effort control did not retain keyboard focus after reopening");
+      }
+      // Focus/menu hydration may have replaced the control or changed its state.
+      const focusedState = parseChatGptEffortSliderState(
+        await effortSlider.getAttribute("aria-valuemin"),
+        await effortSlider.getAttribute("aria-valuemax"),
+        await effortSlider.getAttribute("aria-valuenow"),
+      );
+      if (!focusedState || focusedState.min !== sliderState.min || focusedState.max !== sliderState.max) {
+        throw controlError("effort-range", "ChatGPT effort range changed while focusing the control");
+      }
+      sliderState = focusedState;
+      if (sliderState.value === targetValue) break;
       const direction = targetValue > sliderState.value ? 1 : -1;
       const key = direction > 0 ? "ArrowRight" : "ArrowLeft";
       const previousValue = sliderState.value;
@@ -2588,6 +2634,10 @@ export class ChatGptBrowserWorker {
         await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
       } while (Date.now() < changeDeadline);
       if (sliderState.value !== previousValue + direction) {
+        await throwIfChatGptRateLimitDialog(page);
+        await throwIfChatGptSessionFailureAlert(page);
+        await captureDiagnostic?.("effort-step-not-applied");
+        if (sliderState.value === previousValue && recoveryAttempt === 0) return recoverControls();
         throw controlError("effort-step",
           `ChatGPT effort slider did not move exactly one step with ${key}`
           + ` (before=${previousValue}; after=${sliderState.value})`,
@@ -2595,6 +2645,9 @@ export class ChatGptBrowserWorker {
       }
     }
     await settleChatGptUi();
+    if (capabilities.browserModelFamily) {
+      await verifyExplicitWebFamily(activation.menu, capabilities.browserModelFamily);
+    }
     const selectedState = parseChatGptEffortSliderState(
       await effortSlider.getAttribute("aria-valuemin"),
       await effortSlider.getAttribute("aria-valuemax"),
@@ -2602,7 +2655,7 @@ export class ChatGptBrowserWorker {
     );
     if (!selectedState || selectedState.min !== sliderState.min
       || selectedState.max !== sliderState.max || selectedState.value !== targetValue) {
-      throw chatGptModelControlUnavailableAdapterError("ChatGPT changed its effort range or selection before the menu closed");
+      throw controlError("effort-verification", "ChatGPT effort changed during final model family verification");
     }
     await captureDiagnostic?.("effort-selected");
     await page.keyboard.press("Escape");
@@ -2611,7 +2664,11 @@ export class ChatGptBrowserWorker {
     // closed label and reopen the menu once to prove the selection survived the commit.
     const selectedMode: SelectedChatGptWebModelMode = {
       ...mode,
-      selection: { url: selectionUrl, label: (await currentEffort.innerText()).trim() },
+      selection: {
+        url: selectionUrl,
+        label: (await currentEffort.innerText()).trim(),
+        ...(capabilities.browserModelFamily ? { browserFamily: capabilities.browserModelFamily } : {}),
+      },
     };
     await this.assertSelectedEffort(page, selectedMode);
     const confirmation = await activateChatGptEffortMenu(page, currentEffort);
@@ -2623,7 +2680,7 @@ export class ChatGptBrowserWorker {
     );
     if (!confirmedState || confirmedState.min !== selectedState.min
       || confirmedState.max !== selectedState.max || confirmedState.value !== targetValue) {
-      throw chatGptModelControlUnavailableAdapterError("ChatGPT did not persist the requested effort after closing its menu");
+      throw controlError("effort-persistence", "ChatGPT did not persist the requested effort after closing its menu");
     }
     await page.keyboard.press("Escape");
     await settleChatGptUi();
@@ -2638,15 +2695,21 @@ export class ChatGptBrowserWorker {
     const controls = composer.locator("xpath=ancestor::form[1]")
       .locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
     if (page.url() !== mode.selection.url || !mode.selection.label || await controls.count() !== 1) {
-      throw chatGptModelControlUnavailableAdapterError("ChatGPT changed the selected model's browser surface before submission");
+      throw chatGptModelSelectionError(
+        `stage=preflight-surface; family=${mode.browserFamily ?? "default"}; ChatGPT changed the selected model's browser surface before submission`,
+      );
     }
     const control = controls.first();
     if ((await control.innerText()).trim() !== mode.selection.label
       || await control.getAttribute("aria-expanded") !== "false"
       || !await composer.isEditable()) {
-      throw chatGptModelControlUnavailableAdapterError(
-        "ChatGPT did not retain the selected effort in its ready composer; the message was not submitted",
+      throw chatGptModelSelectionError(
+        `stage=preflight-effort; family=${mode.browserFamily ?? "default"}; ChatGPT did not retain the selected effort in its ready composer`,
       );
+    }
+    if (mode.selection.browserFamily) {
+      const menu = await chatGptEffortMenuForControl(page, control);
+      await verifyExplicitWebFamily(menu, mode.selection.browserFamily, "preflight-family");
     }
   }
 
@@ -2949,6 +3012,7 @@ export class ChatGptBrowserWorker {
       userTurns,
       responseTurns,
       initialTurnIdentities: state.turnIdentities,
+      initialAssistantTurnCount: state.assistantTurnCount,
       domCache,
     };
   }
@@ -3029,7 +3093,13 @@ export class ChatGptBrowserWorker {
       const userIdentity = chatGptNewTurnIdentity(observationBaseline.initialTurnIdentities, state.userIdentities);
       const identity = userIdentity
         ? chatGptAssistantIdentityAfterUser(state, userIdentity)
-        : chatGptNewTurnIdentity(observationBaseline.initialTurnIdentities, state.responseIdentities, "assistant_bind");
+        : state.assistantTurnCount > observationBaseline.initialAssistantTurnCount
+          ? chatGptNewTurnIdentity(
+            observationBaseline.initialTurnIdentities,
+            state.responseIdentities,
+            "assistant_bind",
+          )
+          : undefined;
       if (progress
         && externalProgress
         && completionTracker?.needsToolBatchObservation(progress.lastToolBatchRevision)) {

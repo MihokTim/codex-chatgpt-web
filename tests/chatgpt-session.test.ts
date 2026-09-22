@@ -222,7 +222,14 @@ function reasoningPicker(options: { max?: string; delay?: number; missing?: bool
       signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
     }),
   };
-  const sliderControl = { press: async (key: string) => { keys.push(key); value += key === "ArrowRight" ? 1 : -1; } };
+  const sliderControl = {
+    isEnabled: async () => true,
+    waitFor: async () => {}, focus: async () => {},
+    evaluate: async (fn: (element: unknown) => boolean) => fn({
+      isConnected: true, contains: () => true, closest: () => null, ownerDocument: { activeElement: {} },
+    }),
+    press: async (key: string) => { keys.push(key); value += key === "ArrowRight" ? 1 : -1; },
+  };
   const slider = {
     isVisible: async () => false, // Live DOM: aria-hidden=true, zero-width semantic span.
     filter: () => { throw new Error("Semantic input must not be visibility-filtered"); },

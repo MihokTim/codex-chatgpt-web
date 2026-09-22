@@ -62,7 +62,7 @@ test("explicit family selection switches actual Chromium DOM radio state and rej
     const page = await browser.newPage();
     await page.setContent(`<div id="menu"><div data-testid="composer-intelligence-picker-content">
       <div data-model-selection-view><div role="menuitem" aria-expanded="false"
-        onclick="this.setAttribute('aria-expanded','true')">Families</div></div>
+        onclick="this.setAttribute('aria-expanded',String(this.getAttribute('aria-expanded')!=='true'))">Families</div></div>
       <div data-testid="composer-model-picker-slider-advanced-view">
         <button role="menuitemradio" aria-checked="false" onclick="selectFamily(this)">GPT-5.6 Sol</button>
         <button role="menuitemradio" aria-checked="true" onclick="selectFamily(this)">最新</button>

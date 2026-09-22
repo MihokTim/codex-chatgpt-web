@@ -35,7 +35,7 @@ test.each(["stuck-slider", "effort-unavailable", "rate-limit", "family-missing"]
     await page.setContent(`<form><div id="prompt-textarea" contenteditable="true">prompt</div>
       <button type="button" aria-haspopup="menu" data-tone="neutral" aria-expanded="true" aria-controls="menu">Effort</button></form>
       <div id="menu" role="menu"><div data-testid="composer-intelligence-picker-content">
-        <div data-model-selection-view><button role="menuitem" aria-expanded="true">Family</button></div>
+        <div data-model-selection-view><button role="menuitem" aria-expanded="false">Family</button></div>
         <div data-testid="composer-model-picker-slider-advanced-view">
           <button role="menuitemradio" aria-checked="true">GPT-5.6 Sol</button>
         </div>
