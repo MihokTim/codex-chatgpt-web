@@ -15,7 +15,8 @@ const MAX_CHECKPOINTS = 256;
 
 function scope(parsed: CodexParsedRequest, identity: ChatGptTurnIdentity): string | undefined {
   if (!identity.threadId || !identity.turnId) return undefined;
-  return JSON.stringify([identity.threadId, identity.turnId, parsed.modelId, parsed.options.reasoning]);
+  return JSON.stringify([identity.threadId, identity.turnId, parsed.modelId, parsed.options.reasoning,
+    parsed.options.browserModelFamily]);
 }
 
 function digest(value: unknown): string {

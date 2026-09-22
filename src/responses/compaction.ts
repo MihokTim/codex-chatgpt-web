@@ -78,6 +78,11 @@ interface CompactContentBlock extends Record<string, unknown> {
   image_url?: string;
 }
 
+const COMPACTION_RUNTIME_CONTENT_KINDS = new Set([
+  "agents_md.instructions", "environments.environment_context", "plugins.recommendations",
+  "goal.internal_context", "multi_agent.subagent_notification",
+]);
+
 /**
  * Codex can persist unavailable historical images as a one-pixel PNG. Replaying that sentinel as
  * a real attachment produces an opaque black tile in ChatGPT and consumes one attachment slot,
@@ -112,6 +117,18 @@ export function extractCompactUserMessages(input: unknown): CompactMessageItem[]
     const rec = item as CompactMessageItem & { type?: string; role?: string; content?: unknown };
     if (rec.type !== undefined && rec.type !== "message") continue;
     if (rec.role !== "user") continue;
+    // Native compaction rebuilds the runtime preamble instead of retaining it as a human
+    // instruction. A grouped AGENTS/environment message is not a standalone XML envelope;
+    // use its explicit native kinds, but retain mixed human/unknown messages conservatively.
+    const metadata = rec.internal_chat_message_metadata_passthrough;
+    const kinds = metadata && typeof metadata === "object"
+      ? (metadata as { content_item_kinds?: unknown }).content_item_kinds : undefined;
+    if (Array.isArray(kinds) && kinds.length > 0 && kinds.every(kind => COMPACTION_RUNTIME_CONTENT_KINDS.has(kind))) continue;
+    const blocks = compactContentBlocks(rec);
+    if (blocks.length > 0 && blocks.every(block => textBlock(block) && (
+      /^<environment_context>[\s\S]*<\/environment_context>$/.test(block.text!.trim())
+      || /^<subagent_notification>[\s\S]*<\/subagent_notification>$/.test(block.text!.trim())
+    ))) continue;
     // Codex removes InternalModelContextFragment during process_annotated_compacted_history.
     // In particular, a goal continuation is runtime steering, not a retained human message.
     // Exclude it before computing the v1 checkpoint source, or the next request authenticates

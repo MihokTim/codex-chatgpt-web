@@ -231,15 +231,15 @@ test("active compaction delivers the current result and converts every later MCP
     broker.completeTool(token, request!.callId, {
       content: [{ type: "text", text: "current result" }],
     });
-    await expect(current).resolves.toMatchObject({
+    expect(await current).toMatchObject({
       content: [{ type: "text", text: "current result" }],
     });
-    await expect(callTurnBroker(broker.socketPath, {
+    expect(await callTurnBroker(broker.socketPath, {
       method: "invoke",
       bindingId: claimed.bindingId,
       wireName: "exec_command",
       arguments: { cmd: "git status --short" },
-    })).resolves.toMatchObject({
+    })).toMatchObject({
       content: [{ type: "text", text: "compact now" }],
       isError: true,
     });
@@ -280,7 +280,9 @@ test("active compaction drains an MCP call already queued without an outer Codex
       isError: true,
     });
     expect(interrupted).toBe(1);
-    await expect(invocation).resolves.toMatchObject({
+    // Await socket I/O before the assertion: Bun 1.4 on Windows can starve its
+    // pipe callback while the asynchronous expect matcher waits for this promise.
+    expect(await invocation).toMatchObject({
       content: [{ type: "text", text: "compact instead" }],
       isError: true,
     });

@@ -279,6 +279,69 @@ test("v1 post-compaction continuation retains the producer's bounded source repr
   expect(response.status).toBe(200);
 });
 
+for (const format of ["v1", "v2-json", "v2-sse"] as const) for (const longSource of [false, true])
+  test(`${format} goal continuation authenticates the retained human after a grouped runtime preamble (long=${longSource})`, async () => {
+    const config = defaultConfig("full");
+    config.proAvailable = true;
+    config.solAvailable = true;
+    const metadata = { thread_id: `thread_grouped_${format}_${longSource}`, turn_id: "turn_goal_current" };
+    const source = { type: "message", role: "user", id: "msg_human_retained",
+      content: [{ type: "input_text", text: longSource ? "x".repeat(80_100) : "Continue the requested work" }],
+      internal_chat_message_metadata_passthrough: { turn_id: "turn_human", content_item_kinds: ["user.text"] } };
+    const preamble = { type: "message", role: "user", id: "msg_grouped_runtime",
+      content: [
+        { type: "input_text", text: "# AGENTS.md instructions\nFollow project rules." },
+        { type: "input_text", text: "<environment_context><cwd>/project</cwd></environment_context>" },
+      ], internal_chat_message_metadata_passthrough: {
+        turn_id: "turn_previous_goal", content_item_kinds: ["agents_md.instructions", "environments.environment_context"],
+      } };
+    const goal = { type: "message", role: "user", id: "msg_goal_runtime",
+      content: [{ type: "input_text", text: '<codex_internal_context source="goal">\nContinue the active goal.\n</codex_internal_context>' }],
+      internal_chat_message_metadata_passthrough: { turn_id: metadata.turn_id, content_item_kinds: ["goal.internal_context"] } };
+    const original = { model: "chatgpt-web/pro", stream: format === "v2-sse", input: [source, preamble, goal],
+      client_metadata: { "x-codex-turn-metadata": JSON.stringify(metadata) } };
+    const compact = format === "v1"
+      ? await compactRequest(new Request("http://127.0.0.1/v1/responses/compact", {
+        method: "POST", body: JSON.stringify(original),
+      }), config, compactionAdapterFactory())
+      : await responseRequest(new Request("http://127.0.0.1/v1/responses", {
+        method: "POST", body: JSON.stringify({ ...original, input: [...original.input, { type: "compaction_trigger" }] }),
+      }), config, compactionAdapterFactory());
+    expect(compact.status).toBe(200);
+    const output: unknown[] = format === "v2-sse"
+      ? JSON.parse((await compact.text()).split("\n").find(line => line.startsWith("data: ") && line.includes('"type":"response.completed"'))!.slice(6)).response.output
+      : (await compact.json() as { output: unknown[] }).output;
+    // Native Codex discards goal/preamble fragments and rebuilds the current preamble
+    // immediately before the retained human message, as in the 2026-09-22 incident.
+    const current = { ...preamble, id: "msg_rebuilt_runtime",
+      internal_chat_message_metadata_passthrough: { ...preamble.internal_chat_message_metadata_passthrough, turn_id: metadata.turn_id } };
+    const input = [current, ...(format === "v1" ? output : [source, ...output])];
+    const expected = format === "v1" && longSource ? [{ type: "input_text", text: "x".repeat(80_000) }] : source.content;
+    let starts = 0;
+    const send = (body: unknown) => responseRequest(new Request("http://127.0.0.1/v1/responses", {
+      method: "POST", body: JSON.stringify(body),
+    }), config, () => ({ name: "retained-human-continuation", async runTurn(parsed, _incoming, emit) {
+      starts++;
+      expect(extractChatGptTurnUserRevision(parsed)).toEqual(expected);
+      emit({ type: "text_delta", text: "Continued", phase: "final_answer" });
+      emit({ type: "done", stopReason: "stop", endTurn: true });
+    } }));
+    const continuation = { ...original, stream: false, input };
+    const resumed = await send(continuation);
+    expect(resumed.status).toBe(200);
+    expect((await resumed.json() as { status: string }).status).toBe("completed");
+    // Pro shares a backend/effort with Sol Pro. The completed checkpoint must not
+    // authorize another family, another turn, or arbitrary older/rewritten instructions.
+    for (const rejected of [
+      { ...continuation, model: "chatgpt-web/light" },
+      { ...continuation, client_metadata: { "x-codex-turn-metadata": JSON.stringify({ ...metadata, turn_id: "another_turn" }) } },
+      { ...continuation, input: input.map(item => (item as { id?: string }).id === source.id
+        ? { ...source, content: [{ type: "input_text", text: "Rewritten instruction" }] } : item) },
+      { ...continuation, input: [current, source, { type: "compaction", encrypted_content: encodeCompactionSummary("A different checkpoint") }] },
+    ]) expect((await send(rejected)).status).toBe(400);
+    expect(starts).toBe(1);
+  });
+
 for (const stream of [false, true]) test(`failed compaction cannot authorize a continuation (stream=${stream})`, async () => {
   const config = defaultConfig("full");
   const source = { type: "message", role: "user", content: [{ type: "input_text", text: "Original task" }],
