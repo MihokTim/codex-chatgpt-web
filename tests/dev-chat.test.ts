@@ -158,7 +158,8 @@ test("coherent DEV MCP payloads are bounded, deterministic, and distinct", () =>
 });
 
 test("new DEV chats default to the cheapest account-supported browser model", () => {
-  expect(defaultDevChatModel({ ...defaultConfig("full"), solAvailable: true })).toBe("chatgpt-web/light");
+  expect(defaultDevChatModel({ ...defaultConfig("full"), solAvailable: true })).toBe("chatgpt-web/medium");
+  expect(defaultDevChatModel({ ...defaultConfig("full"), solAvailable: true, proAvailable: true })).toBe("chatgpt-web/medium");
   expect(defaultDevChatModel({ ...defaultConfig("full"), solAvailable: false })).toBe("chatgpt-web/luna");
   expect(DEV_CHAT_MODELS).toContain("chatgpt-web/think");
   expect(defaultDevChatModel({
@@ -456,9 +457,9 @@ test("synthetic fill crosses the production threshold and triggers the real comp
   });
   const store = new DevChatStore(join(root, "chats"));
   const driver = new DevChatDriver(config, store, factory, root);
-  const state = driver.open("auto-compact", "chatgpt-web/light").state;
-  driver.fill(state, 30_000);
-  expect(driver.status(state).inputTokens).toBeGreaterThanOrEqual(32_000);
+  const state = driver.open("auto-compact", "chatgpt-web/medium").state;
+  driver.fill(state, 78_000);
+  expect(driver.status(state).inputTokens).toBeGreaterThanOrEqual(80_000);
   const events: string[] = [];
   const result = await driver.send(state, "Continue after compacting the synthetic history.", event => events.push(event.type));
   expect(result).toMatchObject({ text: "DEV turn completed after compaction.", compactions: 1 });
