@@ -7,6 +7,7 @@ import { augmentNativeModelCatalog } from "../src/model-catalog";
 // Explicit live acceptance: only Sol Pro, an isolated CODEX_HOME, and a synthetic file.
 const codex = resolve(process.argv[2] ?? "");
 const sandbox = process.argv[3] ?? "read-only";
+const discoverFirst = process.argv.includes("--discover-first");
 if (sandbox !== "read-only" && sandbox !== "workspace-write") {
   throw new Error("Acceptance sandbox must be read-only or workspace-write");
 }
@@ -31,12 +32,15 @@ writeFileSync(join(root, "config.toml"), [
   'wire_api = "responses"', 'supports_websockets = false', '',
 ].join("\n"));
 const started = Date.now();
+const discovery = discoverFirst
+  ? "First call Codex Native2's codex_tool_inventory once with query exec_command and include_schema true, using the current turn capability. This is a tool visibility diagnostic. Distinguish the outer native inventory from the connector functions actually callable in ChatGPT. If ChatGPT provides tool search, use it once to discover Codex Native2 codex_exec. Do not infer a tool is callable merely because its name appears in the inventory. "
+  : "";
 const child = Bun.spawn([codex, "exec", "--ephemeral", "--skip-git-repo-check", "--json", "--sandbox", sandbox,
-  "Read nonce.txt in the current working directory by calling the native command execution tool: the ChatGPT Codex connector exposes it as codex_exec, forwarding to exec_command. Run Get-Content -LiteralPath nonce.txt. Its random contents are not in this prompt. Return exactly those contents. If codex_exec is not visible or callable, return MISSING_COMMAND_TOOL and briefly list the Codex connector tools actually available to you. Do not use view_image, image tools, browser tools, or alternative file-reading tricks. Do not retry an unavailable command tool. Do not spawn agents, change models, or modify files."], {
+  discovery + "Read nonce.txt in the current working directory by calling the native command execution tool: the ChatGPT Codex connector exposes it as codex_exec, forwarding to exec_command. Run Get-Content -LiteralPath nonce.txt. Its random contents are not in this prompt. Return exactly those contents. If codex_exec is not visible or callable, return MISSING_COMMAND_TOOL and briefly list the Codex connector tools actually available to you. If an inventory was requested, also summarize its actual result without copying capability tokens. Do not use view_image, image tools, browser tools, or alternative file-reading tricks. Do not retry an unavailable command tool. Do not spawn agents, change models, or modify files."], {
   cwd: root, env: { ...process.env, CODEX_HOME: root, OPENAI_API_KEY: "local-sol-acceptance" },
   stdin: "ignore", stdout: "pipe", stderr: "pipe", windowsHide: true,
 });
-console.log(JSON.stringify({ started: true, root, pid: child.pid, model: "chatgpt-web/light", sandbox, biggerContext: config.experimentalBiggerContext }));
+console.log(JSON.stringify({ started: true, root, pid: child.pid, model: "chatgpt-web/light", sandbox, discoverFirst, biggerContext: config.experimentalBiggerContext }));
 // Do not cancel an accepted Pro generation merely to meet a test timeout.
 const progress = setInterval(() => console.log(JSON.stringify({ pid: child.pid, elapsedMs: Date.now() - started })), 30000);
 try {
@@ -49,7 +53,7 @@ try {
   const events = stdout.split("\n").flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
   const answers = events.filter(e => e.type === "item.completed" && e.item?.type === "agent_message").map(e => e.item.text);
   const commands = events.filter(e => e.type === "item.completed" && e.item?.type === "command_execution");
-  const result = { exitCode, durationMs: Date.now() - started, sandbox, answers, commands,
+  const result = { exitCode, durationMs: Date.now() - started, sandbox, discoverFirst, answers, commands,
     errors: events.filter(e => e.type === "error" || e.type === "turn.failed"),
     success: exitCode === 0 && answers.at(-1)?.trim() === token && commands.some(e => e.item.aggregated_output?.includes(token)) && events.some(e => e.type === "turn.completed"),
   };
