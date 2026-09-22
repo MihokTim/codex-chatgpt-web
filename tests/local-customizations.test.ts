@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { chromium } from "playwright-core";
 import { CHATGPT_WEB_MODEL_ROUTES } from "../src/chatgpt-web-models";
 import { compactionBrowserEffortOverride, selectExplicitWebFamily } from "../src/adapters/chatgpt-web/browser-customizations";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
+import { CHATGPT_FAILED_THINKING_LABELS, CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { readJsonRequestBody } from "../src/http-body";
 import { defaultConfig } from "../src/config";
 import { routeChatGptWebRequest } from "../src/server";
@@ -77,3 +79,23 @@ test("explicit family selection switches actual Chromium DOM radio state and rej
     await browser.close();
   }
 }, 30_000);
+
+test("observed failed-thinking and stopped-thinking labels have distinct terminal classifications", () => {
+  const { createWindow } = require("@mixmark-io/domino");
+  const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
+  const source = worker.split("// CHATGPT_THINKING_STATUS_BEGIN")[1]?.split("// CHATGPT_THINKING_STATUS_END")[0];
+  if (!source) throw new Error("Stopped-thinking predicate is missing");
+  const js = new Bun.Transpiler({ loader: "ts" }).transformSync(
+    `function detect(root, options, document, NodeFilter, renderedInDom, overlapsRenderedAnswer, overlapsCommentary) { ${source}; return thinkingStatusVisible(options.labels); }`,
+  );
+  const detect = new Function(`${js}; return detect;`)();
+  const matches = (label: string, labels: readonly string[]) => {
+    const window = createWindow(`<article id="current"><div data-streaming-response-status><button>${label}</button></div></article>`);
+    return detect(window.document.getElementById("current"), { labels },
+      window.document, window.NodeFilter, () => true, () => false, () => false);
+  };
+  expect(matches("思考を停止しました", CHATGPT_STOPPED_THINKING_LABELS)).toBe(true);
+  expect(matches("思考に失敗しました", CHATGPT_STOPPED_THINKING_LABELS)).toBe(false);
+  expect(matches("思考に失敗しました", CHATGPT_FAILED_THINKING_LABELS)).toBe(true);
+  expect(matches("思考を停止しました", CHATGPT_FAILED_THINKING_LABELS)).toBe(false);
+});

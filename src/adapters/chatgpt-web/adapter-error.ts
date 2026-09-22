@@ -62,6 +62,20 @@ export function chatGptStoppedThinkingError(): ChatGptWebAdapterError {
   );
 }
 
+export function chatGptFailedThinkingError(): ChatGptWebAdapterError {
+  return new ChatGptWebAdapterError(
+    "ChatGPT displayed '思考に失敗しました' (failed thinking) and could not finish this response. "
+    + "This status does not expose the underlying cause. Review completed tool work before resuming the task.",
+    {
+      status: 502,
+      errorType: "server_error",
+      code: "chatgpt_failed_thinking",
+      // A tool may already have modified the workspace. Reconnecting must not replay the task.
+      retryable: false,
+    },
+  );
+}
+
 export function chatGptRetainedConversationUnavailableError(): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
     "The retained ChatGPT conversation is no longer available.",

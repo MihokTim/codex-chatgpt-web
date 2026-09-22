@@ -64,3 +64,9 @@ export const CHATGPT_STOPPED_THINKING_LABELS = [
   "已停止思考", // zh-CN, zh-HK
   "已中斷思考", // zh-TW
 ] as const;
+
+// Exact failed-thinking status observed in the user's Japanese ChatGPT UI on 2026-09-17.
+// Keep it separate from stopped thinking; neither label proves a quota or authentication failure.
+export const CHATGPT_FAILED_THINKING_LABELS = [
+  "思考に失敗しました", // ja-JP
+] as const;
