@@ -1268,7 +1268,7 @@ interface ChatGptSubmissionBaseline {
   userTurns: Locator;
   responseTurns: Locator;
   initialTurnIdentities: readonly string[];
-  initialAssistantTurnCount: number;
+  submittedUserIdentity?: string;
   domCache: ChatGptSubmissionDomCache;
 }
 
@@ -1289,12 +1289,10 @@ interface ChatGptAssistantTurnBinding {
   locator: Locator;
   acceptedTurnIdentities: readonly string[];
   /** Proven newly submitted user turn; its outer container survives message virtualization. */
-  userIdentity?: string;
+  userIdentity: string;
 }
 
 interface ChatGptSubmissionDomState {
-  userTurnCount: number;
-  assistantTurnCount: number;
   visibleStopButtonCount: number;
   turnIdentities: string[];
   userIdentities: string[];
@@ -1442,8 +1440,6 @@ export async function setChatGptThinkMode(
 export function chatGptNewTurnIdentity(
   initial: readonly string[],
   current: readonly string[],
-  stage: "new_turn" | "assistant_bind" | "assistant_rebind" = "new_turn",
-  boundIdentity?: string,
 ): string | undefined {
   const previous = new Set(initial);
   const added = current.filter(identity => !previous.has(identity));
@@ -1452,9 +1448,8 @@ export function chatGptNewTurnIdentity(
     // message IDs or page text. Keep this in the message: helper IPC does not preserve Error.cause.
     const hash = (identity: string) => createHash("sha256").update(identity).digest("hex").slice(0, 16);
     const diagnostic = JSON.stringify({
-      stage, initialCount: initial.length, currentCount: current.length,
+      stage: "new_turn", initialCount: initial.length, currentCount: current.length,
       initial: initial.slice(-16).map(hash), current: current.slice(-16).map(hash),
-      ...(boundIdentity === undefined ? {} : { bound: hash(boundIdentity) }),
     });
     throw new ChatGptWebAdapterError(
       `ChatGPT exposed ${added.length} new conversation turns for one submitted message. `
@@ -1463,15 +1458,6 @@ export function chatGptNewTurnIdentity(
     );
   }
   return added[0];
-}
-
-export function chatGptReboundTurnIdentity(
-  initial: readonly string[],
-  boundIdentity: string,
-  current: readonly string[],
-): string | undefined {
-  if (current.includes(boundIdentity)) return boundIdentity;
-  return chatGptNewTurnIdentity(initial, current, "assistant_rebind", boundIdentity);
 }
 
 /** Follow the submitted user, not every assistant ID absent from a historical snapshot. */
@@ -1499,6 +1485,21 @@ export function chatGptAssistantIdentityAfterUser(
     );
   }
   return answers[0];
+}
+
+/** Retain the proven user anchor even if its inner section is later virtualized. */
+function submittedUserIdentity(
+  baseline: ChatGptSubmissionBaseline,
+  state: ChatGptSubmissionDomState,
+): string | undefined {
+  const observed = chatGptNewTurnIdentity(baseline.initialTurnIdentities, state.userIdentities);
+  if (baseline.submittedUserIdentity && observed && baseline.submittedUserIdentity !== observed) {
+    throw new ChatGptWebAdapterError("ChatGPT changed the submitted user turn identity.", {
+      status: 502, errorType: "server_error", code: "chatgpt_turn_identity_conflict", retryable: false,
+    });
+  }
+  baseline.submittedUserIdentity ??= observed;
+  return baseline.submittedUserIdentity;
 }
 
 export class ChatGptCompletionTracker {
@@ -3019,8 +3020,6 @@ export class ChatGptBrowserWorker {
       return {
         key: observerKey,
         snapshot: {
-          userTurnCount: userIdentities.length,
-          assistantTurnCount: responseIdentities.length,
           visibleStopButtonCount: [...document.querySelectorAll(options.stopButtonSelector)].filter(visible).length,
           turnIdentities,
           userIdentities,
@@ -3052,6 +3051,7 @@ export class ChatGptBrowserWorker {
     signal?: AbortSignal,
   ): Promise<ChatGptSubmissionEvidence | undefined> {
     const state = await this.submissionDomState(page, baseline.domCache, signal);
+    submittedUserIdentity(baseline, state);
     return chatGptSubmissionEvidence({
       initialTurnIdentities: baseline.initialTurnIdentities,
       userIdentities: state.userIdentities,
@@ -3066,10 +3066,8 @@ export class ChatGptBrowserWorker {
     signal?: AbortSignal,
   ): Promise<string> {
     const state = await this.submissionDomState(page, baseline.domCache, signal);
-    const identity = chatGptNewTurnIdentity(
-      baseline.initialTurnIdentities,
-      state.responseIdentities,
-    );
+    const userIdentity = submittedUserIdentity(baseline, state);
+    const identity = userIdentity ? chatGptAssistantIdentityAfterUser(state, userIdentity) : undefined;
     if (!identity) return "";
     const locator = page.locator(`[data-turn-id=${JSON.stringify(identity)}]`);
     return (await this.responseDomSnapshot(locator, {})).visibleText;
@@ -3084,7 +3082,6 @@ export class ChatGptBrowserWorker {
       userTurns,
       responseTurns,
       initialTurnIdentities: state.turnIdentities,
-      initialAssistantTurnCount: state.assistantTurnCount,
       domCache,
     };
   }
@@ -3162,16 +3159,10 @@ export class ChatGptBrowserWorker {
       // acknowledging its boundary; the pre-probe snapshot can otherwise leave the broker waiting
       // despite this exact iteration having successfully observed the page.
       progress = externalProgress?.snapshot();
-      const userIdentity = chatGptNewTurnIdentity(observationBaseline.initialTurnIdentities, state.userIdentities);
+      const userIdentity = submittedUserIdentity(observationBaseline, state);
       const identity = userIdentity
         ? chatGptAssistantIdentityAfterUser(state, userIdentity)
-        : state.assistantTurnCount > observationBaseline.initialAssistantTurnCount
-          ? chatGptNewTurnIdentity(
-            observationBaseline.initialTurnIdentities,
-            state.responseIdentities,
-            "assistant_bind",
-          )
-          : undefined;
+        : undefined;
       if (progress
         && externalProgress
         && completionTracker?.needsToolBatchObservation(progress.lastToolBatchRevision)) {
@@ -3184,11 +3175,11 @@ export class ChatGptBrowserWorker {
         completionTracker.observeToolBatch(progress.lastToolBatchRevision, boundaryText);
         await externalProgress.acknowledgeToolBatch(progress.lastToolBatchRevision);
       }
-      if (identity) return {
+      if (identity && userIdentity) return {
         identity,
         locator: observationPage.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
         acceptedTurnIdentities: state.turnIdentities,
-        ...(userIdentity ? { userIdentity } : {}),
+        userIdentity,
       };
       // A delayed renderer wake can cross the grace while the assistant appears. Only a fresh
       // observation can prove it is still missing; the explicit turn deadline remains above.
@@ -3223,15 +3214,13 @@ export class ChatGptBrowserWorker {
     if (state.userIdentities.some(identity => !acceptedTurns.has(identity))) {
       throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
     }
-    const identity = binding.userIdentity
-      ? chatGptAssistantIdentityAfterUser(state, binding.userIdentity)
-      : chatGptReboundTurnIdentity(baseline.initialTurnIdentities, binding.identity, state.responseIdentities);
+    const identity = chatGptAssistantIdentityAfterUser(state, binding.userIdentity);
     if (!identity || identity === binding.identity) return binding;
     return {
       identity,
       locator: page.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
       acceptedTurnIdentities: state.turnIdentities,
-      ...(binding.userIdentity ? { userIdentity: binding.userIdentity } : {}),
+      userIdentity: binding.userIdentity,
     };
   }
 

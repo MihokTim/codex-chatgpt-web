@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptFailedThinkingError, chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
@@ -152,36 +152,17 @@ test("submission DOM tracks logical identities and retains virtualized history i
   await expect(worker.submissionDomState(page, baseline.domCache)).rejects.toThrow("duplicate");
 });
 
-test("assistant tracking rebinds only one proven replacement after React detaches its node", () => {
-  expect(chatGptReboundTurnIdentity(
-    ["conversation-turn-1"],
-    "conversation-turn-2",
-    ["conversation-turn-1", "conversation-turn-2"],
-  )).toBe("conversation-turn-2");
-  expect(chatGptReboundTurnIdentity(
-    ["conversation-turn-1"],
-    "conversation-turn-2",
-    ["conversation-turn-1", "conversation-turn-3"],
-  )).toBe("conversation-turn-3");
-  expect(() => chatGptReboundTurnIdentity(
-    ["conversation-turn-1"],
-    "conversation-turn-2",
-    ["conversation-turn-1", "conversation-turn-3", "conversation-turn-4"],
-  )).toThrow("2 new conversation turns");
-});
-
-test("ambiguous response identities preserve their phase across IPC without exposing raw IDs", () => {
+test("ambiguous new turn identities preserve safe diagnostics across IPC without exposing raw IDs", () => {
   let failure: unknown;
   try {
-    chatGptReboundTurnIdentity(["private-old-user", "private-preparation-answer"],
-      "private-bound-answer", ["private-remounted-preparation", "private-replacement-answer"]);
+    chatGptNewTurnIdentity(["private-old-user", "private-preparation-answer"],
+      ["private-new-user", "private-foreign-user"]);
   } catch (error) { failure = error; }
   expect(failure).toMatchObject({ code: "chatgpt_turn_identity_conflict", status: 502, retryable: false });
   const message = (failure as Error).message;
-  expect(message).toContain('"stage":"assistant_rebind"');
+  expect(message).toContain('"stage":"new_turn"');
   expect(message).toContain('"initialCount":2');
   expect(message).toContain('"currentCount":2');
-  expect(message).toContain('"bound":');
   expect(message).not.toContain("private-");
   expect(message.length).toBeLessThan(1_024);
 });
@@ -594,8 +575,6 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     ): Promise<T>;
     activeComposer(page: Page): Promise<unknown>;
     submissionDomState(page: Page, cache: Record<string, unknown>): Promise<{
-      userTurnCount: number;
-      assistantTurnCount: number;
       visibleStopButtonCount: number;
       turnIdentities: string[];
       userIdentities: string[];
@@ -647,8 +626,6 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     domObservations += 1;
     if (domObservations === 1) throw new ChatGptBrowserObservationTimeoutError(5_000);
     return {
-      userTurnCount: 1,
-      assistantTurnCount: 1,
       visibleStopButtonCount: 1,
       turnIdentities: ["conversation-turn-user", "conversation-turn-assistant"],
       userIdentities: ["conversation-turn-user"],
