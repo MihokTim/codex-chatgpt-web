@@ -125,6 +125,11 @@ test("one browser conversation spans native turns and rotates only at compaction
   const otherEffort = structuredClone(before);
   otherEffort.options.reasoning = "medium";
   expect(chatGptConversationKey(otherEffort, "provider")).not.toBe(chatGptConversationKey(before, "provider"));
+  const solFamily = structuredClone(before);
+  solFamily.options.browserModelFamily = "sol";
+  const latestFamily = structuredClone(before);
+  latestFamily.options.browserModelFamily = "latest";
+  expect(chatGptConversationKey(solFamily, "provider")).not.toBe(chatGptConversationKey(latestFamily, "provider"));
   const otherThread = structuredClone(before);
   (otherThread._rawBody as { client_metadata: Record<string, unknown> }).client_metadata = {
     "x-codex-turn-metadata": JSON.stringify({
@@ -291,6 +296,9 @@ test("active compaction drains an MCP call already queued without an outer Codex
 test("a completed retained agent returns an exact checkpoint and its browser is physically retired", async () => {
   expect(MAX_COMPACTION_HANDOFF_TIMEOUT_MS).toBe(5 * 60_000);
   const sourceRequest = request(false);
+  sourceRequest.options = { reasoning: "max", browserModelFamily: "sol" };
+  const compactionRequest = request(true);
+  compactionRequest.options = { ...sourceRequest.options };
   const conversationKey = chatGptConversationKey(sourceRequest, "provider")!;
   const source = new ChatGptTurnSession({
     mode: "read-only",
@@ -336,7 +344,7 @@ test("a completed retained agent returns an exact checkpoint and its browser is 
 
   await expect(requestRetainedCompactionHandoff(
     worker as never,
-    request(true),
+    compactionRequest,
     source,
     broker,
     { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
@@ -345,6 +353,8 @@ test("a completed retained agent returns an exact checkpoint and its browser is 
     60 * 60_000,
   )).resolves.toBe("Retained agent checkpoint");
   expect(captured?.conversationKey).toBe(conversationKey);
+  expect(captured?.reasoning).toBe("max");
+  expect(captured?.capabilities.browserModelFamily).toBe("sol");
   expect(captured?.requireRetainedConversation).toBeTrue();
   expect(captured?.nativeConnector).toBeTrue();
   expect(captured?.capabilities.localToolsEnabled).toBeFalse();

@@ -823,9 +823,11 @@ export function createChatGptWebAdapter(
           });
           return;
         }
-        const turnCapabilities = parsed._compactionRequest && !manualRequest
-          ? { ...configuredCapabilities, localToolsEnabled: false }
-          : configuredCapabilities;
+        const turnCapabilities = {
+          ...configuredCapabilities,
+          ...(parsed._compactionRequest && !manualRequest ? { localToolsEnabled: false } : {}),
+          ...(parsed.options.browserModelFamily ? { browserModelFamily: parsed.options.browserModelFamily } : {}),
+        };
         const mode = manualRequest
           ? { localTools: true }
           : resolveChatGptWebModelMode(parsed.modelId, parsed.options.reasoning, turnCapabilities);

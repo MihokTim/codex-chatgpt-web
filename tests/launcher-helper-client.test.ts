@@ -21,6 +21,8 @@ test("daemon streams browser lifecycle through the real helper process", async (
     import { ChatGptBrowserWorker } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url).href)};
     // Substitute only the browser. Both sides of the production IPC protocol run unchanged.
     ChatGptBrowserWorker.prototype.run = async turn => {
+      if (turn.reasoning !== "high" || turn.capabilities.browserModelFamily !== "sol")
+        throw new Error("Explicit browser family was lost across helper IPC");
       await turn.onPreparedSelected(false);
       const prepared = await turn.prepare();
       if (prepared.skillFiles?.[0]?.text !== "<skill>\\n<name>ipc</name>\\n<path>/skills/ipc/SKILL.md</path>\\ncheck IPC\\n</skill>") throw new Error("Skill file lost in IPC");
@@ -92,7 +94,7 @@ test("daemon streams browser lifecycle through the real helper process", async (
       traceId: "abcdef123456",
       modelId: "gpt-5.6-sol",
       reasoning: "high",
-      capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false },
+      capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: false, proAvailable: false, browserModelFamily: "sol" },
       prepare: async () => ({
         text: "inspect", images: [],
         skillFiles: [selectedSkillFile({ role: "user", origin: "codex_skill", timestamp: 0,

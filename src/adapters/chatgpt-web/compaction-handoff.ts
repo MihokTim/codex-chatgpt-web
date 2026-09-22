@@ -318,7 +318,11 @@ export async function requestRetainedCompactionHandoff(
       reasoning: parsed.options.reasoning,
       // The retained connector exposes only the one-shot control token embedded above. It does
       // not receive an ordinary Codex tool environment for this checkpoint message.
-      capabilities: { ...capabilities, localToolsEnabled: false },
+      capabilities: {
+        ...capabilities,
+        localToolsEnabled: false,
+        ...(parsed.options.browserModelFamily ? { browserModelFamily: parsed.options.browserModelFamily } : {}),
+      },
       nativeConnector: true,
       prepare,
       prepareResume: prepare,

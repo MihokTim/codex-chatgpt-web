@@ -16,6 +16,7 @@ import {
 } from "../../config";
 import { estimateTokens } from "../../lib/token-estimate";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "./ui-labels";
+import { selectExplicitWebFamily } from "./browser-customizations";
 import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
 import {
@@ -2482,6 +2483,9 @@ export class ChatGptBrowserWorker {
       await captureDiagnostic?.("effort-menu-pointerdown-fallback");
     }
     await captureDiagnostic?.("effort-menu-open-requested");
+    if (capabilities.browserModelFamily) {
+      mode.browserFamily = await selectExplicitWebFamily(page, activation, capabilities.browserModelFamily);
+    }
     const effortSlider = activation.slider;
     const sliderContainer = activation.sliderContainer;
     const waitAbort = new AbortController();

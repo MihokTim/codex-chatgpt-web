@@ -163,6 +163,7 @@ export interface CodexRequestOptions {
   toolChoice?: CodexToolChoice;
   parallelToolCalls?: boolean;
   reasoning?: string;
+  browserModelFamily?: "sol" | "latest";
   hideThinkingSummary?: boolean;
   serviceTier?: string;
   presencePenalty?: number;

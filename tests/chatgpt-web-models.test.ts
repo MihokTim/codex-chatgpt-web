@@ -38,21 +38,22 @@ describe("fixed ChatGPT Web model routes", () => {
   test("uses unique stable slugs and one explicit adapter effort per model", () => {
     expect(new Set(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug)).size).toBe(CHATGPT_WEB_MODEL_ROUTES.length);
     expect(CHATGPT_WEB_MODEL_ROUTES.map(route => [route.slug, route.codexEffort, route.adapterEffort])).toEqual([
-      ["chatgpt-web/light", "low", "low"],
+      ["chatgpt-web/light", "ultra", "max"],
       ["chatgpt-web/medium", "medium", "medium"],
       ["chatgpt-web/high", "high", "high"],
       ["chatgpt-web/extra-high", "xhigh", "xhigh"],
       ["chatgpt-web/pro", "ultra", "max"],
     ]);
-    expect(CHATGPT_WEB_MODEL_ROUTES[0]?.displayName).toBe("ChatGPT Web — Instant");
+    expect(CHATGPT_WEB_MODEL_ROUTES[0]?.displayName).toBe("ChatGPT Web — Sol Pro");
   });
 
   test("exposes only Plus-eligible routes without the Pro account capability", () => {
     expect(availableChatGptWebModelRoutes(plus).map(route => route.slug)).toEqual([
-      "chatgpt-web/light",
       "chatgpt-web/medium",
       "chatgpt-web/high",
     ]);
+    expect(() => requireChatGptWebModelRoute("chatgpt-web/light", plus))
+      .toThrow("Sol Pro is not available for this account");
     expect(availableChatGptWebModelRoutes({ solAvailable: true, extraHighAvailable: true, proAvailable: true }))
       .toEqual(CHATGPT_WEB_MODEL_ROUTES);
     expect(() => requireChatGptWebModelRoute("chatgpt-web/extra-high", plus))
@@ -64,7 +65,7 @@ describe("fixed ChatGPT Web model routes", () => {
   test("Extra High stays routable without granting Pro or Pro-sized context", () => {
     const config = { ...defaultConfig("full"), extraHighAvailable: true, proAvailable: false };
     expect(availableChatGptWebModelRoutes(config).map(route => route.slug))
-      .toEqual(["chatgpt-web/light", "chatgpt-web/medium", "chatgpt-web/high", "chatgpt-web/extra-high"]);
+      .toEqual(["chatgpt-web/medium", "chatgpt-web/high", "chatgpt-web/extra-high"]);
     const request = parsed("chatgpt-web/extra-high", "low");
     expect(routeChatGptWebRequest(request, config).adapterEffort).toBe("xhigh");
     expect(request.options.reasoning).toBe("xhigh");

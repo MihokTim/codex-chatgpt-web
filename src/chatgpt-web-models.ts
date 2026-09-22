@@ -314,13 +314,13 @@ export const CHATGPT_WEB_LUNA_MODEL_ROUTES: readonly ChatGptWebModelRoute[] = [
 export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] = [
   {
     slug: "chatgpt-web/light",
-    displayName: "ChatGPT Web — Instant",
-    description: "ChatGPT Web Instant through the native Codex harness.",
+    displayName: "ChatGPT Web — Sol Pro",
+    description: "GPT-5.6 Sol Pro through ChatGPT Web (replaces Instant).",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
-    codexEffort: "low",
-    adapterEffort: "low",
-    requiresPro: false,
+    codexEffort: "ultra",
+    adapterEffort: "max",
+    requiresPro: true,
   },
   {
     slug: "chatgpt-web/medium",

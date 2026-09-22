@@ -7,6 +7,7 @@ export const CHATGPT_WEB_MODEL_ID = CHATGPT_WEB_BACKEND_MODEL;
 export const CHATGPT_WEB_LUNA_MODEL_ID = CHATGPT_WEB_LUNA_BACKEND_MODEL;
 
 export interface ChatGptWebCapabilities {
+  browserModelFamily?: "sol" | "latest";
   localToolsEnabled: boolean;
   solAvailable: boolean;
   extraHighAvailable: boolean;
@@ -14,6 +15,7 @@ export interface ChatGptWebCapabilities {
 }
 
 export interface ChatGptWebModelMode {
+  browserFamily?: string;
   modelId: string;
   effort: "low" | "medium" | "high" | "xhigh" | "max";
   displayLabel: "Luna" | "Think" | "Instant" | "Medium" | "High" | "Extra High" | "Pro";

@@ -159,6 +159,11 @@ async function run(message: RunMessage): Promise<void> {
   if (message.turn.nativeConnector !== undefined && typeof message.turn.nativeConnector !== "boolean") {
     throw new Error("Browser helper native connector flag is invalid");
   }
+  if (message.turn.capabilities.browserModelFamily !== undefined
+    && message.turn.capabilities.browserModelFamily !== "sol"
+    && message.turn.capabilities.browserModelFamily !== "latest") {
+    throw new Error("Browser helper model family is invalid");
+  }
   if (message.turn.retainConversation !== undefined && typeof message.turn.retainConversation !== "boolean") {
     throw new Error("Browser helper conversation retention flag is invalid");
   }
@@ -524,4 +529,4 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments"] });
+writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments", "explicit-browser-family"] });
