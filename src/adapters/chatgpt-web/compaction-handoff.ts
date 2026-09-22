@@ -428,6 +428,15 @@ function structuredCompactionInterruption(owner: StructuredCompactionOwner): Err
   )?.reason;
 }
 
+/** Native interruption hooks also protect a pending automatic browser recovery. */
+export function nativeTurnInterruptionError(threadId: string, turnId: string): Error | undefined {
+  return structuredCompactionInterruption({ ownerKey: "recovery", traceIds: [], nativeThreadId: threadId, nativeTurnId: turnId });
+}
+
+export function hasActiveStructuredCompaction(ownerKey: string): boolean {
+  return structuredCompactionOwners.has(ownerKey);
+}
+
 function pruneStructuredCompactionInterruptions(now = Date.now()): void {
   const cutoff = now - STRUCTURED_COMPACTION_RUN_TTL_MS;
   for (const [identity, interruption] of structuredCompactionInterruptions) {

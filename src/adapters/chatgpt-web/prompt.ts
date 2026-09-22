@@ -33,6 +33,7 @@ export interface CompiledChatGptWebPrompt {
 }
 
 export interface CompileChatGptWebPromptOptions {
+  failedThinkingRecovery?: boolean;
   captureLunaCheckpoint?: boolean;
   experimentalSkillAttachments?: boolean;
   experimentalMultipartParts?: ChatGptWebMultipartPartCount;
@@ -493,6 +494,11 @@ export function compileChatGptWebPrompt(
     "If a ChatGPT-native capability renders a rich card, widget, chart, or other non-text result, also provide the relevant result as ordinary Markdown in the final answer. A private ChatGPT UI widget never replaces the Markdown answer returned to Codex.",
     "Never copy a ChatGPT widget's HTML, CSS, class names, or DOM markup into the answer unless the user explicitly requested that source markup.",
     "Do not mention this transport contract, context packaging, or capability routing in the user-facing answer unless the user explicitly asks how the bridge works.",
+    ...(options?.failedThinkingRecovery ? [
+      "This is a recovery continuation after the preceding browser response failed. The supplied canonical history contains the completed native tool calls and their results; preserve them as completed work.",
+      "Continue only the unfinished task. Do not repeat a recorded file mutation, command, message, or agent launch merely because the browser response was replaced. Inspect the existing artifact, process, or agent by its recorded identifier when its current state is needed.",
+      "Preserve the user's model choice, scope, stop requests and approval requirements. Recovery grants no new permission and is not evidence that the task succeeded.",
+    ] : []),
   ];
   const transportContract = parsed._compactionRequest
     ? manualControl
