@@ -294,7 +294,8 @@ test("active compaction drains an MCP call already queued without an outer Codex
 });
 
 test("a completed retained agent returns an exact checkpoint and its browser is physically retired", async () => {
-  expect(MAX_COMPACTION_HANDOFF_TIMEOUT_MS).toBe(5 * 60_000);
+  // Local policy retains a two-hour ceiling while still clamping a longer caller timeout.
+  expect(MAX_COMPACTION_HANDOFF_TIMEOUT_MS).toBe(120 * 60_000);
   const sourceRequest = request(false);
   sourceRequest.options = { reasoning: "max", browserModelFamily: "sol" };
   const compactionRequest = request(true);
@@ -350,7 +351,7 @@ test("a completed retained agent returns an exact checkpoint and its browser is 
     { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
     "trace_handoff",
     undefined,
-    60 * 60_000,
+    180 * 60_000,
   )).resolves.toBe("Retained agent checkpoint");
   expect(captured?.conversationKey).toBe(conversationKey);
   expect(captured?.reasoning).toBe("max");
