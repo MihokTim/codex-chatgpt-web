@@ -51,6 +51,30 @@ test("a changed historical ACK cannot be mistaken for a second answer to the sub
   } finally { await page.close(); }
 });
 
+test("a historical assistant remount is not bound before the submitted user appears", async () => {
+  const page = await browser.newPage();
+  try {
+    const worker = observer();
+    await render(page, initial);
+    const baseline = await worker.captureSubmissionBaseline(page);
+    const bindingPromise = worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2_000);
+    await render(
+      page,
+      section("prep-user", "user", "Preparation")
+        + section("prep-answer-remounted", "assistant", "ACK"),
+    );
+    const early = await Promise.race([
+      bindingPromise.then(() => "bound" as const),
+      new Promise<"pending">(resolve => setTimeout(() => resolve("pending"), 100)),
+    ]);
+    expect(early).toBe("pending");
+    await render(page, current("prep-answer-remounted", "answer-final"));
+    const binding = await bindingPromise;
+    expect(binding.identity).toBe("answer-final");
+    expect(binding.userIdentity).toBe("submitted-user");
+  } finally { await page.close(); }
+});
+
 test.each(["virtualized-user", "foreign-user", "missing-user", "ambiguous-answers"])(
   "assistant replacement preserves request ownership: %s", async scenario => {
     const page = await browser.newPage();
