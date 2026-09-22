@@ -8,8 +8,10 @@ import { augmentNativeModelCatalog } from "../src/model-catalog";
 const codex = resolve(process.argv[2] ?? "");
 const sandbox = process.argv[3] ?? "read-only";
 const discoverFirst = process.argv.includes("--discover-first");
-if (sandbox !== "read-only" && sandbox !== "workspace-write") {
-  throw new Error("Acceptance sandbox must be read-only or workspace-write");
+const matchCurrentFullAccess = process.argv.includes("--match-current-full-access");
+if (sandbox !== "read-only" && sandbox !== "workspace-write"
+  && !(sandbox === "danger-full-access" && matchCurrentFullAccess)) {
+  throw new Error("Use read-only/workspace-write, or explicitly match an already-authorized full-access task");
 }
 const config = JSON.parse(readFileSync(join(homedir(), ".codex-chatgpt-web/config.json"), "utf8"));
 const health = await fetch(`http://${config.host}:${config.port}/healthz`).then(r => r.json()) as {
@@ -36,7 +38,7 @@ const discovery = discoverFirst
   ? "First call Codex Native2's codex_tool_inventory once with query exec_command and include_schema true, using the current turn capability. This is a tool visibility diagnostic. Distinguish the outer native inventory from the connector functions actually callable in ChatGPT. If ChatGPT provides tool search, use it once to discover Codex Native2 codex_exec. Do not infer a tool is callable merely because its name appears in the inventory. "
   : "";
 const child = Bun.spawn([codex, "exec", "--ephemeral", "--skip-git-repo-check", "--json", "--sandbox", sandbox,
-  discovery + "Read nonce.txt in the current working directory by calling the native command execution tool: the ChatGPT Codex connector exposes it as codex_exec, forwarding to exec_command. Run Get-Content -LiteralPath nonce.txt. Its random contents are not in this prompt. Return exactly those contents. If codex_exec is not visible or callable, return MISSING_COMMAND_TOOL and briefly list the Codex connector tools actually available to you. If an inventory was requested, also summarize its actual result without copying capability tokens. Do not use view_image, image tools, browser tools, or alternative file-reading tricks. Do not retry an unavailable command tool. Do not spawn agents, change models, or modify files."], {
+  discovery + "Read nonce.txt in the current working directory by calling the native command execution tool: the ChatGPT Codex connector exposes it as codex_exec, forwarding to exec_command. Run Get-Content -LiteralPath nonce.txt. Its random contents are not in this prompt. Return exactly those contents. If the function is not exposed, return TOOL_NOT_EXPOSED. If an actual call is blocked by a permission or safety check, return TOOL_CALL_BLOCKED. For another invocation error, return TOOL_CALL_FAILED. Distinguish the tools actually exposed, whether a call was attempted, and the observed error; do not describe a blocked call as a missing tool. If an inventory was requested, summarize its actual result without copying capability tokens. Do not use view_image, image tools, browser tools, or alternative file-reading tricks. Do not retry an unavailable or blocked command, change permissions, spawn agents, change models, or modify files."], {
   cwd: root, env: { ...process.env, CODEX_HOME: root, OPENAI_API_KEY: "local-sol-acceptance" },
   stdin: "ignore", stdout: "pipe", stderr: "pipe", windowsHide: true,
 });
