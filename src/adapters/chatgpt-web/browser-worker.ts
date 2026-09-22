@@ -1275,6 +1275,7 @@ interface ChatGptSubmissionBaseline {
 interface ChatGptSubmissionObservationRecovery {
   page: Page;
   baseline: ChatGptSubmissionBaseline;
+  lastAttempt: number;
 }
 
 type ChatGptObservationRecovery = (
@@ -3143,6 +3144,7 @@ export class ChatGptBrowserWorker {
           );
           observationPage = recovered.page;
           observationBaseline = recovered.baseline;
+          recoveryAttempts = recovered.lastAttempt;
           continue;
         }
         if (!chatGptExternalProgressIsLive(latestProgress, Date.now(), graceMs)) throw error;
@@ -3682,6 +3684,7 @@ export class ChatGptBrowserWorker {
         );
         observationPage = recovered.page;
         observationBaseline = recovered.baseline;
+        recoveryAttempts = recovered.lastAttempt;
       }
     }
   }
@@ -4785,7 +4788,7 @@ export class ChatGptBrowserWorker {
         attempt: number,
         cause: Error,
         callerSignal?: AbortSignal,
-      ): Promise<void> => {
+      ): Promise<number> => {
         if (!launcherSurfaceId || !this.config.browserHostDescriptorPath) throw cause;
         console.warn(
           `[chatgpt-web] browser turn ${turn.traceId} is rebinding its existing launcher page after a stalled DOM probe:`
@@ -4795,7 +4798,7 @@ export class ChatGptBrowserWorker {
         // page.evaluate by itself. A failed disconnect is terminal: opening a replacement while
         // the stale probe still owns its transport would recreate the contention this rebind is
         // meant to remove.
-        const connection = await recoverOwnedBrowserPage(
+        const { value: connection, lastAttempt } = await recoverOwnedBrowserPage(
           attempt, MAX_CHATGPT_BROWSER_PAGE_REBINDS,
           currentAttempt => connectAfterClosingBrowserConnection(
           turnConnection,
@@ -4845,6 +4848,7 @@ export class ChatGptBrowserWorker {
         console.warn(
           `[chatgpt-web] browser turn ${turn.traceId} rebound its existing launcher page after a stalled DOM probe`,
         );
+        return lastAttempt;
       };
       const recoverPageObservation = async (
         attempt: number,
@@ -4853,7 +4857,7 @@ export class ChatGptBrowserWorker {
         checkpoint: "submission-page-rebound" | "assistant-page-rebound",
         abortSignal?: AbortSignal,
       ): Promise<ChatGptSubmissionObservationRecovery> => {
-        await rebindLauncherPage(attempt, cause, abortSignal);
+        const lastAttempt = await rebindLauncherPage(attempt, cause, abortSignal);
         const reboundBaseline: ChatGptSubmissionBaseline = {
           ...baseline,
           userTurns: page.locator(CHATGPT_USER_TURN_SELECTOR),
@@ -4861,7 +4865,7 @@ export class ChatGptBrowserWorker {
           domCache: {},
         };
         await diagnostics.capture(page, checkpoint);
-        return { page, baseline: reboundBaseline };
+        return { page, baseline: reboundBaseline, lastAttempt };
       };
       const recoverSubmissionObservation: ChatGptObservationRecovery = (
         attempt,
@@ -5240,7 +5244,7 @@ export class ChatGptBrowserWorker {
                 { cause: error },
               );
             }
-            await rebindLauncherPage(consecutiveObservationRebinds, error, turn.abortSignal);
+            consecutiveObservationRebinds = await rebindLauncherPage(consecutiveObservationRebinds, error, turn.abortSignal);
             submissionBaseline = {
               ...submissionBaseline,
               userTurns: page.locator(CHATGPT_USER_TURN_SELECTOR),

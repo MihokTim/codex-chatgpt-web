@@ -758,7 +758,7 @@ test("submission observation recovery resumes with rebound locators and is stric
     chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
   };
   type Evidence = "user_turn" | "assistant_turn" | "generation_running" | "mcp_tool_call";
-  type Recovery = { page: Page; baseline: unknown };
+  type Recovery = { page: Page; baseline: unknown; lastAttempt: number };
   const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
     waitForSubmissionAcceptedWithRecovery(
       page: Page,
@@ -797,7 +797,7 @@ test("submission observation recovery resumes with rebound locators and is stric
     undefined,
     async (attempt, _cause, baseline) => {
       recoveries.push({ attempt, baseline });
-      return { page: reboundPage, baseline: reboundBaseline };
+      return { page: reboundPage, baseline: reboundBaseline, lastAttempt: attempt };
     },
   );
   expect(evidence).toBe("assistant_turn");
@@ -818,9 +818,9 @@ test("submission observation recovery resumes with rebound locators and is stric
     undefined,
     0,
     undefined,
-    async () => {
+    async (attempt) => {
       boundedRecoveries += 1;
-      return { page: reboundPage, baseline: reboundBaseline };
+      return { page: reboundPage, baseline: reboundBaseline, lastAttempt: attempt };
     },
   )).rejects.toThrow("submission DOM remained unresponsive after 2 same-page rebinds");
   expect(boundedRecoveries).toBe(2);
@@ -836,7 +836,7 @@ test("an accepted turn rebinds the missing assistant observation and acknowledge
     initialTurnIdentities: string[];
     domCache: Record<string, unknown>;
   };
-  type Recovery = { page: Page; baseline: Baseline };
+  type Recovery = { page: Page; baseline: Baseline; lastAttempt: number };
   const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
     waitForNewAssistantTurn(
       page: Page,
@@ -906,7 +906,7 @@ test("an accepted turn rebinds the missing assistant observation and acknowledge
       expect(cause).toBeInstanceOf(ChatGptBrowserObservationTimeoutError);
       expect(baseline).toBe(firstBaseline);
       toolBatchRevision = progress.recordToolBatch(1);
-      return { page: reboundPage, baseline: reboundBaseline };
+      return { page: reboundPage, baseline: reboundBaseline, lastAttempt: attempt };
     },
   );
 

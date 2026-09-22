@@ -14,10 +14,13 @@ export async function recoverOwnedBrowserPage<T>(
   maxAttempts: number,
   reconnect: (attempt: number) => Promise<T>,
   signal?: AbortSignal,
-): Promise<T> {
+): Promise<{ value: T; lastAttempt: number }> {
+  if (firstAttempt < 1 || firstAttempt > maxAttempts) {
+    throw new RangeError("Owned browser page reconnect budget is exhausted");
+  }
   for (let attempt = firstAttempt; ; attempt++) {
     signal?.throwIfAborted();
-    try { return await reconnect(attempt); }
+    try { return { value: await reconnect(attempt), lastAttempt: attempt }; }
     catch (error) {
       signal?.throwIfAborted();
       if (!(error instanceof ChatGptWebAdapterError)
