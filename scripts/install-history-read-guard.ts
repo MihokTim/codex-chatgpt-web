@@ -36,7 +36,39 @@ if (import.meta.main) {
       for (const [file, sha] of Object.entries(receipt.fileHashes)) {
         if (digest(readFileSync(join(plugin, file))) !== sha) throw new Error(`Guard helper changed: ${file}`);
       }
-      console.log(JSON.stringify({ installed: true, ...receipt }));
+      const sourceRoot = dirname(fileURLToPath(import.meta.url));
+      const updates = ["history-guard-adapter.mjs", "bounded-thread-history.ts"]
+        .map(name => ({ name, content: readFileSync(join(sourceRoot, name)) }))
+        .filter(file => digest(file.content) !== receipt.fileHashes[file.name]);
+      if (mode === "--apply" && updates.length) {
+        const backup = resolve(homedir(), ".codex-chatgpt-web/backups", `desktop-history-guard-update-${Date.now()}`);
+        mkdirSync(backup, { recursive: true });
+        copyFileSync(receiptPath, join(backup, "history-guard-receipt.json"));
+        for (const file of updates) copyFileSync(join(plugin, file.name), join(backup, file.name));
+        const applied: string[] = [];
+        try {
+          for (const file of updates) {
+            const target = join(plugin, file.name);
+            if (digest(readFileSync(target)) !== receipt.fileHashes[file.name]) throw new Error("Guard helper changed during update");
+            const staged = `${target}.update.tmp`;
+            writeFileSync(staged, file.content, { flag: "wx" }); renameSync(staged, target);
+            applied.push(file.name);
+          }
+          receipt.previousFilesBackup = backup;
+          receipt.updatedAt = new Date().toISOString();
+          receipt.restartRequiredForExistingMcpServers = updates.some(file => file.name === "history-guard-adapter.mjs"
+            && file.content.toString("utf8").replace(/\r\n/g, "\n")
+              !== readFileSync(join(backup, file.name), "utf8").replace(/\r\n/g, "\n"));
+          for (const file of updates) receipt.fileHashes[file.name] = digest(file.content);
+          const stagedReceipt = `${receiptPath}.update.tmp`;
+          writeFileSync(stagedReceipt, JSON.stringify(receipt, null, 2), { flag: "wx" }); renameSync(stagedReceipt, receiptPath);
+        } catch (error) {
+          for (const name of applied) copyFileSync(join(backup, name), join(plugin, name));
+          throw error;
+        }
+      }
+      console.log(JSON.stringify({ installed: true, ...receipt, sourceAligned: mode === "--apply" || updates.length === 0,
+        ...(mode === "--check" ? { pendingSourceUpdates: updates.map(file => file.name) } : {}) }));
     } else {
       const patched = patchHistoryServer(source);
       const bun = join(homedir(), ".codex-chatgpt-web/versions/5.0.8-win32-x64/runtime/bun.exe");
