@@ -353,6 +353,57 @@ export function extractChatGptSteeringEnvironmentClaim(parsed: CodexParsedReques
   return undefined;
 }
 
+/**
+ * At local midnight Codex emits a current-date/filesystem refresh without cwd. Treat it as
+ * a partial claim only: the store must verify every resulting authority against this turn's
+ * native rollout. No cache or Git workspace list may supply the missing cwd.
+ */
+export function extractChatGptEnvironmentRefreshClaims(parsed: CodexParsedRequest): ChatGptTurnEnvironment[] | undefined {
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  if (!turnId) return undefined;
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const metadata = clientTurnMetadata(parsed);
+  const activeIndex = input.findLastIndex(value => isUserOrParentInstruction(record(value), metadata));
+  const active = record(input[activeIndex]);
+  if (itemTurnId(active) !== turnId || typeof active?.id !== "string" || !active.id) return undefined;
+  const claims = input.flatMap((value, index) => {
+    const item = record(value);
+    if (item?.type !== "message" || !/<\/?environment_context\b/i.test(rawMessageText(item))) return [];
+    const owner = itemTurnId(item);
+    return owner === undefined || owner === turnId ? [{ item, index }] : [];
+  });
+  if (claims.length < 2) return undefined;
+  const texts: string[] = [];
+  for (const [index, claim] of claims.entries()) {
+    if (claim.item.role !== "user" || itemTurnId(claim.item) !== turnId
+      || typeof claim.item.id !== "string" || !claim.item.id) return undefined;
+    const parts = Array.isArray(claim.item.content) ? claim.item.content : [];
+    const candidates = parts.map(part => record(part)?.text)
+      .filter((text): text is string => typeof text === "string" && /<\/?environment_context\b/i.test(text));
+    if (candidates.length !== 1 || !/^<environment_context>[\s\S]*<\/environment_context>$/.test(candidates[0]!.trim())) return undefined;
+    const text = candidates[0]!.trim();
+    if (index > 0) {
+      const kinds = record(claim.item.internal_chat_message_metadata_passthrough)?.content_item_kinds;
+      if (!Array.isArray(kinds) || kinds.length !== 1 || kinds[0] !== "environments.environment_context"
+        || parts.length !== 1 || /<\/?cwd\b|<\/?environments\b/i.test(text)
+        || !/<current_date>\d{4}-\d{2}-\d{2}<\/current_date>/.test(text)
+        || !/<timezone>[^<]+<\/timezone>/.test(text)
+        || !/<workspace_roots>/.test(text)) return undefined;
+    }
+    texts.push(text);
+  }
+  // The full starting claim must belong to the actual native environment/instruction pair.
+  const initial = claims[0]!;
+  const paired = input.some((_value, index) => index > initial.index && index <= activeIndex
+    && environmentBeforeUser(input, index, turnId, metadata) === texts[0]);
+  if (!paired) return undefined;
+  const starting = parseChatGptEnvironmentText(parsed, texts[0]!);
+  const escapedCwd = starting.cwd.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return [starting, ...texts.slice(1).map(text => parseChatGptEnvironmentText(parsed,
+    text.replace("<environment_context>", `<environment_context><cwd>${escapedCwd}</cwd>`)))];
+}
+
 function environmentBeforeUser(input: unknown[], userIndex: number, expectedTurnId?: string, metadata?: Record<string, unknown>): string | undefined {
   if (userIndex <= 0) return undefined;
   const user = record(input[userIndex]);

@@ -8,6 +8,7 @@ import {
   extractChatGptCompactionSourceRevision,
   extractChatGptContinuationEnvironmentClaim,
   extractChatGptSteeringEnvironmentClaim,
+  extractChatGptEnvironmentRefreshClaims,
   extractChatGptTurnIdentity,
   extractChatGptThreadSpawnLineage,
   extractChatGptRootThreadMetadata,
@@ -162,8 +163,11 @@ export class ChatGptThreadEnvironmentStore {
         ? unattributedChatGptEnvironmentMessages(parsed) : undefined;
       const steeringClaim = hasCurrentContext && !currentCompaction
         ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
-      if (hasCurrentContext && !currentCompaction && !historicalMessages && !steeringClaim) throw error;
-      const currentClaim = currentCompaction ? extractChatGptContinuationEnvironmentClaim(parsed) : steeringClaim;
+      const refreshClaims = hasCurrentContext && !currentCompaction
+        ? extractChatGptEnvironmentRefreshClaims(parsed) : undefined;
+      if (hasCurrentContext && !currentCompaction && !historicalMessages && !steeringClaim && !refreshClaims) throw error;
+      const currentClaims = currentCompaction ? [extractChatGptContinuationEnvironmentClaim(parsed)]
+        : refreshClaims ?? (steeringClaim ? [steeringClaim] : []);
       const rolloutIdentity = lineage ?? extractChatGptRootThreadMetadata(parsed);
       // Automatic compaction has a current turn_context; standalone compaction has only its
       // source turn_context. Either must be the latest native record, never an arbitrary ancestor.
@@ -180,8 +184,8 @@ export class ChatGptThreadEnvironmentStore {
           tools: parsed.context.tools,
         });
         if (rolloutEnvironment) {
-          if (currentClaim && !sameAuthority(currentClaim, rolloutEnvironment)) {
-            throw new Error(`${currentCompaction ? "Compaction continuation" : "Steering"} environment conflicts with its current Codex rollout`);
+          if (currentClaims.some(claim => !sameAuthority(claim, rolloutEnvironment))) {
+            throw new Error(`${currentCompaction ? "Compaction continuation" : refreshClaims ? "Native refresh" : "Steering"} environment conflicts with its current Codex rollout`);
           }
           this.set(rolloutIdentity.threadId, rolloutEnvironment);
           return rolloutEnvironment;

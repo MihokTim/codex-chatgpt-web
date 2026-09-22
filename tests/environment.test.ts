@@ -923,6 +923,62 @@ describe("trusted Codex task environment continuity", () => {
     expect(() => store.resolve(request)).toThrow();
   });
 
+  function midnightSteeringFixture(child = true) {
+    const fixture = steeredRolloutFixture(child, []);
+    const initialText = fixture.environment.content[1]!.text;
+    const refresh = {
+      type: "message", role: "user", id: "msg_midnight_refresh",
+      internal_chat_message_metadata_passthrough: {
+        turn_id: rolloutTurnId, content_item_kinds: ["environments.environment_context"],
+      },
+      content: [{ type: "input_text", text: initialText.replace(/<cwd>[^<]+<\/cwd>/, "")
+        .replace("<environment_context>", "<environment_context><current_date>2026-09-23</current_date><timezone>Asia/Tokyo</timezone>") }],
+    };
+    fixture.body.input.splice(-1, 0, refresh, {
+      type: "message", role: "assistant", id: "msg_after_midnight", phase: "commentary",
+      content: [{ type: "output_text", text: "Continuing the existing task." }],
+    });
+    return { ...fixture, refresh, request: parseRequest({ ...fixture.body, model: "chatgpt-web/light" }) };
+  }
+
+  test.each([false, true])("midnight filesystem refresh without cwd preserves authenticated steering (child=%s)", child => {
+    const { codexHome, request, auxiliary, refresh, body } = midnightSteeringFixture(child);
+    expect(() => extractChatGptTurnEnvironment(request)).toThrow("missing cwd");
+    const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
+    expect(store.resolve(request).roots).toEqual([root, auxiliary]);
+    body.input.splice(-1, 0, { ...refresh, id: "msg_second_midnight", content: [
+      { type: "input_text", text: refresh.content[0]!.text.replace("2026-09-23", "2026-09-24") },
+    ] }, { type: "message", role: "assistant", content: [{ type: "output_text", text: "Still working." }] });
+    expect(store.resolve(request).roots).toEqual([root, auxiliary]);
+  });
+
+  test("midnight refresh requires current native rollout authority even when the bridge cache is warm", () => {
+    const { codexHome, request, rolloutPath } = midnightSteeringFixture();
+    const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome);
+    store.resolve(request);
+    const native = readFileSync(rolloutPath, "utf8");
+    rmSync(rolloutPath);
+    expect(() => store.resolve(request)).toThrow("canonical rollout");
+    writeFileSync(rolloutPath, native.replaceAll(rolloutTurnId, rolloutParentId));
+    expect(() => store.resolve(request)).toThrow("current turn");
+  });
+
+  for (const invalid of ["untagged", "missing-id", "human-kind", "empty-cwd", "changed-roots", "changed-permissions", "no-filesystem", "duplicate-full-claim"] as const) {
+    test(`midnight refresh rejects conflicting or unproven environment updates: ${invalid}`, () => {
+      const { codexHome, request, refresh, body, environment, auxiliary } = midnightSteeringFixture();
+      const item = refresh as Record<string, any>;
+      if (invalid === "untagged") delete item.internal_chat_message_metadata_passthrough;
+      else if (invalid === "missing-id") delete item.id;
+      else if (invalid === "human-kind") item.internal_chat_message_metadata_passthrough.content_item_kinds = ["user.text"];
+      else if (invalid === "empty-cwd") item.content[0].text = item.content[0].text.replace("<environment_context>", "<environment_context><cwd/>");
+      else if (invalid === "changed-roots") item.content[0].text = item.content[0].text.replaceAll(auxiliary, resolve(root, "..", "unproven-root"));
+      else if (invalid === "changed-permissions") item.content[0].text = item.content[0].text.replace(dangerFullAccessProfileXml, readOnlyProfileXml);
+      else if (invalid === "no-filesystem") item.content[0].text = item.content[0].text.replace(/<filesystem>[\s\S]*<\/filesystem>/, "");
+      else body.input.splice(-2, 0, { ...environment, id: "msg_competing_full_claim" });
+      expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, codexHome).resolve(request)).toThrow();
+    });
+  }
+
   test.skipIf(process.platform !== "win32")("resumed Windows tasks accept the same indexed rollout with either path namespace", () => {
     for (const namespaceHome of [false, true]) for (const namespaceRollout of [false, true]) {
       const { codexHome, request, rolloutPath } = resumedRootFixture();
