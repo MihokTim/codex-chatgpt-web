@@ -60,7 +60,7 @@ test.each(["stuck-slider", "effort-unavailable", "rate-limit", "family-missing"]
       .then(() => { throw new Error(`The ${scenario} selection unexpectedly succeeded`); }, error => error);
     expect(failure).toBeInstanceOf(ChatGptWebAdapterError);
     if (scenario === "rate-limit") {
-      expect(failure).toMatchObject({ status: 429, code: "rate_limit_exceeded", retryable: true });
+      expect(failure).toMatchObject({ status: 429, code: "rate_limit_exceeded", retryable: false });
       return;
     }
     if (scenario === "effort-unavailable") {

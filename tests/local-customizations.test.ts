@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { chromium } from "playwright-core";
 import { CHATGPT_WEB_MODEL_ROUTES } from "../src/chatgpt-web-models";
 import { compactionBrowserEffortOverride, selectExplicitWebFamily } from "../src/adapters/chatgpt-web/browser-customizations";
+import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_FAILED_THINKING_LABELS, CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { readJsonRequestBody } from "../src/http-body";
@@ -53,14 +54,17 @@ test("extended encoded body limit accepts the former boundary but still rejects 
   await expect(readJsonRequestBody(make(129 * 1024 * 1024))).rejects.toThrow("Encoded request body exceeds");
 });
 
-test("explicit family selection switches actual Chromium DOM radio state and rejects ambiguity", async () => {
+test("explicit family selection and pre-submit verification use actual Chromium radio state", async () => {
   const browser = await chromium.launch({
     executablePath: process.env.LOCAL_REVIEW_CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe",
     headless: true,
   });
   try {
     const page = await browser.newPage();
-    await page.setContent(`<div id="menu"><div data-testid="composer-intelligence-picker-content">
+    await page.setContent(`<form><div id="prompt-textarea" contenteditable="true">fixture</div>
+      <button id="effort" type="button" aria-haspopup="menu" data-tone="neutral"
+        aria-expanded="false" aria-controls="menu">Pro</button></form>
+      <div id="menu"><div data-testid="composer-intelligence-picker-content">
       <div data-model-selection-view><div role="menuitem" aria-expanded="false"
         onclick="this.setAttribute('aria-expanded',String(this.getAttribute('aria-expanded')!=='true'))">Families</div></div>
       <div data-testid="composer-model-picker-slider-advanced-view">
@@ -73,6 +77,23 @@ test("explicit family selection switches actual Chromium DOM radio state and rej
     expect(await page.getByRole("menuitemradio", { name: "GPT-5.6 Sol", exact: true }).getAttribute("aria-checked")).toBe("true");
     expect(await selectExplicitWebFamily(page, activation, "latest")).toBe("最新");
     expect(await page.getByRole("menuitemradio", { name: "最新", exact: true }).getAttribute("aria-checked")).toBe("true");
+    const preflight = Object.create(ChatGptBrowserWorker.prototype) as {
+      assertSelectedEffort(page: unknown, mode: unknown): Promise<void>;
+    };
+    const selectedMode = {
+      browserFamily: "latest",
+      selection: { url: page.url(), label: "Pro", browserFamily: "latest" },
+    };
+    await page.locator("#menu").evaluate(element => { (element as HTMLElement).hidden = true; });
+    await preflight.assertSelectedEffort(page, selectedMode);
+    await page.getByRole("menuitemradio", { name: "最新", exact: true, includeHidden: true })
+      .evaluate(element => element.setAttribute("aria-checked", "false"));
+    await page.getByRole("menuitemradio", { name: "GPT-5.6 Sol", exact: true, includeHidden: true })
+      .evaluate(element => element.setAttribute("aria-checked", "true"));
+    await expect(preflight.assertSelectedEffort(page, selectedMode)).rejects.toMatchObject({
+      status: 502, code: "chatgpt_model_selection_failed", retryable: false,
+    });
+    await page.locator("#menu").evaluate(element => { (element as HTMLElement).hidden = false; });
     await page.locator("[data-model-selection-view]").evaluate(element => element.appendChild(element.firstElementChild!.cloneNode(true)));
     await expect(selectExplicitWebFamily(page, activation, "sol")).rejects.toThrow("family control is unavailable");
   } finally {

@@ -66,11 +66,17 @@ export async function focusChatGptEffortControl(control: Locator): Promise<boole
   return false;
 }
 
-export async function verifyExplicitWebFamily(menu: Locator, family: "sol" | "latest"): Promise<void> {
+export async function verifyExplicitWebFamily(
+  menu: Locator,
+  family: "sol" | "latest",
+  stage = "family-verification",
+): Promise<void> {
   const name = family === "sol" ? /^GPT-5\.6 Sol$/ : /^(Latest|最新)$/;
   const choice = menu.locator('[data-testid="composer-model-picker-slider-advanced-view"]')
     .getByRole("menuitemradio", { name, exact: true, includeHidden: true });
   if (await choice.count() !== 1 || await choice.getAttribute("aria-checked") !== "true") {
-    throw chatGptModelSelectionError(`stage=family-verification; family=${family}; ChatGPT model family changed during effort selection`);
+    throw chatGptModelSelectionError(
+      `stage=${stage}; family=${family}; ChatGPT model family does not match the requested browser family`,
+    );
   }
 }
