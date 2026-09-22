@@ -1,6 +1,6 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { CHATGPT_WEB_MODEL_ROUTES } from "../src/chatgpt-web-models";
 import { defaultConfig } from "../src/config";
@@ -32,6 +32,7 @@ process.env.CODEX_CHATGPT_WEB_HOME = join(root, "app");
 mkdirSync(process.env.CODEX_HOME, { recursive: true });
 const config = defaultConfig("browser-only");
 config.proAvailable = true;
+config.extraHighAvailable = true;
 config.subagentProtocol = "compatibility-v1";
 const catalogPath = join(root, "augmented-models.json");
 writeFileSync(catalogPath, `${JSON.stringify(augmentNativeModelCatalog(sourceCatalog, config))}\n`);
@@ -85,13 +86,17 @@ try {
     .slice(0, 5)
     .map(model => model.slug);
   const expectedSpawnOverrides = [
-    "gpt-5.6-sol",
-    ...CHATGPT_WEB_MODEL_ROUTES.slice(1).map(route => route.slug),
+    (catalog.models ?? []).find(model => !model.slug?.startsWith("chatgpt-web/")
+      && model.supported_in_api === true && model.visibility === "list")?.slug,
+    "chatgpt-web/light", "chatgpt-web/high", "chatgpt-web/extra-high", "chatgpt-web/pro",
   ];
   if (JSON.stringify(spawnOverrides) !== JSON.stringify(expectedSpawnOverrides)) {
     throw new Error(`Codex did not preserve the bounded V1 subagent roster: ${JSON.stringify(spawnOverrides)}`);
   }
   process.stdout.write("NATIVE_CODEX_CATALOG_SMOKE_OK\n");
 } finally {
+  if (dirname(resolve(root)) !== resolve(tmpdir()) || !root.includes("codex-chatgpt-web-codex-smoke-")) {
+    throw new Error("Refusing cleanup outside the dedicated temporary test directory");
+  }
   rmSync(root, { recursive: true, force: true });
 }

@@ -97,7 +97,7 @@ describe("native /models augmentation", () => {
     expect(pro.auto_compact_token_limit).toBe(285_000);
   });
 
-  test("keeps native Sol selectable in the bounded Compatibility V1 registry", () => {
+  test("keeps native and both Web Pro families selectable in the bounded Compatibility V1 registry", () => {
     const config = defaultConfig("full");
     config.subagentProtocol = "compatibility-v1";
     config.extraHighAvailable = true;
@@ -118,9 +118,19 @@ describe("native /models augmentation", () => {
 
     expect(spawnOverrides).toEqual([
       "gpt-5.6-sol",
-      ...CHATGPT_WEB_MODEL_ROUTES.slice(1).map(route => route.slug),
+      "chatgpt-web/light", "chatgpt-web/high", "chatgpt-web/extra-high", "chatgpt-web/pro",
     ]);
-    expect(models.find(model => model.slug === "chatgpt-web/light")?.priority).toBe(3);
+    expect(models.find(model => model.slug === "chatgpt-web/light")?.priority).toBe(2);
+    expect(models.find(model => model.slug === "chatgpt-web/medium")?.priority).toBe(3);
+  });
+
+  test("does not demote Medium when the Web delegation roster has room", () => {
+    const config = defaultConfig("full");
+    config.subagentProtocol = "compatibility-v1";
+    config.proAvailable = true;
+    config.extraHighAvailable = false;
+    const models = augmentNativeModelCatalog(source(), config).models as Array<Record<string, unknown>>;
+    expect(models.find(model => model.slug === "chatgpt-web/medium")?.priority).toBe(2);
   });
 
   test("Compatibility V1 preserves an explicit native delegation disable while pinning supported rows", () => {

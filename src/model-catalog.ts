@@ -47,13 +47,15 @@ function routedModelPriority(
   const priority = modelPriority(template);
   if (priority === undefined
     || config.subagentProtocol !== "compatibility-v1"
-    || route.slug !== "chatgpt-web/light") return priority;
+    || route.slug !== "chatgpt-web/medium"
+    || availableChatGptWebModelRoutes(config).length < 5) return priority;
   if (priority === Number.MAX_SAFE_INTEGER) {
     throw new Error("Native Codex model template priority cannot reserve the Compatibility V1 roster");
   }
-  // Codex V1 exposes at most five model overrides. Keep the native Sol row plus the four useful
-  // delegated Web efforts (Medium, High, Extra High, Pro); Instant remains a selectable root model
-  // but does not displace Pro from spawn_agent's bounded registry.
+  // Codex V1 exposes at most five model overrides. `light` is now Sol Pro, so reserving its
+  // former Instant position outside that roster hides Sol from delegation. Keep the native
+  // template, Sol Pro, High, Extra High and latest-family Pro. Medium stays selectable by
+  // root tasks; only lower its delegation priority when all five Web routes are available.
   return priority + 1;
 }
 
