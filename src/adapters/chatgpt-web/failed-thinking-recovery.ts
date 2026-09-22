@@ -4,6 +4,7 @@ import { ChatGptWebAdapterError } from "./adapter-error";
 import type { ChatGptTurnSession } from "./turn-execution";
 
 const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+const MAX_RECOVERY_FENCES = 512;
 
 export function nativeToolResultProof(message: CodexToolResultMessage): string {
   // Timestamps are transport metadata; content, tool identity and error state are evidence.
@@ -62,6 +63,11 @@ export class FailedThinkingRecoveryPolicy {
 
   entry(key: string): RecoveryEntry | undefined { return this.entries.get(key); }
 
+  capacity(): { used: number; limit: number; remaining: number } {
+    return { used: this.entries.size, limit: MAX_RECOVERY_FENCES,
+      remaining: Math.max(0, MAX_RECOVERY_FENCES - this.entries.size) };
+  }
+
   startReplacement(key: string): void {
     const entry = this.entries.get(key);
     if (!entry || entry.replacementStarted) {
@@ -92,7 +98,7 @@ export class FailedThinkingRecoveryPolicy {
     if (previous) return previous.source.deref() === source ? previous.ready : undefined;
     const input = nativeInput(parsed);
     // Keep fences for the process lifetime. Never evict one and silently permit stale replay.
-    if (!input?.length || this.entries.size >= 512) return undefined;
+    if (!input?.length || this.entries.size >= MAX_RECOVERY_FENCES) return undefined;
     const ready = Promise.resolve().then(prepare);
     void ready.catch(() => {});
     this.entries.set(key, { source: new WeakRef(source), inputLength: input.length, inputHash: digest(input), ready, replacementStarted: false });

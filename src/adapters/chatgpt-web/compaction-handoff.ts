@@ -402,9 +402,15 @@ export interface StructuredCompactionOwner {
 const structuredCompactionRuns = new Map<string, CachedCompactionRun>();
 // Small failure fences survive result-cache expiry. Never evict a fence and replenish retries.
 const structuredCompactionFailures = new Map<string, unknown>();
+const MAX_COMPACTION_FAILURE_FENCES = 512;
 const structuredCompactionOwners = new Map<string, Promise<void>>();
 const structuredCompactionInterruptions = new Map<string, StructuredCompactionInterruption>();
 const STRUCTURED_COMPACTION_RUN_TTL_MS = 30 * 60_000;
+
+export function structuredCompactionFailureCapacity(): { used: number; limit: number; remaining: number } {
+  return { used: structuredCompactionFailures.size, limit: MAX_COMPACTION_FAILURE_FENCES,
+    remaining: Math.max(0, MAX_COMPACTION_FAILURE_FENCES - structuredCompactionFailures.size) };
+}
 
 function nativeTurnIdentityKey(threadId: string, turnId: string): string {
   if (!threadId.trim() || !turnId.trim()) {
@@ -476,7 +482,7 @@ export function runStructuredCompactionOnce(
   if (existing) return existing.promise;
   const interrupted = structuredCompactionInterruption(owner);
   if (interrupted) return Promise.reject(interrupted);
-  if (owner.rememberFailure && structuredCompactionFailures.size >= 512) return Promise.reject(new ChatGptWebAdapterError(
+  if (owner.rememberFailure && structuredCompactionFailures.size >= MAX_COMPACTION_FAILURE_FENCES) return Promise.reject(new ChatGptWebAdapterError(
     "ChatGPT compaction failure tracking is full. Restart the bridge after saving the current work.",
     { status: 409, errorType: "invalid_request_error", code: "compaction_failure_tracking_full", retryable: false },
   ));

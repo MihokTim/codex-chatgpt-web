@@ -72,3 +72,16 @@ test("a retired replacement cannot be recreated and missing delivery proofs cann
   session.markResultDelivered("unproven");
   expect(hasCompleteRecoveryHistory(parsed, session)).toBeFalse();
 });
+
+test("recovery capacity reports exhaustion without evicting old replay fences", async () => {
+  const { parsed, session } = fixture();
+  const policy = new FailedThinkingRecoveryPolicy();
+  expect(policy.capacity()).toEqual({ used: 0, limit: 512, remaining: 512 });
+  for (let index = 0; index < 512; index++) await policy.reserve(`epoch-${index}`, parsed, session, async () => {});
+  expect(policy.capacity()).toEqual({ used: 512, limit: 512, remaining: 0 });
+  expect(policy.reserve("overflow", parsed, session, async () => { throw new Error("must not start"); })).toBeUndefined();
+  const original = policy.entry("epoch-0")!;
+  expect(policy.reserve("epoch-0", parsed, session, async () => {})).toBe(original.ready);
+  policy.startReplacement("epoch-0");
+  expect(() => policy.startReplacement("epoch-0")).toThrow("already started");
+});
