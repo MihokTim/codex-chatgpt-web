@@ -16,7 +16,10 @@ import {
 } from "../../config";
 import { estimateTokens } from "../../lib/token-estimate";
 import { CHATGPT_FAILED_THINKING_LABELS, CHATGPT_STOPPED_THINKING_LABELS } from "./ui-labels";
-import { focusChatGptEffortControl, selectExplicitWebFamily, verifyExplicitWebFamily } from "./browser-customizations";
+import {
+  focusChatGptEffortControl, normalizeChatGptModelSelectionError, selectExplicitWebFamily,
+  verifyExplicitWebFamily, type ChatGptModelSelectionContext,
+} from "./browser-customizations";
 import { browserViewportUnavailable, recoverOwnedBrowserPage } from "./browser-observation-recovery";
 import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
@@ -848,6 +851,7 @@ type SelectedChatGptWebModelMode = ChatGptWebModelMode & {
     url: string;
     label: string;
     browserFamily?: "sol" | "latest";
+    sliderRange?: { min: number; max: number };
   };
 };
 
@@ -2480,7 +2484,27 @@ export class ChatGptBrowserWorker {
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
     recoveryAttempt = 0,
   ): Promise<SelectedChatGptWebModelMode> {
+    const context: ChatGptModelSelectionContext = {
+      stage: "composer", family: capabilities.browserModelFamily, effort: reasoning,
+    };
+    try {
+      return await this.configureModelAndEffort(page, modelId, reasoning, capabilities, context, captureDiagnostic, recoveryAttempt);
+    } catch (error) {
+      throw normalizeChatGptModelSelectionError(error, context);
+    }
+  }
+
+  private async configureModelAndEffort(
+    page: Page,
+    modelId: string,
+    reasoning: string | undefined,
+    capabilities: ChatGptWebCapabilities,
+    context: ChatGptModelSelectionContext,
+    captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    recoveryAttempt = 0,
+  ): Promise<SelectedChatGptWebModelMode> {
     const mode = resolveChatGptWebModelMode(modelId, reasoning, capabilities);
+    context.effort = mode.effort;
     const controlError = (stage: string, diagnostic: string, detail?: string,
       code?: "chatgpt_model_selection_failed" | "chatgpt_effort_unavailable") => chatGptModelSelectionError(
       `stage=${stage}; requested_family=${capabilities.browserModelFamily ?? "default"}; requested_effort=${mode.effort}; ${diagnostic}`,
@@ -2513,6 +2537,7 @@ export class ChatGptBrowserWorker {
       return this.selectModelAndEffort(page, modelId, reasoning, capabilities, captureDiagnostic, recoveryAttempt + 1);
     };
     const effortWaitAbort = new AbortController();
+    context.stage = "effort-control";
     try {
       const ready = await Promise.race([
         currentEffort.waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "effort" as const),
@@ -2520,11 +2545,9 @@ export class ChatGptBrowserWorker {
       ]);
       if (ready === "session-expired") await throwIfChatGptSessionFailureAlert(page);
     } catch (error) {
-      if (error instanceof ChatGptWebAdapterError) throw error;
+      if (error instanceof ChatGptWebAdapterError || (error instanceof Error && error.name === "AbortError")) throw error;
       await throwIfChatGptSessionFailureAlert(page);
-      throw controlError("effort-control",
-        "ChatGPT rendered the composer but its model/effort control did not become ready",
-      );
+      throw error;
     } finally {
       effortWaitAbort.abort();
     }
@@ -2532,12 +2555,14 @@ export class ChatGptBrowserWorker {
     await throwIfChatGptRateLimitDialog(page);
     await captureDiagnostic?.("effort-control-ready");
     await throwIfChatGptRateLimitDialog(page);
+    context.stage = "effort-menu";
     let activation = await activateChatGptEffortMenu(page, currentEffort);
     if (activation.method === "pointerdown") {
       await captureDiagnostic?.("effort-menu-pointerdown-fallback");
     }
     await captureDiagnostic?.("effort-menu-open-requested");
     if (capabilities.browserModelFamily) {
+      context.stage = "family-selection";
       mode.browserFamily = await selectExplicitWebFamily(page, activation, capabilities.browserModelFamily);
       const familyToggle = activation.menu.locator('[data-model-selection-view] [role="menuitem"][aria-expanded]');
       if (await familyToggle.getAttribute("aria-expanded") === "true") {
@@ -2553,6 +2578,7 @@ export class ChatGptBrowserWorker {
     const effortSlider = activation.slider;
     const sliderContainer = activation.sliderContainer;
     const waitAbort = new AbortController();
+    context.stage = "effort-slider";
     try {
       const ready = await Promise.race([
         sliderContainer.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal })
@@ -2565,12 +2591,10 @@ export class ChatGptBrowserWorker {
       if (ready === "session-expired") await throwIfChatGptSessionFailureAlert(page);
       await captureDiagnostic?.("effort-slider-visible");
     } catch (error) {
-      if (error instanceof ChatGptWebAdapterError) throw error;
+      if (error instanceof ChatGptWebAdapterError || (error instanceof Error && error.name === "AbortError")) throw error;
       await throwIfChatGptRateLimitDialog(page);
       await throwIfChatGptSessionFailureAlert(page);
-      throw controlError("effort-slider",
-        `ChatGPT effort slider did not become ready for item index ${uiEffortIndex}`,
-      );
+      throw error;
     } finally {
       waitAbort.abort();
     }
@@ -2597,6 +2621,7 @@ export class ChatGptBrowserWorker {
     }
     const sliderControl = effortSlider.locator("xpath=ancestor::*[@role='menuitem'][1]");
     while (sliderState.value !== targetValue) {
+      context.stage = "effort-focus";
       await throwIfChatGptRateLimitDialog(page);
       await throwIfChatGptSessionFailureAlert(page);
       if (!await focusChatGptEffortControl(sliderControl)) {
@@ -2618,6 +2643,7 @@ export class ChatGptBrowserWorker {
       const direction = targetValue > sliderState.value ? 1 : -1;
       const key = direction > 0 ? "ArrowRight" : "ArrowLeft";
       const previousValue = sliderState.value;
+      context.stage = "effort-step";
       await sliderControl.press(key);
       const changeDeadline = Date.now() + 5_000;
       do {
@@ -2645,6 +2671,7 @@ export class ChatGptBrowserWorker {
         );
       }
     }
+    context.stage = "effort-verification";
     await settleChatGptUi();
     if (capabilities.browserModelFamily) {
       await verifyExplicitWebFamily(activation.menu, capabilities.browserModelFamily);
@@ -2668,29 +2695,31 @@ export class ChatGptBrowserWorker {
       selection: {
         url: selectionUrl,
         label: (await currentEffort.innerText()).trim(),
+        sliderRange: { min: selectedState.min, max: selectedState.max },
         ...(capabilities.browserModelFamily ? { browserFamily: capabilities.browserModelFamily } : {}),
       },
     };
-    await this.assertSelectedEffort(page, selectedMode);
-    const confirmation = await activateChatGptEffortMenu(page, currentEffort);
-    await confirmation.slider.waitFor({ state: "attached", timeout: 5_000 });
-    const confirmedState = parseChatGptEffortSliderState(
-      await confirmation.slider.getAttribute("aria-valuemin"),
-      await confirmation.slider.getAttribute("aria-valuemax"),
-      await confirmation.slider.getAttribute("aria-valuenow"),
-    );
-    if (!confirmedState || confirmedState.min !== selectedState.min
-      || confirmedState.max !== selectedState.max || confirmedState.value !== targetValue) {
-      throw controlError("effort-persistence", "ChatGPT did not persist the requested effort after closing its menu");
-    }
-    await page.keyboard.press("Escape");
-    await settleChatGptUi();
     await this.assertSelectedEffort(page, selectedMode);
     await captureDiagnostic?.("effort-selection-confirmed");
     return selectedMode;
   }
 
   private async assertSelectedEffort(page: Page, mode: SelectedChatGptWebModelMode): Promise<void> {
+    const context: ChatGptModelSelectionContext = {
+      stage: "preflight-surface", family: mode.selection?.browserFamily, effort: mode.effort,
+    };
+    try {
+      await this.verifySelectedEffort(page, mode, context);
+    } catch (error) {
+      throw normalizeChatGptModelSelectionError(error, context);
+    }
+  }
+
+  private async verifySelectedEffort(
+    page: Page,
+    mode: SelectedChatGptWebModelMode,
+    context: ChatGptModelSelectionContext,
+  ): Promise<void> {
     if (!mode.selection) return;
     const composer = await this.activeComposer(page);
     const controls = composer.locator("xpath=ancestor::form[1]")
@@ -2712,10 +2741,11 @@ export class ChatGptBrowserWorker {
       return control;
     };
     const control = await assertClosedSurface();
-    if (!mode.selection.browserFamily) return;
+    if (!mode.selection.browserFamily && !mode.selection.sliderRange) return;
 
     let failure: unknown;
     try {
+      context.stage = "preflight-menu";
       const activation = await activateChatGptEffortMenu(page, control, {
         settleMs: CHATGPT_MODEL_PREFLIGHT_TIMEOUT_MS,
       });
@@ -2723,6 +2753,7 @@ export class ChatGptBrowserWorker {
         state: "attached",
         timeout: CHATGPT_MODEL_PREFLIGHT_TIMEOUT_MS,
       });
+      context.stage = "preflight-effort";
       const sliderState = parseChatGptEffortSliderState(
         await activation.slider.getAttribute("aria-valuemin"),
         await activation.slider.getAttribute("aria-valuemax"),
@@ -2731,22 +2762,24 @@ export class ChatGptBrowserWorker {
       const targetValue = mode.uiEffortIndex === null || !sliderState
         ? undefined
         : sliderState.min + mode.uiEffortIndex;
+      const range = mode.selection.sliderRange;
       if (!sliderState || targetValue === undefined || targetValue > sliderState.max
+        || (range && (sliderState.min !== range.min || sliderState.max !== range.max))
         || sliderState.value !== targetValue) {
         throw chatGptModelSelectionError(
           `stage=preflight-effort; family=${mode.browserFamily ?? "default"}; ChatGPT changed the selected effort before submission`,
         );
       }
-      await verifyExplicitWebFamily(activation.menu, mode.selection.browserFamily, "preflight-family");
+      context.stage = "preflight-family";
+      if (mode.selection.browserFamily) {
+        await verifyExplicitWebFamily(activation.menu, mode.selection.browserFamily, context.stage);
+      }
     } catch (error) {
-      failure = error instanceof ChatGptWebAdapterError
-        ? error
-        : chatGptModelSelectionError(
-          `stage=preflight-family; family=${mode.browserFamily ?? "default"}; ChatGPT could not reopen the selected model controls before submission`,
-        );
+      failure = normalizeChatGptModelSelectionError(error, context);
     }
 
     try {
+      context.stage = "preflight-restore";
       await page.keyboard.press("Escape");
       const deadline = Date.now() + CHATGPT_MODEL_PREFLIGHT_TIMEOUT_MS;
       let restored = false;
@@ -2777,11 +2810,7 @@ export class ChatGptBrowserWorker {
       }
       await assertClosedSurface();
     } catch (error) {
-      const restoreFailure = error instanceof ChatGptWebAdapterError
-        ? error
-        : chatGptModelSelectionError(
-          `stage=preflight-restore; family=${mode.browserFamily ?? "default"}; ChatGPT did not restore its ready composer before submission`,
-        );
+      const restoreFailure = normalizeChatGptModelSelectionError(error, context);
       failure ??= restoreFailure;
     }
     if (failure !== undefined) throw failure;

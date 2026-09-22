@@ -2335,9 +2335,9 @@ test("Luna-only browser turns verify selector absence instead of opening an effo
     ): Promise<{ displayLabel: string; uiEffortIndex: number | null }>;
   }).selectModelAndEffort;
 
-  const mode = await selectModelAndEffort.call({
+  const mode = await selectModelAndEffort.call(Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     activeComposer: async () => composer,
-  }, {
+  }), {
     locator: () => hiddenDialog,
   }, "gpt-5.6-luna", "low", {
     localToolsEnabled: true,
@@ -2810,9 +2810,9 @@ test("effort selection stops as soon as ChatGPT reports an expired session", asy
     ): Promise<unknown>;
   }).selectModelAndEffort;
 
-  const selection = selectModelAndEffort.call({
+  const selection = selectModelAndEffort.call(Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     activeComposer: async () => composer,
-  }, {
+  }), {
     locator: (selector: string) => selector.includes('[role="alert"]') ? sessionAlert : hiddenDialog,
   }, "gpt-5.6-sol", "high", {
     localToolsEnabled: true,
@@ -2876,9 +2876,9 @@ test("effort menu waiting stops when ChatGPT reports an expired session", async 
     ): Promise<unknown>;
   }).selectModelAndEffort;
 
-  const selection = selectModelAndEffort.call({
+  const selection = selectModelAndEffort.call(Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     activeComposer: async () => composer,
-  }, {
+  }), {
     locator: (selector: string) => {
       if (selector.includes('[role="alert"]')) return sessionAlert;
       if (selector.includes('[role="menu"]') || selector.includes("composer-intelligence-picker-content")) return effortMenu;
