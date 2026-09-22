@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, writeFileSync, rmSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { boundedThreadHistory, HISTORY_REPLY_BYTES } from "../scripts/bounded-thread-history";
@@ -20,6 +20,7 @@ function fixture(items: Record<string, unknown>[][]) {
   const db = new Database(join(home, "thread_history_1.sqlite"));
   db.exec("CREATE TABLE thread_turns(thread_id TEXT,turn_id TEXT,rollout_ordinal INTEGER,status TEXT,started_at INTEGER,completed_at INTEGER,duration_ms INTEGER,error_json TEXT,PRIMARY KEY(thread_id,turn_id));CREATE TABLE thread_items(thread_id TEXT,turn_id TEXT,item_id TEXT,item_type TEXT,rollout_ordinal INTEGER,item_json TEXT,PRIMARY KEY(thread_id,turn_id,item_id));CREATE TABLE thread_history_projection_state(thread_id TEXT PRIMARY KEY,next_rollout_byte_offset INTEGER)");
   db.query("INSERT INTO thread_history_projection_state VALUES(?,?)").run("test-thread", statSync(rollout).size);
+  db.exec("BEGIN");
   for (let i = 0; i < items.length; i++) {
     db.query("INSERT INTO thread_turns VALUES(?,?,?,?,?,?,?,?)").run("test-thread", `turn-${i}`, i, "completed", 1, 2, 1, null);
     for (let j = 0; j < items[i]!.length; j++) {
@@ -27,6 +28,7 @@ function fixture(items: Record<string, unknown>[][]) {
       db.query("INSERT INTO thread_items VALUES(?,?,?,?,?,?)").run("test-thread", `turn-${i}`, item.id, String((item as any).type), j, JSON.stringify(item));
     }
   }
+  db.exec("COMMIT");
   db.close();
   return { home, close: () => rmSync(home, { recursive: true, force: true }) };
 }
@@ -64,6 +66,32 @@ test("small text-only local task and remote task pass through; cached results ne
     expect(boundedThreadHistory({ threadId: "unknown" }, f.home)).toBeNull();
   } finally { f.close(); }
 });
+test("behind, ahead, or missing projection is bounded instead of falling through to Desktop", () => {
+  const f = fixture([[{ type: "agentMessage", text: "Small cached text" }]]);
+  try {
+    const rollout = join(f.home, "fixture.jsonl");
+    appendFileSync(rollout, "unprojected bytes");
+    const behind = boundedThreadHistory({ threadId: "test-thread" }, f.home)!;
+    expect(behind.source).toBe("bounded_local_persisted_history");
+    expect(behind.safety.projectionCaughtUp).toBe(false);
+    expect(behind.safety.projectionByteOffset).toBeLessThan(behind.safety.rolloutBytes);
+
+    const db = new Database(join(f.home, "thread_history_1.sqlite"));
+    db.query("UPDATE thread_history_projection_state SET next_rollout_byte_offset=? WHERE thread_id=?")
+      .run(statSync(rollout).size + 100, "test-thread");
+    db.close();
+    const ahead = boundedThreadHistory({ threadId: "test-thread" }, f.home)!;
+    expect(ahead.safety.projectionCaughtUp).toBe(false);
+    expect(ahead.safety.projectionByteOffset).toBeGreaterThan(ahead.safety.rolloutBytes);
+
+    const missingDb = new Database(join(f.home, "thread_history_1.sqlite"));
+    missingDb.query("DELETE FROM thread_history_projection_state WHERE thread_id=?").run("test-thread");
+    missingDb.close();
+    const missing = boundedThreadHistory({ threadId: "test-thread" }, f.home)!;
+    expect(missing.safety.projectionCaughtUp).toBeNull();
+    expect(missing.safety.projectionByteOffset).toBeNull();
+  } finally { f.close(); }
+});
 test("large user/agent text and tool outputs respect limits; inline media omitted", () => {
   const f = fixture([[{ type: "userMessage", content: [{ type: "text", text: "x".repeat(50000) }, { type: "image", url: "data:image/png;base64,PRIVATE-MEDIA" }] },
     { type: "agentMessage", text: "y".repeat(50000) }, { type: "commandExecution", aggregatedOutput: "OUTPUT-SENTINEL".repeat(4000), command: "test", status: "completed" }]]);
@@ -96,7 +124,7 @@ test("missing local cache fails closed and invalid limits do not reach Desktop",
 });
 
 const stockServer = join(homedir(), ".codex/plugins/cache/openai-bundled/codex-app-tools/0.1.4/server.mjs");
-test.skipIf(process.env.CODEX_HISTORY_GUARD_MCP_TEST !== "1")("real MCP server intercepts large reads before Desktop RPC and passes unrelated tools unchanged", async () => {
+test.skipIf(process.env.CODEX_HISTORY_GUARD_MCP_TEST !== "1")("repo-patched MCP server intercepts large reads before Desktop RPC and passes unrelated tools unchanged", async () => {
   const f = fixture([[{ type: "imageGeneration", result: "MEDIA-PAYLOAD".repeat(100000), savedPath: "fixture.png" }]]);
   const pipe = process.platform === "win32" ? `\\\\.\\pipe\\history-guard-test-${crypto.randomUUID()}` : join(f.home, "test.sock");
   const source = readFileSync(stockServer, "utf8");
@@ -124,8 +152,9 @@ test.skipIf(process.env.CODEX_HISTORY_GUARD_MCP_TEST !== "1")("real MCP server i
   });
   await new Promise<void>(resolve => host.listen(pipe, resolve));
   const client = new Client({ name: "fixture", version: "1" });
-  const command = receipt ? join(homedir(), ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe") : process.execPath;
-  const testedServer = receipt ? stockServer : join(f.home, "server.mjs");
+  const node = join(homedir(), ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe");
+  const command = existsSync(node) ? node : process.execPath;
+  const testedServer = join(f.home, "server.mjs");
   const transport = new StdioClientTransport({ command, args: [testedServer, "--interaction-client-id", "test-caller"],
     env: { ...Object.fromEntries(Object.entries(process.env).filter((v): v is [string, string] => v[1] !== undefined)), CODEX_HOME: f.home, CODEX_APP_TOOLS_PIPE_PATH: pipe }, stderr: "pipe" });
   try {

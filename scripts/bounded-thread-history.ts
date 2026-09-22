@@ -56,12 +56,15 @@ export function boundedThreadHistory(args: HistoryArgs, home = process.env.CODEX
       FROM thread_items WHERE thread_id=? AND turn_id=?`).get(args.threadId, turn.turn_id) as Row);
     let rolloutBytes: number | null = null;
     try { rolloutBytes = statSync(thread.rollout_path).size; } catch { /* Cache may outlive the source. */ }
+    const projection = history.query("SELECT next_rollout_byte_offset FROM thread_history_projection_state WHERE thread_id=?").get(args.threadId) as Row | null;
+    const projectionCaughtUp = rolloutBytes != null && projection != null
+      ? projection.next_rollout_byte_offset === rolloutBytes : null;
     const sourceBytes = totals.reduce((sum, row) => sum + row.bytes, 0);
-    const shouldGuard = args.cursor?.startsWith(CURSOR_PREFIX) || sourceBytes > PAGE_SOURCE_BYTES
+    // A stale or unverifiable projection cannot prove that Desktop's live full-item read is safe.
+    const shouldGuard = projectionCaughtUp !== true || args.cursor?.startsWith(CURSOR_PREFIX) || sourceBytes > PAGE_SOURCE_BYTES
       || totals.some(row => row.images > 0 || row.largest > RAW_ITEM_BYTES)
       || (thread.history_mode !== "paginated" && (rolloutBytes ?? 0) > PAGE_SOURCE_BYTES);
     if (!shouldGuard) return null;
-    const projection = history.query("SELECT next_rollout_byte_offset FROM thread_history_projection_state WHERE thread_id=?").get(args.threadId) as Row | null;
     const nextCursor = rows.length > limit && turns.length ? CURSOR_PREFIX + Buffer.from(JSON.stringify({ threadId: args.threadId, turnId: turns.at(-1)!.turn_id })).toString("base64url") : null;
     const result: Row = {
       schemaVersion: 1,
@@ -72,7 +75,7 @@ export function boundedThreadHistory(args: HistoryArgs, home = process.env.CODEX
       page: { order: "newest_first", limit, nextCursor, hasMore: nextCursor !== null },
       safety: { mediaBodiesOmitted: true, maxResponseBytes: HISTORY_REPLY_BYTES, selectedStoredBytes: sourceBytes,
         rolloutBytes, projectionByteOffset: projection?.next_rollout_byte_offset ?? null,
-        projectionCaughtUp: rolloutBytes != null && projection != null ? projection.next_rollout_byte_offset === rolloutBytes : null },
+        projectionCaughtUp },
       turns: [],
     };
     let budget = HISTORY_REPLY_BYTES - Buffer.byteLength(JSON.stringify(result)) - 16384;
