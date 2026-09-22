@@ -6,7 +6,7 @@ import { compactionBrowserEffortOverride, selectExplicitWebFamily } from "../src
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_FAILED_THINKING_LABELS, CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
-import { defaultConfig } from "../src/config";
+import { defaultConfig, defaultChromeExecutable } from "../src/config";
 import { routeChatGptWebRequest } from "../src/server";
 import type { CodexParsedRequest } from "../src/types";
 
@@ -47,7 +47,7 @@ test("public routes bind explicit browser families without trusting a stale call
 
 test("explicit family selection and pre-submit verification use actual Chromium radio state", async () => {
   const browser = await chromium.launch({
-    executablePath: process.env.LOCAL_REVIEW_CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe",
+    executablePath: process.env.LOCAL_REVIEW_CHROME || defaultChromeExecutable(),
     headless: true,
   });
   try {

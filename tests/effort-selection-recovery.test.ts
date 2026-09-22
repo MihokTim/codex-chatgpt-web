@@ -1,3 +1,4 @@
+import { defaultChromeExecutable } from "../src/config";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
@@ -6,7 +7,7 @@ import { CHATGPT_WEB_MODEL_ID, type ChatGptWebCapabilities } from "../src/adapte
 let browser: Browser;
 beforeAll(async () => {
   browser = await chromium.launch({
-    executablePath: process.env.LOCAL_REVIEW_CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe",
+    executablePath: process.env.LOCAL_REVIEW_CHROME || defaultChromeExecutable(),
     headless: true,
   });
 });

@@ -1,3 +1,4 @@
+import { defaultChromeExecutable } from "../src/config";
 import { expect, test } from "bun:test";
 import { chromium, type Page } from "playwright-core";
 import { ChatGptWebAdapterError, chatGptModelSelectionError } from "../src/adapters/chatgpt-web/adapter-error";
@@ -25,7 +26,7 @@ test("terminal HTTP classification does not reinterpret model-selection diagnost
 test.each(["stuck-slider", "effort-unavailable", "rate-limit", "family-missing"] as const)(
   "real DOM selection failure remains distinct: %s", async scenario => {
   const browser = await chromium.launch({
-    executablePath: process.env.LOCAL_REVIEW_CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe",
+    executablePath: process.env.LOCAL_REVIEW_CHROME || defaultChromeExecutable(),
     headless: true,
   });
   try {
