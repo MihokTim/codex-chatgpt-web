@@ -60,7 +60,6 @@ import {
   CHATGPT_TEMPORARY_CHAT_URL,
   CHATGPT_USER_TURN_SELECTOR,
   activateChatGptEffortMenu,
-  chatGptEffortMenuForControl,
   detectChatGptAccountCapabilities,
   parseChatGptEffortSliderState,
 } from "../../chatgpt-session";
@@ -133,6 +132,7 @@ export const CHATGPT_COMPLETION_SETTLE_MS = 2_000;
 export const CHATGPT_TOOL_CONFIRMATION_TIMEOUT_MS = 60_000;
 export const MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS = 3;
 const CHATGPT_CONNECTOR_MENTION_QUERY = "@codex";
+const CHATGPT_MODEL_PREFLIGHT_TIMEOUT_MS = 5_000;
 const CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS = 10_000;
 const CHATGPT_SMOKE_TEXT = "Reply with exactly: CODEX WEB GPT READY";
 const CHATGPT_SMOKE_EXPECTED = "CODEX WEB GPT READY";
@@ -2694,23 +2694,96 @@ export class ChatGptBrowserWorker {
     const composer = await this.activeComposer(page);
     const controls = composer.locator("xpath=ancestor::form[1]")
       .locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
-    if (page.url() !== mode.selection.url || !mode.selection.label || await controls.count() !== 1) {
-      throw chatGptModelSelectionError(
-        `stage=preflight-surface; family=${mode.browserFamily ?? "default"}; ChatGPT changed the selected model's browser surface before submission`,
+    const assertClosedSurface = async (): Promise<Locator> => {
+      if (page.url() !== mode.selection!.url || !mode.selection!.label || await controls.count() !== 1) {
+        throw chatGptModelSelectionError(
+          `stage=preflight-surface; family=${mode.browserFamily ?? "default"}; ChatGPT changed the selected model's browser surface before submission`,
+        );
+      }
+      const control = controls.first();
+      if ((await control.innerText()).trim() !== mode.selection!.label
+        || await control.getAttribute("aria-expanded") !== "false"
+        || !await composer.isEditable()) {
+        throw chatGptModelSelectionError(
+          `stage=preflight-effort; family=${mode.browserFamily ?? "default"}; ChatGPT did not retain the selected effort in its ready composer`,
+        );
+      }
+      return control;
+    };
+    const control = await assertClosedSurface();
+    if (!mode.selection.browserFamily) return;
+
+    let failure: unknown;
+    try {
+      const activation = await activateChatGptEffortMenu(page, control, {
+        settleMs: CHATGPT_MODEL_PREFLIGHT_TIMEOUT_MS,
+      });
+      await activation.slider.waitFor({
+        state: "attached",
+        timeout: CHATGPT_MODEL_PREFLIGHT_TIMEOUT_MS,
+      });
+      const sliderState = parseChatGptEffortSliderState(
+        await activation.slider.getAttribute("aria-valuemin"),
+        await activation.slider.getAttribute("aria-valuemax"),
+        await activation.slider.getAttribute("aria-valuenow"),
       );
+      const targetValue = mode.uiEffortIndex === null || !sliderState
+        ? undefined
+        : sliderState.min + mode.uiEffortIndex;
+      if (!sliderState || targetValue === undefined || targetValue > sliderState.max
+        || sliderState.value !== targetValue) {
+        throw chatGptModelSelectionError(
+          `stage=preflight-effort; family=${mode.browserFamily ?? "default"}; ChatGPT changed the selected effort before submission`,
+        );
+      }
+      await verifyExplicitWebFamily(activation.menu, mode.selection.browserFamily, "preflight-family");
+    } catch (error) {
+      failure = error instanceof ChatGptWebAdapterError
+        ? error
+        : chatGptModelSelectionError(
+          `stage=preflight-family; family=${mode.browserFamily ?? "default"}; ChatGPT could not reopen the selected model controls before submission`,
+        );
     }
-    const control = controls.first();
-    if ((await control.innerText()).trim() !== mode.selection.label
-      || await control.getAttribute("aria-expanded") !== "false"
-      || !await composer.isEditable()) {
-      throw chatGptModelSelectionError(
-        `stage=preflight-effort; family=${mode.browserFamily ?? "default"}; ChatGPT did not retain the selected effort in its ready composer`,
-      );
+
+    try {
+      await page.keyboard.press("Escape");
+      const deadline = Date.now() + CHATGPT_MODEL_PREFLIGHT_TIMEOUT_MS;
+      let restored = false;
+      do {
+        const expanded = await control.getAttribute("aria-expanded").catch(() => null);
+        const state = await control.getAttribute("data-state").catch(() => null);
+        if (expanded === "false" && state !== "open" && await composer.isEditable().catch(() => false)) {
+          restored = true;
+          break;
+        }
+        if (Date.now() >= deadline) break;
+        await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
+      } while (true);
+      if (!restored) {
+        throw chatGptModelSelectionError(
+          `stage=preflight-restore; family=${mode.browserFamily ?? "default"}; ChatGPT did not close the model menu before submission`,
+        );
+      }
+      await composer.focus({ timeout: Math.max(1, deadline - Date.now()) });
+      const composerFocused = await composer.evaluate(element => (
+        element.isConnected && (element === element.ownerDocument.activeElement
+          || element.contains(element.ownerDocument.activeElement))
+      ));
+      if (!composerFocused) {
+        throw chatGptModelSelectionError(
+          `stage=preflight-restore; family=${mode.browserFamily ?? "default"}; ChatGPT did not return focus to the composer before submission`,
+        );
+      }
+      await assertClosedSurface();
+    } catch (error) {
+      const restoreFailure = error instanceof ChatGptWebAdapterError
+        ? error
+        : chatGptModelSelectionError(
+          `stage=preflight-restore; family=${mode.browserFamily ?? "default"}; ChatGPT did not restore its ready composer before submission`,
+        );
+      failure ??= restoreFailure;
     }
-    if (mode.selection.browserFamily) {
-      const menu = await chatGptEffortMenuForControl(page, control);
-      await verifyExplicitWebFamily(menu, mode.selection.browserFamily, "preflight-family");
-    }
+    if (failure !== undefined) throw failure;
   }
 
   private async activeComposer(

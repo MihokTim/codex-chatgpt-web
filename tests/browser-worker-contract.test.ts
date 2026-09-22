@@ -2711,43 +2711,34 @@ test("only a size rejection of the current owned browser submission is non-retry
 });
 
 test("effort readback rejects a changed selection or surface before activating Send", async () => {
-  const selection = { url: "https://chatgpt.com/?temporary-chat=true", label: "Alto", browserFamily: "sol" };
+  const selection = { url: "https://chatgpt.com/?temporary-chat=true", label: "Alto" };
   const state = {
     url: selection.url,
     label: "Alto",
     expanded: "false",
     editable: true,
     count: 1,
-    familyChecked: true,
   };
   const control = {
     innerText: async () => state.label,
-    getAttribute: async (name: string) => name === "aria-expanded"
-      ? state.expanded
-      : name === "aria-controls" ? "model-menu" : null,
+    getAttribute: async (name: string) => name === "aria-expanded" ? state.expanded : null,
   };
   const controls = { filter() { return this; }, count: async () => state.count, first: () => control };
   const composer = { locator: () => ({ locator: () => controls }), isEditable: async () => state.editable };
-  const familyChoice = {
-    count: async () => 1,
-    getAttribute: async (name: string) => name === "aria-checked" && state.familyChecked ? "true" : "false",
-  };
-  const familyMenu = { locator: () => ({ getByRole: () => familyChoice }) };
   const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), { activeComposer: async () => composer }) as {
     assertSelectedEffort(page: unknown, mode: unknown): Promise<void>;
   };
-  const page = { url: () => state.url, locator: () => familyMenu };
+  const page = { url: () => state.url };
   const mode = { selection };
   await worker.assertSelectedEffort(page, mode);
   for (const change of [{ label: "Medio" }, { url: "https://chatgpt.com/" }, { expanded: "true" },
-    { editable: false }, { count: 2 }, { familyChecked: false }]) {
+    { editable: false }, { count: 2 }]) {
     Object.assign(state, {
       url: selection.url,
       label: "Alto",
       expanded: "false",
       editable: true,
       count: 1,
-      familyChecked: true,
     }, change);
     await expect(worker.assertSelectedEffort(page, mode)).rejects.toMatchObject({
       status: 502, errorType: "server_error", code: "chatgpt_model_selection_failed", retryable: false,

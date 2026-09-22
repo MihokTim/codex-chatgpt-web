@@ -84,6 +84,208 @@ async function fixture(page: Page, scenario: Scenario) {
     </script>`);
 }
 
+type PreflightMenuLifecycle = "hidden-retained" | "dom-removed" | "controls-removed" | "dom-replaced";
+type PreflightFamily = "sol" | "latest";
+
+function selectedPreflightMode(page: Page, family: PreflightFamily = "sol") {
+  return {
+    browserFamily: family === "sol" ? "GPT-5.6 Sol" : "Latest",
+    modelId: CHATGPT_WEB_MODEL_ID,
+    effort: "max",
+    displayLabel: "Pro",
+    uiEffortIndex: 4,
+    thinkEnabled: false,
+    localTools: false,
+    selection: { url: page.url(), label: "Pro", browserFamily: family },
+  };
+}
+
+const preflightWorker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+  waitForSubmissionAcceptedWithRecovery: async () => "user_turn",
+}) as unknown as {
+  assertSelectedEffort(page: Page, mode: ReturnType<typeof selectedPreflightMode>): Promise<void>;
+  sendAttachedPrompt(
+    page: Page,
+    baseline: unknown,
+    captureDiagnostic?: (checkpoint: string) => Promise<void>,
+    abortSignal?: AbortSignal,
+    externalProgress?: unknown,
+    submissionLifecycle?: {
+      onSendActivated?: () => void | Promise<void>;
+      onSubmitted?: () => void;
+    },
+  ): Promise<string>;
+};
+
+async function preflightFixture(
+  page: Page,
+  lifecycle: PreflightMenuLifecycle,
+  liveFamily: PreflightFamily = "sol",
+): Promise<void> {
+  page.setDefaultTimeout(3_000);
+  const ariaControls = lifecycle === "controls-removed"
+    ? ""
+    : ` aria-controls="${lifecycle === "dom-removed" ? "menu-missing" : "menu-stale"}"`;
+  await page.setContent(`<form id="composer-form">
+    <div id="prompt-textarea" contenteditable="true">fixture</div>
+    <button id="effort" type="button" aria-haspopup="menu" data-tone="neutral"
+      aria-expanded="false"${ariaControls}>Pro</button>
+    <button type="submit" data-testid="send-button">Send</button>
+  </form><div id="menu-root"></div>
+  <script>
+  const lifecycle=${JSON.stringify(lifecycle)};
+  const liveFamily=${JSON.stringify(liveFamily)};
+  const root=document.querySelector('#menu-root');
+  const control=document.querySelector('#effort');
+  const composer=document.querySelector('#prompt-textarea');
+  const state=window.preflightState={opens:0,familyClicks:0,sliderKeys:0,submits:0,menuIds:[],submitStates:[]};
+  function createMenu(id,family,hidden){
+    const menu=document.createElement('div');
+    menu.id=id;menu.setAttribute('role','menu');menu.hidden=hidden;
+    menu.innerHTML='<div data-testid="composer-intelligence-picker-content">'
+      +'<div data-testid="composer-model-picker-slider-advanced-view">'
+      +'<button role="menuitemradio" aria-checked="'+String(family==='sol')+'">GPT-5.6 Sol</button>'
+      +'<button role="menuitemradio" aria-checked="'+String(family==='latest')+'">Latest</button>'
+      +'</div><div data-model-reasoning-effort-slider><div role="menuitem" tabindex="0">'
+      +'<span role="slider" aria-hidden="true" aria-valuemin="0" aria-valuemax="4" aria-valuenow="4"></span>Effort'
+      +'</div></div></div>';
+    menu.querySelectorAll('[role=menuitemradio]').forEach(choice=>choice.addEventListener('click',()=>state.familyClicks++));
+    menu.querySelector('[data-model-reasoning-effort-slider] [role=menuitem]').addEventListener('keydown',event=>{
+      if(event.key==='ArrowLeft'||event.key==='ArrowRight')state.sliderKeys++;
+    });
+    root.appendChild(menu);state.menuIds.push(id);return menu;
+  }
+  if(lifecycle==='hidden-retained'||lifecycle==='controls-removed')createMenu('menu-stale',liveFamily,true);
+  if(lifecycle==='dom-replaced')createMenu('menu-stale',liveFamily==='sol'?'latest':'sol',true);
+  function visibleMenus(){return Array.from(root.querySelectorAll('[role=menu]')).filter(menu=>!menu.hidden)}
+  control.addEventListener('click',()=>{
+    state.opens++;control.setAttribute('aria-expanded','true');
+    if(lifecycle==='hidden-retained'||lifecycle==='controls-removed'){
+      root.querySelector('#menu-stale').hidden=false;
+      if(lifecycle==='controls-removed')control.removeAttribute('aria-controls');
+      return;
+    }
+    root.querySelectorAll('[id^=menu-live-]').forEach(menu=>menu.remove());
+    const menu=createMenu('menu-live-'+state.opens,liveFamily,false);
+    if(lifecycle==='dom-removed')control.setAttribute('aria-controls',menu.id);
+    else control.setAttribute('aria-controls','menu-stale');
+  });
+  document.addEventListener('keydown',event=>{
+    if(event.key!=='Escape')return;
+    if(lifecycle==='hidden-retained'||lifecycle==='controls-removed')root.querySelector('#menu-stale').hidden=true;
+    else root.querySelectorAll('[id^=menu-live-]').forEach(menu=>menu.remove());
+    control.setAttribute('aria-expanded','false');
+    if(lifecycle==='controls-removed')control.removeAttribute('aria-controls');
+    if(lifecycle==='dom-replaced')control.setAttribute('aria-controls','menu-stale');
+    composer.focus();
+  });
+  document.querySelector('#composer-form').addEventListener('submit',event=>{
+    event.preventDefault();state.submits++;
+    state.submitStates.push({expanded:control.getAttribute('aria-expanded'),visibleMenus:visibleMenus().length});
+  });
+  composer.focus();
+  </script>`);
+}
+
+async function readPreflightState(page: Page) {
+  return page.evaluate(() => {
+    const state = (window as unknown as {
+      preflightState: {
+        opens: number; familyClicks: number; sliderKeys: number; submits: number;
+        menuIds: string[]; submitStates: Array<{ expanded: string | null; visibleMenus: number }>;
+      };
+    }).preflightState;
+    const root = document.querySelector("#menu-root")!;
+    return {
+      ...state,
+      expanded: document.querySelector("#effort")!.getAttribute("aria-expanded"),
+      ariaControls: document.querySelector("#effort")!.getAttribute("aria-controls"),
+      activeElement: document.activeElement?.id,
+      visibleMenus: Array.from(root.querySelectorAll<HTMLElement>('[role="menu"]')).filter(menu => !menu.hidden).length,
+    };
+  });
+}
+
+for (const lifecycle of ["hidden-retained", "dom-removed", "controls-removed", "dom-replaced"] as const) {
+  test(`pre-submit verification reacquires the open menu without reselection: ${lifecycle}`, async () => {
+    const page = await browser.newPage();
+    try {
+      await preflightFixture(page, lifecycle);
+      const mode = selectedPreflightMode(page);
+      await preflightWorker.assertSelectedEffort(page, mode);
+      await preflightWorker.assertSelectedEffort(page, mode);
+      const state = await readPreflightState(page);
+      expect(state.opens).toBe(2);
+      expect(state.familyClicks).toBe(0);
+      expect(state.sliderKeys).toBe(0);
+      expect(state.expanded).toBe("false");
+      expect(state.activeElement).toBe("prompt-textarea");
+      expect(state.visibleMenus).toBe(0);
+      if (lifecycle === "dom-removed" || lifecycle === "dom-replaced") {
+        expect(state.menuIds.filter(id => id.startsWith("menu-live-"))).toEqual(["menu-live-1", "menu-live-2"]);
+      }
+      if (lifecycle === "controls-removed") expect(state.ariaControls).toBeNull();
+    } finally { await page.close(); }
+  }, 20_000);
+}
+
+test("pre-submit verification rejects a real family change from a newly opened menu", async () => {
+  const page = await browser.newPage();
+  try {
+    await preflightFixture(page, "dom-replaced", "latest");
+    const failure = await preflightWorker.assertSelectedEffort(page, selectedPreflightMode(page, "sol"))
+      .then(() => null, error => error);
+    expect(failure).toMatchObject({
+      status: 502, code: "chatgpt_model_selection_failed", retryable: false,
+    });
+    expect(failure.message).toContain("stage=preflight-family");
+    const state = await readPreflightState(page);
+    expect(state.expanded).toBe("false");
+    expect(state.activeElement).toBe("prompt-textarea");
+    expect(state.visibleMenus).toBe(0);
+  } finally { await page.close(); }
+}, 20_000);
+
+for (const [transport, lifecycle] of [
+  ["normal", "hidden-retained"],
+  ["multipart-stage", "dom-removed"],
+  ["multipart-final", "dom-replaced"],
+] as const) {
+  test(`send activation returns to the composer before ${transport} submission`, async () => {
+    const page = await browser.newPage();
+    try {
+      await preflightFixture(page, lifecycle);
+      const mode = selectedPreflightMode(page);
+      const lifecycleEvents: string[] = [];
+      const evidence = await preflightWorker.sendAttachedPrompt(
+        page,
+        {},
+        undefined,
+        undefined,
+        undefined,
+        {
+          onSendActivated: async () => {
+            lifecycleEvents.push("activated");
+            await preflightWorker.assertSelectedEffort(page, mode);
+            const state = await readPreflightState(page);
+            expect(state.expanded).toBe("false");
+            expect(state.activeElement).toBe("prompt-textarea");
+            expect(state.visibleMenus).toBe(0);
+          },
+          onSubmitted: () => { lifecycleEvents.push("submitted"); },
+        },
+      );
+      expect(evidence).toBe("user_turn");
+      expect(lifecycleEvents).toEqual(["activated", "submitted"]);
+      const state = await readPreflightState(page);
+      expect(state.submits).toBe(1);
+      expect(state.submitStates).toEqual([{ expanded: "false", visibleMenus: 0 }]);
+      expect(state.familyClicks).toBe(0);
+      expect(state.sliderKeys).toBe(0);
+    } finally { await page.close(); }
+  }, 20_000);
+}
+
 test("a single implicit-focus press can leave the real DOM slider at 0 with focus on the menu", async () => {
   const page = await browser.newPage();
   try {

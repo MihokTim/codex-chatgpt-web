@@ -59,7 +59,10 @@ function effortMenuSelectorForId(menuId: string): string {
 
 export async function chatGptEffortMenuForControl(page: Page, control: Locator): Promise<Locator> {
   const menuId = await control.getAttribute("aria-controls").catch(() => null);
-  if (menuId) return page.locator(effortMenuSelectorForId(menuId));
+  if (menuId) {
+    const ownedMenu = page.locator(effortMenuSelectorForId(menuId));
+    if (await ownedMenu.isVisible().catch(() => false)) return ownedMenu;
+  }
   return page.locator(CHATGPT_EFFORT_MENU_SELECTOR).filter({ visible: true }).last();
 }
 
