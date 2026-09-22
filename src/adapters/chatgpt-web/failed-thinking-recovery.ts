@@ -18,8 +18,12 @@ function nativeInput(parsed: CodexParsedRequest): unknown[] | undefined {
 /** Fail closed unless every issued tool result is still present in canonical native history. */
 export function hasCompleteRecoveryHistory(parsed: CodexParsedRequest, session: ChatGptTurnSession): boolean {
   const proofs = session.completedToolResultProofs();
+  return proofs !== undefined && hasCompleteNativeToolHistory(parsed, proofs);
+}
+
+export function hasCompleteNativeToolHistory(parsed: CodexParsedRequest, proofs: ReadonlyMap<string, string>): boolean {
   const input = nativeInput(parsed);
-  if (!proofs || !input?.length) return false;
+  if (!input?.length) return false;
   const results = new Map<string, string>();
   for (const message of parsed.context.messages) {
     if (message.role !== "toolResult") continue;

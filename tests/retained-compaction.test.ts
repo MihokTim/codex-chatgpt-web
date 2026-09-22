@@ -1443,6 +1443,14 @@ test("a timed-out fresh compaction retains its owner until helper cleanup comple
     expect(events.filter(event => event.type === "error")).toHaveLength(2);
     expect(events.some(event => event.type === "done")).toBeFalse();
     await observe();
+    expect(browserStarts).toBe(1);
+    expect(events.at(-1)).toMatchObject({ type: "error", code: "compaction_handoff_timeout", retryable: false });
+    // A later explicit native turn is distinct; reconnecting the failed turn is not a retry budget.
+    const later = request(true);
+    (later._rawBody as { client_metadata: Record<string, string> }).client_metadata = {
+      "x-codex-turn-metadata": JSON.stringify({ thread_id: "thread_retained_compaction", turn_id: "turn_after_timeout" }),
+    };
+    await adapter.runTurn!(later, { headers: new Headers() }, event => events.push(event));
     expect(browserStarts).toBe(2);
     expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
   } finally {

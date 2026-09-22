@@ -6,7 +6,7 @@ import type {
 } from "../../types";
 import { extractChatGptCompactionSourceRevision } from "./environment";
 import type { ChatGptBrowserWorker } from "./browser-worker";
-import { ChatGptCompactionHandoffAccepted } from "./adapter-error";
+import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
 import type { CompactionTransactionHandle } from "./compaction-transaction";
 import type { ChatGptWebCapabilities } from "./model";
 import { compactionBrowserEffortOverride } from "./browser-customizations";
@@ -389,6 +389,8 @@ interface StructuredCompactionInterruption {
 
 export interface StructuredCompactionOwner {
   ownerKey: string;
+  /** Production requests must not open a fresh browser on a replay of a terminal failure. */
+  rememberFailure?: boolean;
   /** Every externally addressable browser trace owned by this structured compaction. */
   traceIds: readonly string[];
   /** Exact native Codex owner, when supplied by the current Responses request. */
@@ -397,6 +399,8 @@ export interface StructuredCompactionOwner {
 }
 
 const structuredCompactionRuns = new Map<string, CachedCompactionRun>();
+// Small failure fences survive result-cache expiry. Never evict a fence and replenish retries.
+const structuredCompactionFailures = new Map<string, unknown>();
 const structuredCompactionOwners = new Map<string, Promise<void>>();
 const structuredCompactionInterruptions = new Map<string, StructuredCompactionInterruption>();
 const STRUCTURED_COMPACTION_RUN_TTL_MS = 30 * 60_000;
@@ -456,6 +460,7 @@ function pruneStructuredCompactionRuns(): void {
 /** Return the canonical result of an exact compact request, even after its source was retired. */
 export function existingStructuredCompactionRun(key: string): Promise<string> | undefined {
   pruneStructuredCompactionRuns();
+  if (structuredCompactionFailures.has(key)) return Promise.reject(structuredCompactionFailures.get(key));
   return structuredCompactionRuns.get(key)?.promise;
 }
 
@@ -465,10 +470,15 @@ export function runStructuredCompactionOnce(
   start: (operatorSignal: AbortSignal, retainOwnershipUntil: (settlement: Promise<void>) => void) => Promise<string>,
 ): Promise<string> {
   pruneStructuredCompactionRuns();
+  if (structuredCompactionFailures.has(key)) return Promise.reject(structuredCompactionFailures.get(key));
   const existing = structuredCompactionRuns.get(key);
   if (existing) return existing.promise;
   const interrupted = structuredCompactionInterruption(owner);
   if (interrupted) return Promise.reject(interrupted);
+  if (owner.rememberFailure && structuredCompactionFailures.size >= 512) return Promise.reject(new ChatGptWebAdapterError(
+    "ChatGPT compaction failure tracking is full. Restart the bridge after saving the current work.",
+    { status: 409, errorType: "invalid_request_error", code: "compaction_failure_tracking_full", retryable: false },
+  ));
   const abort = new AbortController();
   const previousOwner = structuredCompactionOwners.get(owner.ownerKey);
   const physicalSettlements: Promise<void>[] = previousOwner ? [previousOwner] : [];
@@ -476,6 +486,9 @@ export function runStructuredCompactionOnce(
     if (previousOwner) await withCompactionAbort(previousOwner, abort.signal);
     if (abort.signal.aborted) throw abortReason(abort.signal);
     return start(abort.signal, settlement => { physicalSettlements.push(settlement); });
+  }).catch(error => {
+    if (owner.rememberFailure) structuredCompactionFailures.set(key, error);
+    throw error;
   });
   // Return a deadline failure promptly, while its physical browser owner still blocks retries
   // and cancel-all completion. A cancelled queued run must also retain its predecessor's gate.

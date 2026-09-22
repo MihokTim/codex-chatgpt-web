@@ -2301,7 +2301,7 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
-  test("replays an ordinary post-tool final after one retained structured compaction handoff", async () => {
+  test("replays an already completed post-tool final after one retained structured compaction handoff", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h3-adapter-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
@@ -2451,6 +2451,11 @@ describe("ChatGPT outer-native harness v4", () => {
           output: result.content,
         },
       );
+      // Complete the ordinary response before compaction begins. An active tool boundary now
+      // retires without feeding results back into the old context (covered separately).
+      const completedSource = structuredClone(compactRequest);
+      completedSource._compactionRequest = false;
+      await adapter.runTurn!(completedSource, { headers: new Headers() }, () => {});
       const compactEvents: AdapterEvent[] = [];
       await adapter.runTurn!(compactRequest, { headers: new Headers() }, event => compactEvents.push(event));
       expect(compactEvents.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });

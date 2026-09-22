@@ -394,8 +394,13 @@ export class ChatGptTurnSession {
   }
 
   completedToolResultProofs(): ReadonlyMap<string, string> | undefined {
-    if (this.outstandingById.size || !this.deliveredResultIds.size
-      || this.deliveredResultProofs.size !== this.deliveredResultIds.size) return undefined;
+    if (this.outstandingById.size || !this.deliveredResultIds.size) return undefined;
+    return this.deliveredToolResultProofs();
+  }
+
+  /** Proofs already delivered to this context, including while its next batch is paused. */
+  deliveredToolResultProofs(): ReadonlyMap<string, string> | undefined {
+    if (this.deliveredResultProofs.size !== this.deliveredResultIds.size) return undefined;
     return new Map(this.deliveredResultProofs);
   }
 

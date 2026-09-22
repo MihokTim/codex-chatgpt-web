@@ -29,6 +29,7 @@ import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt
 import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
 import { failedThinkingRecoveryPolicy, hasCompleteRecoveryHistory, nativeToolResultProof } from "./failed-thinking-recovery";
+import { retireActiveCompactionBoundary } from "./compaction-source-history";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnRoundKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
 import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
@@ -907,6 +908,7 @@ export function createChatGptWebAdapter(
                 compactionExecutionKey,
                 {
                   ownerKey: `${executionNamespace}:${chatGptThreadOwnershipKey(parsed)}`,
+                  rememberFailure: true,
                   traceIds: [
                     compactionTraceId,
                     handoffTraceId,
@@ -948,6 +950,7 @@ export function createChatGptWebAdapter(
                   const operationSignal = AbortSignal.any([operatorSignal, handoffDeadline.signal]);
                   const sourceConversationKey = chatGptConversationKey(parsed, executionNamespace);
                   const runFreshCompactionFallback = async (reason: string): Promise<string> => {
+                    operationSignal.throwIfAborted();
                     console.warn(`[chatgpt-web] retained compaction fallback=${reason}`);
                     // The fallback is a new bounded phase. Each exact multipart acknowledgement
                     // and the final accepted compact prompt re-arms the five-minute liveness budget;
@@ -1016,23 +1019,31 @@ export function createChatGptWebAdapter(
                       }
                       rawSummary = await runFreshCompactionFallback("zero_risk_source_already_completed");
                     } else if (source.isActive() && source.runtime.mode === "tools") {
-                      const settlement = await settleActiveCompactionSource(
+                      const retiredAtBoundary = await retireActiveCompactionBoundary(
                         parsed,
                         source,
-                        structuredBroker!,
+                        () => chatGptTurnSessions.retireConversationAndWait(retainedKey),
                         operationSignal,
                       );
-                      preserveFinalResponse = !settlement.compactionInstructionDelivered;
-                      rawSummary = await requestRetainedCompactionHandoff(
-                        worker,
-                        parsed,
-                        source,
-                        structuredBroker!,
-                        configuredCapabilities,
-                        handoffTraceId,
-                        operationSignal,
-                        handoffTimeoutMs,
-                      );
+                      if (retiredAtBoundary) {
+                        rawSummary = await runFreshCompactionFallback("active_tool_boundary");
+                      } else {
+                        // A final answer can win the race before the exclusive boundary is held.
+                        if (source.isActive()) {
+                          const settlement = await settleActiveCompactionSource(
+                            parsed, source, structuredBroker!, operationSignal,
+                          );
+                          preserveFinalResponse = !settlement.compactionInstructionDelivered;
+                        } else {
+                          const outcome = await source.browserOutcome;
+                          if (outcome.type === "error") throw outcome.error;
+                          preserveFinalResponse = true;
+                        }
+                        rawSummary = await requestRetainedCompactionHandoff(
+                          worker, parsed, source, structuredBroker!, configuredCapabilities,
+                          handoffTraceId, operationSignal, handoffTimeoutMs,
+                        );
+                      }
                     } else {
                       if (source.isActive()) {
                         const outcome = await withAbort(source.browserOutcome, operationSignal);
