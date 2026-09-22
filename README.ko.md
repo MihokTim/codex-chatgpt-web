@@ -2,6 +2,13 @@
   <img src="assets/readme/hero.svg" width="960" alt="웹 모델로 전환해도, Codex는 그대로. 내 ChatGPT 플랜. 내 작업 흐름. 모델의 가능성을 최대한.">
 </p>
 
+> **비공식 fork 빌드:** 이 브랜치는 업스트림 커밋 `eaf4f09`를 기준으로 한
+> `MihokTim/codex-chatgpt-web` 배포판 `mihoktim-5.0.8-upstream-eaf4f09-20260922`입니다.
+> 아래 다운로드 버튼은 계속 업스트림 v5.0.8을 가리키며 이 fork의 변경 사항을 포함하지 않습니다.
+> [fork 통합 문서](docs/fork-integration.md),
+> [업스트림 프로젝트](https://github.com/miuuyy/codex-chatgpt-web),
+> [fork 지원](https://github.com/MihokTim/codex-chatgpt-web/issues)을 확인하세요.
+
 <p align="center">
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;

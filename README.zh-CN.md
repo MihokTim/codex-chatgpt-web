@@ -2,6 +2,13 @@
   <img src="assets/readme/hero.svg" width="960" alt="切换到网页版模型，继续使用 Codex。你的 ChatGPT 订阅。你的工作流。充分发挥模型能力。">
 </p>
 
+> **非官方fork构建：** 此分支是基于上游提交 `eaf4f09` 的
+> `MihokTim/codex-chatgpt-web` 发行版 `mihoktim-5.0.8-upstream-eaf4f09-20260922`。
+> 下方下载按钮仍指向上游v5.0.8，不包含本fork的更改。
+> 请参阅[fork集成说明](docs/fork-integration.md)、
+> [上游项目](https://github.com/miuuyy/codex-chatgpt-web)和
+> [fork支持](https://github.com/MihokTim/codex-chatgpt-web/issues)。
+
 <p align="center">
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;

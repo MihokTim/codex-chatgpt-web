@@ -2,6 +2,13 @@
   <img src="assets/readme/hero.svg" width="960" alt="Web モデルに切り替えても、Codex はそのまま。ChatGPT のプラン。いつものワークフロー。モデルの力を最大限に。">
 </p>
 
+> **非公式forkビルド：** このブランチは、上流コミット `eaf4f09` を基準にした
+> `MihokTim/codex-chatgpt-web` の配布版 `mihoktim-5.0.8-upstream-eaf4f09-20260922` です。
+> 下のダウンロードボタンは引き続き上流v5.0.8を指しており、このforkの変更は含みません。
+> [fork統合ノート](docs/fork-integration.md)、
+> [上流プロジェクト](https://github.com/miuuyy/codex-chatgpt-web)、
+> [forkの問い合わせ先](https://github.com/MihokTim/codex-chatgpt-web/issues)を参照してください。
+
 <p align="center">
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;

@@ -2,6 +2,13 @@
   <img src="assets/readme/hero.svg" width="960" alt="Switch to web models. Stay in Codex. Your ChatGPT plan. Your workflow. Maximum capabilities.">
 </p>
 
+> **Unofficial fork build:** this branch is the `MihokTim/codex-chatgpt-web` distribution
+> `mihoktim-5.0.8-upstream-eaf4f09-20260922`, based on upstream commit `eaf4f09`.
+> The download buttons below still point to upstream v5.0.8 and do not include these fork changes.
+> See the [fork integration notes](docs/fork-integration.md), the
+> [upstream project](https://github.com/miuuyy/codex-chatgpt-web), and
+> [fork support](https://github.com/MihokTim/codex-chatgpt-web/issues).
+
 <p align="center">
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
   <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v5.0.8/codex-web-gpt-5.0.8-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
