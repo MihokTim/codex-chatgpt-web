@@ -15,11 +15,13 @@ import {
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { VERSION } from "../src/version";
 import { assertBuildSourceUnchanged, readBuildSource } from "./build-provenance";
+import { validateForkMetadata } from "./fork-metadata";
 
 const root = resolve(import.meta.dir, "..");
 const source = readBuildSource(root);
 const requireClean = process.env.CODEX_CHATGPT_WEB_REQUIRE_CLEAN_SOURCE === "1";
 assertBuildSourceUnchanged(source, source, requireClean);
+validateForkMetadata(JSON.parse(readFileSync(join(root, "fork-metadata.json"), "utf8")), VERSION);
 const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
   version?: string;
   packageManager?: string;

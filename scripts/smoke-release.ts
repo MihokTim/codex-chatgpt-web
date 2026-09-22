@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { defaultBrokerEndpoint } from "../src/config";
 import { VERSION } from "../src/version";
+import { assertForkMetadataMatchesSource } from "./fork-metadata";
 
 const require = createRequire(import.meta.url);
 const { validateRuntimeBundle } = require("../launcher/electron/runtime-install.cjs") as {
@@ -27,13 +28,7 @@ validateRuntimeBundle(runtimeRoot, {
 });
 
 const manifest = JSON.parse(readFileSync(join(runtimeRoot, "manifest.json"), "utf8")) as Record<string, unknown>;
-const forkMetadata = JSON.parse(readFileSync(join(runtimeRoot, "fork-metadata.json"), "utf8")) as {
-  schemaVersion?: number;
-  distribution?: string;
-  buildId?: string;
-  baseVersion?: string;
-  upstream?: { commit?: string };
-};
+const forkMetadata: unknown = JSON.parse(readFileSync(join(runtimeRoot, "fork-metadata.json"), "utf8"));
 if (manifest.schemaVersion !== 2
   || manifest.appVersion !== VERSION
   || manifest.playwright !== "1.62.0"
@@ -42,13 +37,8 @@ if (manifest.schemaVersion !== 2
   || !/^[a-f0-9]{64}$/.test(String(manifest.bundleId ?? ""))) {
   throw new Error(`Unexpected runtime manifest: ${JSON.stringify(manifest)}`);
 }
-if (forkMetadata.schemaVersion !== 1
-  || forkMetadata.distribution !== "MihokTim/codex-chatgpt-web"
-  || forkMetadata.buildId !== "mihoktim-5.0.8-upstream-eaf4f09-20260922"
-  || forkMetadata.baseVersion !== VERSION
-  || forkMetadata.upstream?.commit !== "eaf4f09ae92d4dc4429fa597b0861663138f08f8") {
-  throw new Error(`Unexpected fork metadata: ${JSON.stringify(forkMetadata)}`);
-}
+assertForkMetadataMatchesSource(forkMetadata,
+  JSON.parse(readFileSync(join(sourceRoot, "fork-metadata.json"), "utf8")), VERSION);
 if (!(manifest.files as Array<{ path?: string }>).some(file => file.path === "fork-metadata.json")) {
   throw new Error("Runtime manifest does not cover fork-metadata.json");
 }
