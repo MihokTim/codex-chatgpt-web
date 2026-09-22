@@ -13,16 +13,20 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-test("daemon streams browser lifecycle through the real helper process", async () => {
+test.each(["success", "selection-failure"] as const)("daemon preserves browser lifecycle and errors through the real helper process: %s", async outcome => {
   const root = mkdtempSync(join(tmpdir(), "codex-launcher-helper-client-"));
   roots.push(root);
   const helper = join(root, "helper.ts");
   writeFileSync(helper, `
     import { ChatGptBrowserWorker } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url).href)};
+    import { chatGptModelSelectionError } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/adapter-error.ts", import.meta.url).href)};
     // Substitute only the browser. Both sides of the production IPC protocol run unchanged.
     ChatGptBrowserWorker.prototype.run = async turn => {
       if (turn.reasoning !== "max" || turn.browserEffortOverride !== "xhigh"
         || turn.capabilities.browserModelFamily !== "sol") throw new Error("Local model choices were lost across helper IPC");
+      if (${JSON.stringify(outcome)} === "selection-failure") throw chatGptModelSelectionError(
+        "stage=effort-step; family=sol; effort=max; before=0; after=0",
+      );
       await turn.onPreparedSelected(false);
       const prepared = await turn.prepare();
       if (prepared.skillFiles?.[0]?.text !== "<skill>\\n<name>ipc</name>\\n<path>/skills/ipc/SKILL.md</path>\\ncheck IPC\\n</skill>") throw new Error("Skill file lost in IPC");
@@ -90,7 +94,7 @@ test("daemon streams browser lifecycle through the real helper process", async (
   let released = false;
   const client = new LauncherBrowserHelperClient(config);
   try {
-    const result = await client.run({
+    const operation = client.run({
       traceId: "abcdef123456",
       modelId: "gpt-5.6-sol",
       reasoning: "max",
@@ -112,7 +116,17 @@ test("daemon streams browser lifecycle through the real helper process", async (
       captureLunaCheckpoint: true,
       onLunaCheckpoint: checkpoint => checkpoints.push(checkpoint),
     });
-    expect(result).toBe("done");
+    if (outcome === "selection-failure") {
+      await expect(operation).rejects.toMatchObject({
+        name: "ChatGptWebAdapterError", status: 502, errorType: "server_error",
+        code: "chatgpt_model_selection_failed", retryable: false,
+        message: expect.stringContaining("stage=effort-step; family=sol; effort=max; before=0; after=0"),
+      });
+      expect(sendActivated).toBe(false);
+      expect(submitted).toBe(false);
+      return;
+    }
+    expect(await operation).toBe("done");
     expect(reasoning).toEqual([
       { text: "Reading project", continuation: false },
       { text: " files", continuation: true },

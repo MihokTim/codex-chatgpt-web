@@ -85,6 +85,7 @@ import {
   ChatGptWebAdapterError,
   chatGptBrowserTabClosedError,
   chatGptFailedThinkingError,
+  chatGptModelSelectionError,
   chatGptRetainedConversationUnavailableError,
   chatGptStoppedThinkingError,
 } from "./adapter-error";
@@ -191,25 +192,6 @@ function chatGptConnectorUnavailableError(message: string): ChatGptWebAdapterErr
     code: "connector_not_found",
     retryable: false,
   });
-}
-
-const CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE = "ChatGPT model controls are unavailable. Reload ChatGPT and retry the task.";
-
-function chatGptModelControlUnavailableError(diagnostic: string): Error {
-  return new Error(CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE, { cause: new Error(diagnostic) });
-}
-
-function chatGptModelControlUnavailableAdapterError(diagnostic: string, detail?: string): ChatGptWebAdapterError {
-  return new ChatGptWebAdapterError(
-    detail ? `${CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE} ChatGPT: ${detail}` : CHATGPT_MODEL_CONTROL_UNAVAILABLE_MESSAGE,
-    {
-      status: 502,
-      errorType: "server_error",
-      code: "upstream_server_error",
-      retryable: false,
-      cause: new Error(diagnostic),
-    },
-  );
 }
 
 export async function chatGptUnavailableProDetail(menu: Locator): Promise<string | undefined> {
@@ -2444,6 +2426,11 @@ export class ChatGptBrowserWorker {
     captureDiagnostic?: (checkpoint: string) => Promise<void>,
   ): Promise<SelectedChatGptWebModelMode> {
     const mode = resolveChatGptWebModelMode(modelId, reasoning, capabilities);
+    const controlError = (stage: string, diagnostic: string, detail?: string,
+      code?: "chatgpt_model_selection_failed" | "chatgpt_effort_unavailable") => chatGptModelSelectionError(
+      `stage=${stage}; requested_family=${capabilities.browserModelFamily ?? "default"}; requested_effort=${mode.effort}; ${diagnostic}`,
+      detail, code,
+    );
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
     const uiEffortIndex = mode.uiEffortIndex;
@@ -2452,7 +2439,7 @@ export class ChatGptBrowserWorker {
       await throwIfChatGptRateLimitDialog(page);
       const visibleControls = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
       if (await visibleControls.count() > 0) {
-        throw chatGptModelControlUnavailableError(
+        throw controlError("effort-control",
           "ChatGPT Luna was selected from a Luna-only capability probe, but the account now exposes a model selector; rerun setup",
         );
       }
@@ -2472,7 +2459,7 @@ export class ChatGptBrowserWorker {
     } catch (error) {
       if (error instanceof ChatGptWebAdapterError) throw error;
       await throwIfChatGptSessionFailureAlert(page);
-      throw chatGptModelControlUnavailableError(
+      throw controlError("effort-control",
         "ChatGPT rendered the composer but its model/effort control did not become ready",
       );
     } finally {
@@ -2508,7 +2495,7 @@ export class ChatGptBrowserWorker {
       if (error instanceof ChatGptWebAdapterError) throw error;
       await throwIfChatGptRateLimitDialog(page);
       await throwIfChatGptSessionFailureAlert(page);
-      throw chatGptModelControlUnavailableAdapterError(
+      throw controlError("effort-slider",
         `ChatGPT effort slider did not become ready for item index ${uiEffortIndex}`,
       );
     } finally {
@@ -2521,21 +2508,18 @@ export class ChatGptBrowserWorker {
       await effortSlider.getAttribute("aria-valuenow"),
     );
     if (!sliderState) {
-      throw chatGptModelControlUnavailableAdapterError(
+      throw controlError("effort-range",
         "ChatGPT effort slider exposed an invalid ARIA range",
       );
     }
     const targetValue = sliderState.min + uiEffortIndex;
     if (targetValue > sliderState.max) {
       const detail = uiEffortIndex === 4 ? await chatGptUnavailableProDetail(activation.menu) : undefined;
-      const proUsageLimitHint = uiEffortIndex === 4 && sliderState.min === 0 && sliderState.max === 3
-        ? " If you have made many Pro requests recently, ChatGPT may have temporarily hidden Pro because you reached its usage limit."
-        : "";
-      throw chatGptModelControlUnavailableAdapterError(
+      throw controlError("effort-availability",
         `ChatGPT effort slider does not expose item index ${uiEffortIndex}`
-        + ` (min=${sliderState.min}; max=${sliderState.max})`
-        + proUsageLimitHint,
+        + ` (min=${sliderState.min}; max=${sliderState.max})`,
         detail,
+        "chatgpt_effort_unavailable",
       );
     }
     const sliderControl = effortSlider.locator("xpath=ancestor::*[@role='menuitem'][1]");
@@ -2553,7 +2537,7 @@ export class ChatGptBrowserWorker {
           await effortSlider.getAttribute("aria-valuenow"),
         );
         if (!sliderState) {
-          throw chatGptModelControlUnavailableError(
+          throw controlError("effort-step",
             "ChatGPT effort slider lost its semantic ARIA state",
           );
         }
@@ -2561,7 +2545,7 @@ export class ChatGptBrowserWorker {
         await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
       } while (Date.now() < changeDeadline);
       if (sliderState.value !== previousValue + direction) {
-        throw chatGptModelControlUnavailableError(
+        throw controlError("effort-step",
           `ChatGPT effort slider did not move exactly one step with ${key}`
           + ` (before=${previousValue}; after=${sliderState.value})`,
         );

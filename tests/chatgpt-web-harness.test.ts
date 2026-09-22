@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
-import { ChatGptWebAdapterError, chatGptFailedThinkingError, chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
+import { ChatGptWebAdapterError, chatGptFailedThinkingError, chatGptModelSelectionError, chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation-key";
@@ -1319,6 +1319,7 @@ describe("ChatGPT outer-native harness v4", () => {
   test.each([
     { status: 400, errorType: "invalid_request_error", code: "context_length_exceeded" },
     { status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded" },
+    { status: 502, errorType: "server_error", code: "chatgpt_model_selection_failed" },
   ])("a terminal $code failure remains replayable without starting another browser turn", async failure => {
     const socketPath = brokerTestEndpoint(`cgw-h4-nonretryable-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
@@ -1331,8 +1332,13 @@ describe("ChatGPT outer-native harness v4", () => {
     let browserStarts = 0;
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async () => {
       browserStarts += 1;
+      if (failure.code === "chatgpt_model_selection_failed") {
+        throw chatGptModelSelectionError("stage=effort-step; family=sol; effort=max; before=0; after=0");
+      }
       throw new ChatGptWebAdapterError("Request cannot be automatically retried.", {
-        ...failure,
+        status: failure.status,
+        errorType: failure.errorType,
+        code: failure.code,
         retryable: false,
       });
     };
@@ -1346,7 +1352,9 @@ describe("ChatGPT outer-native harness v4", () => {
         );
         expect(events.at(-1)).toMatchObject({
           type: "error",
-          ...failure,
+          status: failure.status,
+          errorType: failure.errorType,
+          code: failure.code,
           retryable: false,
         });
       }
@@ -1621,13 +1629,10 @@ describe("ChatGPT outer-native harness v4", () => {
       error: { type: "rate_limit_error", code: "rate_limit_exceeded" },
     });
 
+    const failure = chatGptModelSelectionError("stage=effort-step; family=sol; effort=max; before=0; after=0");
     const missingEffort = buildResponseJSON([{
-      type: "error",
-      message: "ChatGPT model controls are unavailable. Reload ChatGPT and retry the task.",
-      status: 502,
-      errorType: "server_error",
-      code: "upstream_server_error",
-      retryable: false,
+      type: "error", message: failure.message, status: failure.status,
+      errorType: failure.errorType, code: failure.code, retryable: failure.retryable,
     }], CHATGPT_WEB_MODEL_ID) as {
       status: string;
       retryable: boolean;
@@ -1636,7 +1641,7 @@ describe("ChatGPT outer-native harness v4", () => {
     expect(missingEffort).toMatchObject({
       status: "failed",
       retryable: false,
-      error: { type: "server_error", code: "upstream_server_error" },
+      error: { type: "server_error", code: "chatgpt_model_selection_failed" },
     });
     expect(missingEffort.error.code).not.toBe("server_is_overloaded");
 
@@ -2185,9 +2190,21 @@ describe("ChatGPT outer-native harness v4", () => {
     }, 10_000);
     await broker.nextToolBatch(token);
     broker.revoke(token);
-    await expect(invocation).rejects.toThrow("revoked");
-    await expect(callTurnBroker(socketPath, { method: "resolve", bindingId: claimed.bindingId }))
-      .rejects.toThrow("has already finished");
+    const invocationFailure = await invocation.then(
+      () => undefined,
+      error => error,
+    );
+    expect(invocationFailure).toBeInstanceOf(Error);
+    expect((invocationFailure as Error).message).toContain("revoked");
+    const resolveFailure = await callTurnBroker(socketPath, {
+      method: "resolve",
+      bindingId: claimed.bindingId,
+    }).then(
+      () => undefined,
+      error => error,
+    );
+    expect(resolveFailure).toBeInstanceOf(Error);
+    expect((resolveFailure as Error).message).toContain("has already finished");
     await broker.close();
   });
 
