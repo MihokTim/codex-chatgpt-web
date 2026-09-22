@@ -17,6 +17,7 @@ import {
 import { estimateTokens } from "../../lib/token-estimate";
 import { CHATGPT_FAILED_THINKING_LABELS, CHATGPT_STOPPED_THINKING_LABELS } from "./ui-labels";
 import { focusChatGptEffortControl, selectExplicitWebFamily, verifyExplicitWebFamily } from "./browser-customizations";
+import { browserViewportUnavailable, recoverOwnedBrowserPage } from "./browser-observation-recovery";
 import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
 import {
@@ -1194,9 +1195,7 @@ async function waitForOperationalChatGptViewport(page: Page, signal?: AbortSigna
     ), signal);
   } catch (error) {
     if (signal?.aborted) throw new DOMException("ChatGPT browser page acquisition aborted", "AbortError");
-    throw new Error(
-      `ChatGPT browser surface did not expose an operational viewport: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    throw browserViewportUnavailable(error);
   }
 }
 
@@ -4803,18 +4802,19 @@ export class ChatGptBrowserWorker {
           `[chatgpt-web] browser turn ${turn.traceId} is rebinding its existing launcher page after a stalled DOM probe:`
           + ` ${redactChatGptUiDiagnostic(cause.message)}`,
         );
-        const previousConnection = turnConnection;
         // The observation timeout races the Playwright operation but cannot cancel the underlying
         // page.evaluate by itself. A failed disconnect is terminal: opening a replacement while
         // the stale probe still owns its transport would recreate the contention this rebind is
         // meant to remove.
-        const connection = await connectAfterClosingBrowserConnection(
-          previousConnection,
+        const connection = await recoverOwnedBrowserPage(
+          attempt, MAX_CHATGPT_BROWSER_PAGE_REBINDS,
+          currentAttempt => connectAfterClosingBrowserConnection(
+          turnConnection,
           () => {
             turnConnection = undefined;
             return this.runStage(
               turn.traceId,
-              `response_page_rebind_${attempt}`,
+              `response_page_rebind_${currentAttempt}`,
               browserStageTimeouts.browserPage,
               async (stageSignal) => {
                 const signal = callerSignal
@@ -4838,11 +4838,17 @@ export class ChatGptBrowserWorker {
                 // the outer diagnostic capture and finally block to release this exact transport.
                 turnConnection = rebound.browser;
                 diagnosticPage = rebound.page;
+                // Attachment/target discovery can alter Chromium's emulation state. Reassert the
+                // exact owned viewport after attachment too, before polling the renderer.
+                await notifyLauncherTurn(this.config.browserHostDescriptorPath!, {
+                  phase: "heartbeat", traceId: turn.traceId, helperPid: process.pid, refreshViewport: true,
+                });
                 await waitForOperationalChatGptViewport(rebound.page, signal);
                 return rebound;
               },
             );
-          },
+          }),
+          callerSignal ?? turn.abortSignal,
         );
         turnConnection = connection.browser;
         page = connection.page;
