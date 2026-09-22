@@ -27,6 +27,13 @@ validateRuntimeBundle(runtimeRoot, {
 });
 
 const manifest = JSON.parse(readFileSync(join(runtimeRoot, "manifest.json"), "utf8")) as Record<string, unknown>;
+const forkMetadata = JSON.parse(readFileSync(join(runtimeRoot, "fork-metadata.json"), "utf8")) as {
+  schemaVersion?: number;
+  distribution?: string;
+  buildId?: string;
+  baseVersion?: string;
+  upstream?: { commit?: string };
+};
 if (manifest.schemaVersion !== 2
   || manifest.appVersion !== VERSION
   || manifest.playwright !== "1.62.0"
@@ -34,6 +41,16 @@ if (manifest.schemaVersion !== 2
   || manifest.files.length === 0
   || !/^[a-f0-9]{64}$/.test(String(manifest.bundleId ?? ""))) {
   throw new Error(`Unexpected runtime manifest: ${JSON.stringify(manifest)}`);
+}
+if (forkMetadata.schemaVersion !== 1
+  || forkMetadata.distribution !== "MihokTim/codex-chatgpt-web"
+  || forkMetadata.buildId !== "mihoktim-5.0.8-upstream-eaf4f09-20260922"
+  || forkMetadata.baseVersion !== VERSION
+  || forkMetadata.upstream?.commit !== "eaf4f09ae92d4dc4429fa597b0861663138f08f8") {
+  throw new Error(`Unexpected fork metadata: ${JSON.stringify(forkMetadata)}`);
+}
+if (!(manifest.files as Array<{ path?: string }>).some(file => file.path === "fork-metadata.json")) {
+  throw new Error("Runtime manifest does not cover fork-metadata.json");
 }
 if (typeof manifest.launcher !== "string" || typeof manifest.entrypoint !== "string") {
   throw new Error(`Runtime manifest has no launcher or entrypoint: ${JSON.stringify(manifest)}`);

@@ -140,6 +140,7 @@ if (notices.exitCode !== 0) {
 }
 copyFileSync(join(root, "LICENSE"), join(output, "LICENSE"));
 cpSync(join(root, "LICENSES"), join(output, "LICENSES"), { recursive: true });
+copyFileSync(join(root, "fork-metadata.json"), join(output, "fork-metadata.json"));
 
 interface RuntimeManifestFile {
   path: string;
