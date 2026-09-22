@@ -1,4 +1,16 @@
 import type { Locator, Page } from "playwright-core";
+import { CHATGPT_WEB_MODEL_ID, type ChatGptWebCapabilities } from "./model";
+
+/** Use Extra High for compaction only when refreshed account detection confirms it. */
+export function compactionBrowserEffortOverride(
+  modelId: string,
+  reasoning: string | undefined,
+  capabilities: ChatGptWebCapabilities,
+): "xhigh" | undefined {
+  return modelId === CHATGPT_WEB_MODEL_ID && reasoning === "max" && capabilities.extraHighAvailable
+    ? "xhigh"
+    : undefined;
+}
 
 /** Verify the visible model family instead of inheriting a previous browser selection. */
 export async function selectExplicitWebFamily(

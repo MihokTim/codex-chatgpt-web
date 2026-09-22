@@ -354,6 +354,7 @@ test("a completed retained agent returns an exact checkpoint and its browser is 
   )).resolves.toBe("Retained agent checkpoint");
   expect(captured?.conversationKey).toBe(conversationKey);
   expect(captured?.reasoning).toBe("max");
+  expect(captured?.browserEffortOverride).toBe("xhigh");
   expect(captured?.capabilities.browserModelFamily).toBe("sol");
   expect(captured?.requireRetainedConversation).toBeTrue();
   expect(captured?.nativeConnector).toBeTrue();

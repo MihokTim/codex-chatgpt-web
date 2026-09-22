@@ -22,6 +22,7 @@ import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
+import { compactionBrowserEffortOverride } from "./browser-customizations";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
@@ -682,6 +683,9 @@ export function createChatGptWebAdapter(
         traceId,
         modelId: parsed.modelId,
         reasoning: parsed.options.reasoning,
+        ...(parsed._compactionRequest ? {
+          browserEffortOverride: compactionBrowserEffortOverride(parsed.modelId, parsed.options.reasoning, turnCapabilities),
+        } : {}),
         capabilities: turnCapabilities,
         prepare: async () => ({
           ...compileChatGptWebPrompt(
@@ -752,6 +756,9 @@ export function createChatGptWebAdapter(
       traceId,
       modelId: parsed.modelId,
       reasoning: parsed.options.reasoning,
+      ...(parsed._compactionRequest ? {
+        browserEffortOverride: compactionBrowserEffortOverride(parsed.modelId, parsed.options.reasoning, turnCapabilities),
+      } : {}),
       capabilities: turnCapabilities,
       prepare: () => prepareWith(checkpointInput.parsed),
       ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),

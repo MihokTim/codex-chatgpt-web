@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { chromium } from "playwright-core";
 import { CHATGPT_WEB_MODEL_ROUTES } from "../src/chatgpt-web-models";
-import { selectExplicitWebFamily } from "../src/adapters/chatgpt-web/browser-customizations";
+import { compactionBrowserEffortOverride, selectExplicitWebFamily } from "../src/adapters/chatgpt-web/browser-customizations";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { defaultConfig } from "../src/config";
 import { routeChatGptWebRequest } from "../src/server";
@@ -14,6 +14,15 @@ test("the existing light slug retains the local Sol Pro route without changing t
   expect(CHATGPT_WEB_MODEL_ROUTES.find(route => route.slug === "chatgpt-web/pro")).toMatchObject({
     displayName: "ChatGPT Web — Pro", adapterEffort: "max", codexEffort: "ultra", requiresPro: true,
   });
+});
+
+test("compaction overrides honor the new independent Extra High capability", () => {
+  const capabilities = { localToolsEnabled: true, solAvailable: true, proAvailable: true, extraHighAvailable: true };
+  expect(compactionBrowserEffortOverride(CHATGPT_WEB_MODEL_ID, "max", capabilities)).toBe("xhigh");
+  expect(compactionBrowserEffortOverride(CHATGPT_WEB_MODEL_ID, "max", { ...capabilities, extraHighAvailable: false })).toBeUndefined();
+  expect(compactionBrowserEffortOverride(CHATGPT_WEB_MODEL_ID, "high", capabilities)).toBeUndefined();
+  expect(compactionBrowserEffortOverride("chatgpt-web-zero-risk-pro", "max", capabilities)).toBeUndefined();
+  expect(compactionBrowserEffortOverride("gpt-5.6-luna", "max", capabilities)).toBeUndefined();
 });
 
 test("public routes bind explicit browser families without trusting a stale caller family", () => {

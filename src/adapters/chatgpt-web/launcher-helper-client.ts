@@ -225,6 +225,11 @@ export class LauncherBrowserHelperClient {
     if (turn.capabilities.browserModelFamily && !this.helperFeatures.has("explicit-browser-family")) {
       throw new Error("Launcher browser helper does not support explicit model family; restart the launcher");
     }
+    if (turn.browserEffortOverride && !this.helperFeatures.has("browser-effort-override")) {
+      throw new Error(
+        "Launcher browser helper does not support the browser effort override; restart the launcher",
+      );
+    }
     if (turn.externalProgress && !this.helperFeatures.has("completion-fence")) {
       throw new Error(
         "Launcher browser helper does not support the MCP completion fence; update or restart the launcher",
@@ -285,6 +290,7 @@ export class LauncherBrowserHelperClient {
             traceId: turn.traceId,
             modelId: turn.modelId,
             reasoning: turn.reasoning,
+            ...(turn.browserEffortOverride ? { browserEffortOverride: turn.browserEffortOverride } : {}),
             capabilities: turn.capabilities,
             ...(turn.nativeConnector ? { nativeConnector: true } : {}),
             ...(turn.prepareResume ? { resumeAvailable: true } : {}),
