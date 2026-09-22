@@ -1,3 +1,4 @@
+import { compactionBrowserEffortOverride } from "../src/adapters/chatgpt-web/browser-customizations";
 import { describe, expect, test } from "bun:test";
 import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation-key";
 import {
@@ -316,4 +317,41 @@ describe("fixed ChatGPT Web model routes", () => {
     expect(proRequest.modelId).toBe(CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL);
     expect(proRequest.options.reasoning).toBe("low");
   });
+});
+
+test("the existing light slug retains the local Sol Pro route without changing the Pro slug", () => {
+  expect(CHATGPT_WEB_MODEL_ROUTES.find(route => route.slug === "chatgpt-web/light")).toMatchObject({
+    displayName: "ChatGPT Web — Sol Pro", adapterEffort: "max", codexEffort: "ultra", requiresPro: true,
+  });
+  expect(CHATGPT_WEB_MODEL_ROUTES.find(route => route.slug === "chatgpt-web/pro")).toMatchObject({
+    displayName: "ChatGPT Web — Pro", adapterEffort: "max", codexEffort: "ultra", requiresPro: true,
+  });
+});
+
+
+test("compaction overrides honor the new independent Extra High capability", () => {
+  const capabilities = { localToolsEnabled: true, solAvailable: true, proAvailable: true, extraHighAvailable: true };
+  expect(compactionBrowserEffortOverride(CHATGPT_WEB_BACKEND_MODEL, "max", capabilities)).toBe("xhigh");
+  expect(compactionBrowserEffortOverride(CHATGPT_WEB_BACKEND_MODEL, "max", { ...capabilities, extraHighAvailable: false })).toBeUndefined();
+  expect(compactionBrowserEffortOverride(CHATGPT_WEB_BACKEND_MODEL, "high", capabilities)).toBeUndefined();
+  expect(compactionBrowserEffortOverride("chatgpt-web-zero-risk-pro", "max", capabilities)).toBeUndefined();
+  expect(compactionBrowserEffortOverride("gpt-5.6-luna", "max", capabilities)).toBeUndefined();
+});
+
+
+test("public routes bind explicit browser families without trusting a stale caller family", () => {
+  const config = { ...defaultConfig("full"), proAvailable: true, extraHighAvailable: true };
+  for (const [slug, family, effort] of [
+    ["chatgpt-web/light", "sol", "max"],
+    ["chatgpt-web/pro", "latest", "max"],
+    ["chatgpt-web/high", "latest", "high"],
+  ] as const) {
+    const input: CodexParsedRequest = {
+      modelId: slug, stream: true, context: { messages: [] },
+      options: { reasoning: "low", browserModelFamily: family === "sol" ? "latest" : "sol" },
+    };
+    routeChatGptWebRequest(input, config);
+    expect(input.modelId).toBe(CHATGPT_WEB_BACKEND_MODEL);
+    expect(input.options).toMatchObject({ browserModelFamily: family, reasoning: effort });
+  }
 });
