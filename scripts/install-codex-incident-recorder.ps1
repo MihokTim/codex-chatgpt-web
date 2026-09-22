@@ -31,7 +31,14 @@ foreach ($name in @('codex-incident-recorder.ps1','collect-codex-incident.ts','i
 }
 $null = New-ItemProperty -LiteralPath $runKey -Name $runName -Value $command -PropertyType String -Force
 $arguments = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -File "' + $scriptPath + '"'
-$child = Start-Process -FilePath $runner -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $root 'stdout.log') -RedirectStandardError (Join-Path $root 'stderr.log')
-$receipt = @{ installedAt=[DateTime]::UtcNow.ToString('o'); recorderPid=$child.Id; runner=$runner; startupKey=$runKey; startupName=$runName; command=$command; intervalSeconds=5; sampleMaxBytes=20MB; incidentBundlesRetained=5 }
+# A direct child of a Codex terminal inherits its Windows job and can disappear when
+# Desktop exits. WMI launches the same user-owned helper outside that terminal job.
+# The startup entry still handles the next Windows sign-in; no elevated service is used.
+$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow=[uint16]0 }
+$created = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+  CommandLine=('"' + $runner + '" ' + $arguments); ProcessStartupInformation=$startup
+}
+if ($created.ReturnValue -ne 0) { throw "Detached recorder launch failed: $($created.ReturnValue)" }
+$receipt = @{ installedAt=[DateTime]::UtcNow.ToString('o'); recorderPid=$created.ProcessId; launchMode='wmi-detached-hidden'; runner=$runner; startupKey=$runKey; startupName=$runName; command=$command; intervalSeconds=5; sampleMaxBytes=20MB; incidentBundlesRetained=5 }
 $receipt | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'install-receipt.json') -Encoding utf8
 $receipt | ConvertTo-Json -Compress
