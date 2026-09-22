@@ -46,6 +46,7 @@ import {
   extractCompactUserMessages,
 } from "./responses/compaction";
 import { parseRequest } from "./responses/parser";
+import { normalizeCodexAppDelegations } from "./adapters/chatgpt-web/codex-app-delegation";
 import { expandPreviousResponseInput, flushResponseState, rememberResponseState } from "./responses/state";
 import { TerminalFailureReplays } from "./responses/terminal-failure-replay";
 import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "./types";
@@ -526,7 +527,7 @@ export async function responseRequest(
   let parsed: CodexParsedRequest;
   let route: ChatGptWebModelRoute;
   try {
-    parsed = parseRequest(expanded);
+    parsed = normalizeCodexAppDelegations(parseRequest(expanded));
     route = routeChatGptWebRequest(parsed, config);
     const identity = extractChatGptTurnIdentity(parsed);
     if (identity.threadId && identity.turnId) {

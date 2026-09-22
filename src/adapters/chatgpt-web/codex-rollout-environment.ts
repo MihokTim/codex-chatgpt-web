@@ -194,7 +194,7 @@ function firstRolloutRecord(fd: number, size: number): Record<string, unknown> {
   throw new Error("Codex rollout has no complete session metadata record");
 }
 
-function latestTurnContext(fd: number, size: number): Record<string, unknown> | undefined {
+function* reverseRolloutRecords(fd: number, size: number): Generator<Record<string, unknown>> {
   let position = size;
   let carry = Buffer.alloc(0);
   let firstSegmentAtEof = true;
@@ -223,16 +223,44 @@ function latestTurnContext(fd: number, size: number): Record<string, unknown> | 
         throw new Error("Codex rollout JSONL record exceeds the bounded record size");
       }
       const item = parseJsonLine(line);
-      if (item.type === "turn_context") return record(item.payload);
+      yield item;
     }
     carry = Buffer.from(data.subarray(0, lineEnd));
     if (carry.length > MAX_ROLLOUT_JSON_LINE_BYTES) {
       throw new Error("Codex rollout JSONL record exceeds the bounded record size");
     }
   }
-  if (carry.length === 0) return undefined;
-  const item = parseJsonLine(carry);
-  return item.type === "turn_context" ? record(item.payload) : undefined;
+  if (carry.length > 0) yield parseJsonLine(carry);
+}
+
+function latestTurnContext(fd: number, size: number): Record<string, unknown> | undefined {
+  for (const item of reverseRolloutRecords(fd, size)) {
+    if (item.type === "turn_context") return record(item.payload);
+  }
+  return undefined;
+}
+
+/** Verify native app deliveries without loading the complete task history into memory. */
+function verifyNativeDelegations(fd: number, size: number, turnId: string, items: Record<string, unknown>[]): void {
+  const pending = new Map(items.map(item => [item.id, item]));
+  if (pending.size !== items.length) throw new Error("Codex app delegation repeats a native item id");
+  for (const row of reverseRolloutRecords(fd, size)) {
+    const payload = record(row.payload);
+    if (row.type === "event_msg" && payload?.type === "turn_aborted" && payload.turn_id === turnId) {
+      throw new Error("Codex app delegation belongs to an aborted turn");
+    }
+    if (row.type !== "response_item" || !payload || !pending.has(payload.id)) continue;
+    const expected = pending.get(payload.id)!;
+    const fields = ["type", "id", "namespace", "name", "call_id", "output"];
+    if (fields.some(key => !isDeepStrictEqual(payload[key], expected[key]))
+      || record(payload.internal_chat_message_metadata_passthrough)?.turn_id
+        !== record(expected.internal_chat_message_metadata_passthrough)?.turn_id) {
+      throw new Error("Codex app delegation conflicts with its native rollout item");
+    }
+    pending.delete(payload.id);
+    if (pending.size === 0) return;
+  }
+  throw new Error("Codex app delegation is absent from its native rollout");
 }
 
 function verifyHistoricalEnvironmentMessages(
@@ -611,6 +639,7 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
   compactionSourceTurnId?: string;
   tools?: readonly CodexTool[];
   historicalEnvironmentMessages?: ChatGptUnattributedEnvironmentMessage[];
+  nativeDelegations?: Record<string, unknown>[];
 }): ChatGptTurnEnvironment | undefined {
   const { codexHome, lineage, turnId, tools, compactionSourceTurnId } = options;
   const nativeThreadId = CODEX_ID.test(lineage.threadId);
@@ -650,6 +679,9 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
       validateMetadataConsistency(lineage, environment);
       if (options.historicalEnvironmentMessages) {
         verifyHistoricalEnvironmentMessages(fd, size, turnId, options.historicalEnvironmentMessages);
+      }
+      if (options.nativeDelegations) {
+        verifyNativeDelegations(fd, size, turnId, options.nativeDelegations);
       }
       matching.push(environment);
     } finally {
