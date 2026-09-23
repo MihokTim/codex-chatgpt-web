@@ -7,6 +7,7 @@ import {
   resolveChatGptWebContextLimits,
   type ChatGptWebModelRoute,
 } from "./chatgpt-web-models";
+import { prioritizeCompatibilityV1Models } from "./subagent-model-roster";
 
 type JsonObject = Record<string, unknown>;
 
@@ -203,6 +204,6 @@ export function augmentNativeModelCatalog(
     .map(route => buildChatGptWebModel(template, route, config));
   return {
     ...structuredClone(catalog),
-    models: [...nativeModels, ...webModels],
+    models: prioritizeCompatibilityV1Models([...nativeModels, ...webModels], config.subagentProtocol),
   };
 }
