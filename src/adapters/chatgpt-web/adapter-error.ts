@@ -22,6 +22,31 @@ export class ChatGptWebAdapterError extends Error {
   }
 }
 
+/** Pass only fixed diagnostic labels and selector state, never prompt text or raw browser errors. */
+export function chatGptModelSelectionError(
+  diagnostic: string,
+  detail?: string,
+  code: "chatgpt_model_selection_failed" | "chatgpt_effort_unavailable" = "chatgpt_model_selection_failed",
+): ChatGptWebAdapterError {
+  const safeDiagnostic = diagnostic.replace(/[\r\n\t]/g, " ").slice(0, 600);
+  const safeDetail = detail?.replace(/[\r\n\t]/g, " ").slice(0, 320);
+  return new ChatGptWebAdapterError(
+    (code === "chatgpt_effort_unavailable"
+      ? "ChatGPT does not expose the requested effort. Check the available options before retrying the task. "
+      : "ChatGPT model selection failed. Check the model and effort controls before retrying the task. ")
+    + `[${safeDiagnostic}]` + (safeDetail ? ` ChatGPT: ${safeDetail}` : ""),
+    {
+      status: 502,
+      errorType: "server_error",
+      code,
+      // Multipart preparation may already have been submitted; do not replay it automatically.
+      retryable: false,
+      // The message also carries these diagnostics because helper IPC does not serialize Error.cause.
+      cause: new Error(safeDiagnostic),
+    },
+  );
+}
+
 // Only the compaction owner may signal this after the broker accepts its one-shot handoff.
 // It cancels browser observation, while the accepted summary remains the native result.
 export class ChatGptCompactionHandoffAccepted extends DOMException {

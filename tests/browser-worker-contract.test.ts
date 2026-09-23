@@ -802,7 +802,7 @@ test("submission observation recovery resumes with rebound locators and is stric
     chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
   };
   type Evidence = "user_turn" | "assistant_turn" | "generation_running" | "mcp_tool_call";
-  type Recovery = { page: Page; baseline: unknown };
+  type Recovery = { page: Page; baseline: unknown; lastAttempt: number };
   const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
     waitForSubmissionAcceptedWithRecovery(
       page: Page,
@@ -841,7 +841,7 @@ test("submission observation recovery resumes with rebound locators and is stric
     undefined,
     async (attempt, _cause, baseline) => {
       recoveries.push({ attempt, baseline });
-      return { page: reboundPage, baseline: reboundBaseline };
+      return { page: reboundPage, baseline: reboundBaseline, lastAttempt: attempt };
     },
   );
   expect(evidence).toBe("assistant_turn");
@@ -862,9 +862,9 @@ test("submission observation recovery resumes with rebound locators and is stric
     undefined,
     0,
     undefined,
-    async () => {
+    async (attempt) => {
       boundedRecoveries += 1;
-      return { page: reboundPage, baseline: reboundBaseline };
+      return { page: reboundPage, baseline: reboundBaseline, lastAttempt: attempt };
     },
   )).rejects.toThrow("submission DOM remained unresponsive after 2 same-page rebinds");
   expect(boundedRecoveries).toBe(2);
@@ -880,7 +880,7 @@ test("an accepted turn rebinds the missing assistant observation and acknowledge
     initialTurnIdentities: string[];
     domCache: Record<string, unknown>;
   };
-  type Recovery = { page: Page; baseline: Baseline };
+  type Recovery = { page: Page; baseline: Baseline; lastAttempt: number };
   const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
     waitForNewAssistantTurn(
       page: Page,
@@ -950,7 +950,7 @@ test("an accepted turn rebinds the missing assistant observation and acknowledge
       expect(cause).toBeInstanceOf(ChatGptBrowserObservationTimeoutError);
       expect(baseline).toBe(firstBaseline);
       toolBatchRevision = progress.recordToolBatch(1);
-      return { page: reboundPage, baseline: reboundBaseline };
+      return { page: reboundPage, baseline: reboundBaseline, lastAttempt: attempt };
     },
   );
 
@@ -2347,9 +2347,9 @@ test("Luna-only browser turns verify selector absence instead of opening an effo
     ): Promise<{ displayLabel: string; uiEffortIndex: number | null }>;
   }).selectModelAndEffort;
 
-  const mode = await selectModelAndEffort.call({
+  const mode = await selectModelAndEffort.call(Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     activeComposer: async () => composer,
-  }, {
+  }), {
     locator: () => hiddenDialog,
   }, "gpt-5.6-luna", "low", {
     localToolsEnabled: true,
@@ -2725,9 +2725,15 @@ test("effort readback rejects a changed selection or surface before activating S
   await worker.assertSelectedEffort(page, mode);
   for (const change of [{ label: "Medio" }, { url: "https://chatgpt.com/" }, { expanded: "true" },
     { editable: false }, { count: 2 }]) {
-    Object.assign(state, { url: selection.url, label: "Alto", expanded: "false", editable: true, count: 1 }, change);
+    Object.assign(state, {
+      url: selection.url,
+      label: "Alto",
+      expanded: "false",
+      editable: true,
+      count: 1,
+    }, change);
     await expect(worker.assertSelectedEffort(page, mode)).rejects.toMatchObject({
-      code: "upstream_server_error", retryable: false,
+      status: 502, errorType: "server_error", code: "chatgpt_model_selection_failed", retryable: false,
     });
   }
 });
@@ -2819,9 +2825,9 @@ test("effort selection stops as soon as ChatGPT reports an expired session", asy
     ): Promise<unknown>;
   }).selectModelAndEffort;
 
-  const selection = selectModelAndEffort.call({
+  const selection = selectModelAndEffort.call(Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     activeComposer: async () => composer,
-  }, {
+  }), {
     locator: (selector: string) => selector.includes('[role="alert"]') ? sessionAlert : hiddenDialog,
   }, "gpt-5.6-sol", "high", {
     localToolsEnabled: true,
@@ -2885,9 +2891,9 @@ test("effort menu waiting stops when ChatGPT reports an expired session", async 
     ): Promise<unknown>;
   }).selectModelAndEffort;
 
-  const selection = selectModelAndEffort.call({
+  const selection = selectModelAndEffort.call(Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     activeComposer: async () => composer,
-  }, {
+  }), {
     locator: (selector: string) => {
       if (selector.includes('[role="alert"]')) return sessionAlert;
       if (selector.includes('[role="menu"]') || selector.includes("composer-intelligence-picker-content")) return effortMenu;
@@ -3536,10 +3542,10 @@ test("stopped-thinking detection recognizes localized UI without matching respon
     createWindow(html: string): { document: Document; NodeFilter: typeof NodeFilter };
   };
   const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
-  const source = worker.split("const stoppedThinkingVisible = (() => {")[1]?.split("})();")[0];
+  const source = worker.split("const thinkingStatusVisible = (statusLabels: readonly string[]): boolean => {")[1]?.split("      };\n      const stoppedThinkingVisible")[0];
   if (!source) throw new Error("Stopped-thinking predicate is missing");
   const javascript = new Bun.Transpiler({ loader: "ts" }).transformSync(
-    `function detect(root, options, document, NodeFilter, renderedInDom, overlapsRenderedAnswer, overlapsCommentary) { ${source} }`,
+    `function detect(root, options, document, NodeFilter, renderedInDom, overlapsRenderedAnswer, overlapsCommentary) { const statusLabels = options.stoppedThinkingLabels; ${source} }`,
   );
   const detect = new Function(`${javascript}; return detect;`)();
   const stopped = (html: string): boolean => {
