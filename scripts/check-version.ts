@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { validateForkMetadata } from "./fork-metadata";
 
 const root = resolve(import.meta.dir, "..");
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as {
@@ -10,6 +11,9 @@ const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8
 };
 const packageVersion = packageJson.version;
 if (!packageVersion) throw new Error("package.json has no version");
+const forkMetadata = validateForkMetadata(
+  JSON.parse(readFileSync(resolve(root, "fork-metadata.json"), "utf8")), packageVersion,
+);
 const packageManagerMatch = /^bun@(\d+\.\d+\.\d+)$/.exec(packageJson.packageManager ?? "");
 if (!packageManagerMatch) throw new Error("package.json must pin an exact Bun packageManager version");
 const bunVersion = packageManagerMatch[1];
@@ -53,4 +57,4 @@ if (releaseWorkflow.split(`bun-version: ${bunVersion}`).length - 1 !== 2) {
 }
 const launcherVersion = (JSON.parse(readFileSync(resolve(root, "launcher/package.json"), "utf8")) as { version?: string }).version;
 if (launcherVersion !== packageVersion) throw new Error(`launcher/package.json is not synchronized to ${packageVersion}`);
-process.stdout.write(`VERSION_SYNC_OK ${packageVersion} bun@${bunVersion}\n`);
+process.stdout.write(`VERSION_SYNC_OK ${packageVersion} ${forkMetadata.buildId} bun@${bunVersion}\n`);

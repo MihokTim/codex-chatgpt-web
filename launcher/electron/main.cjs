@@ -1167,6 +1167,7 @@ async function start() {
   const updaterRuntimeRoot = runtimeRootProvider();
   updateController = createUpdateController({
     currentVersion: app.getVersion(),
+    forkMetadataPath: updaterRuntimeRoot ? path.join(updaterRuntimeRoot, "fork-metadata.json") : null,
     platform: process.platform,
     arch: process.arch,
     packaged: app.isPackaged && !IS_DEV_PROFILE,

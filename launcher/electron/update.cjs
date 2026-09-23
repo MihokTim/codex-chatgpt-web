@@ -251,12 +251,15 @@ function createUpdateController({
   packaged,
   executablePath,
   runtimeExecutable,
+  forkMetadataPath,
   logsDirectory,
   publish,
   logger,
   dependencies = {},
 }) {
   const deps = { ...defaultDependencies(), ...dependencies };
+  const forkInstalled = Boolean(forkMetadataPath && fs.existsSync(forkMetadataPath));
+  const forkUpdateMessage = "This is a fork build. Install a reviewed build from the fork repository; official updates would replace its patches.";
   const supportedAsset = releaseAssetName(currentVersion, platform, arch);
   let state = packaged && supportedAsset ? { status: "idle" } : { status: "disabled" };
   let checked = false;
@@ -285,6 +288,9 @@ function createUpdateController({
         candidate = null;
         return transition({ status: "up-to-date" });
       }
+      if (forkInstalled) {
+        return transition({ status: "error", message: `Upstream v${version} is available. ${forkUpdateMessage}` });
+      }
       const assetName = releaseAssetName(version, platform, arch);
       if (!assetName) return transition({ status: "disabled" });
       const assets = Array.isArray(release?.assets) ? release.assets : [];
@@ -309,6 +315,7 @@ function createUpdateController({
   }
 
   async function beginInstall() {
+    if (forkInstalled) throw new Error(forkUpdateMessage);
     if (pending) throw new Error("An update is already being prepared");
     if (state.status !== "available" || !candidate) throw new Error("No launcher update is available");
     const available = candidate;

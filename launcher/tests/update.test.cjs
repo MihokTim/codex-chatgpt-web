@@ -14,6 +14,28 @@ const {
   validateReleaseAssetUrl,
 } = require("../electron/update.cjs");
 
+test("fork updates announce upstream releases without overwriting the fork installation", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fork-update-"));
+  const metadata = path.join(root, "fork-metadata.json");
+  fs.writeFileSync(metadata, JSON.stringify({ distribution: "MihokTim/codex-chatgpt-web" }));
+  let downloaded = false;
+  try {
+    const updater = createUpdateController({
+      currentVersion: "6.0.0", platform: "win32", arch: "x64", packaged: true,
+      forkMetadataPath: metadata,
+      dependencies: {
+        fetchRelease: async () => ({ tag_name: "v6.0.1" }),
+        downloadFile: async () => { downloaded = true; },
+      },
+    });
+    assert.match((await updater.checkOnce()).message, /v6\.0\.1.*fork build/);
+    await assert.rejects(updater.beginInstall(), /fork build/);
+    assert.equal(downloaded, false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("Linux auto-update fails closed without the stable installer wrapper", () => {
   const previousAppImage = process.env.CODEX_WEB_GPT_APPIMAGE;
   const previousWrapper = process.env.CODEX_WEB_GPT_LAUNCHER_EXECUTABLE;
