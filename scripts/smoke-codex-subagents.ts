@@ -16,7 +16,6 @@ import { routeChatGptWebRequest } from "../src/server";
 
 const protocol = process.argv.includes("--v1") ? "v1" : "v2";
 const webDefaults = process.argv.includes("--web-defaults");
-const solChild = process.argv.includes("--sol-child");
 const childModelArgument = process.argv.slice(2).find(argument => argument.startsWith("--child-model="));
 const codexArg = process.argv.slice(2).find(argument => !argument.startsWith("--"));
 const codex = resolve(
@@ -59,9 +58,9 @@ const defaultNativeModel = modelRows
   .toSorted((left, right) => Number(left.priority) - Number(right.priority))[0]?.slug;
 if (typeof defaultNativeModel !== "string") throw new Error("Catalog has no native model for the lifecycle smoke");
 const explicitChildModel = childModelArgument?.slice("--child-model=".length)
-  ?? (solChild ? "chatgpt-web/light" : webDefaults ? "chatgpt-web/pro" : defaultNativeModel);
-const explicitChildReasoningEffort = explicitChildModel === "chatgpt-web/pro" || explicitChildModel === "chatgpt-web/light" ? "ultra" : "max";
-const discoverSpawnDeclaration = webDefaults || solChild || childModelArgument !== undefined
+  ?? (webDefaults ? "chatgpt-web/pro" : defaultNativeModel);
+const explicitChildReasoningEffort = "max";
+const discoverSpawnDeclaration = webDefaults || childModelArgument !== undefined
   || (protocol === "v1" && preferredRosterAvailable);
 
 const root = join(tmpdir(), `codex-chatgpt-web-subagents-${process.pid}-${Date.now()}`);
@@ -456,7 +455,7 @@ try {
         failures.push(`${role} used ${firstRequest?.model ?? "no model"}, expected ${explicitChildModel}`);
       }
       // Recent native Responses Lite clients normalize wire reasoning to medium even when
-      // the selected task effort is ultra. Check the actual configured task metadata first.
+      // the selected task effort is max. Check the actual configured task metadata first.
       const configuredEffort = firstRequest?.configuredReasoningEffort ?? firstRequest?.reasoningEffort;
       if (configuredEffort !== explicitChildReasoningEffort) {
         failures.push(
@@ -472,16 +471,15 @@ try {
         + `\nCodex stdout: ${stdout.slice(-8_000)}\nCodex stderr: ${stderr.slice(-8_000)}`,
     );
   }
-  if (solChild && !advertisedModels.has(explicitChildModel)) throw new Error("Native tool declarations did not advertise Sol Pro");
   if (protocol === "v1" && preferredRosterAvailable) {
     for (const slug of resolveCompatibilityV1PreferredRoster(modelRows)!) {
       if (!advertisedModels.has(slug)) throw new Error(`Native tool declarations did not advertise ${slug}`);
     }
   }
   const proof = { protocol, observed: [...observed].toSorted(), childModel: explicitChildModel, childEffort: explicitChildReasoningEffort, advertisedModels: [...advertisedModels], requests: requestLog };
-  if (solChild || childModelArgument) {
+  if (childModelArgument) {
     mkdirSync(resolve("output"), { recursive: true });
-    const proofName = childModelArgument ? explicitChildModel.replace(/[^A-Za-z0-9_.-]/g, "_") : "sol";
+    const proofName = explicitChildModel.replace(/[^A-Za-z0-9_.-]/g, "_");
     writeFileSync(resolve(`output/subagent-${proofName}-${protocol}-proof.json`), JSON.stringify(proof, null, 2));
   }
   process.stdout.write(`CODEX_SUBAGENT_${protocol.toUpperCase()}_LIFECYCLE_SMOKE_OK ${JSON.stringify({ observed: proof.observed, childModel: explicitChildModel, childEffort: explicitChildReasoningEffort, advertisedModels: [...advertisedModels] })}\n`);

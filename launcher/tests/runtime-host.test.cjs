@@ -1029,7 +1029,8 @@ test("failed terminal migration verifies the unchanged previous runtime instead 
   ]);
 });
 
-test("failed fresh-conversation setting restores every mutable setup file before restarting the previous runtime", async () => {
+for (const useSymlink of [false, true]) {
+test(`failed fresh-conversation setting restores every mutable setup file before restarting the previous runtime (symlink=${useSymlink})`, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-setup-checkpoint-"));
   const coreHome = path.join(root, "core");
   const codexHome = path.join(root, "codex");
@@ -1064,12 +1065,22 @@ test("failed fresh-conversation setting restores every mutable setup file before
   fs.writeFileSync(keyPath, "old key\n", { mode: 0o600 });
   fs.writeFileSync(profilePath, "old profile\n", { mode: 0o600 });
   fs.mkdirSync(sharedDirectory, { mode: 0o750 });
-  fs.writeFileSync(sharedConfigPath, "old codex config\n", { mode: 0o640 });
-  fs.symlinkSync(sharedConfigPath, codexConfigPath);
-  const linkTarget = fs.readlinkSync(codexConfigPath);
+  const backingConfigPath = useSymlink ? sharedConfigPath : codexConfigPath;
+  fs.writeFileSync(backingConfigPath, "old codex config\n", { mode: 0o640 });
+  if (useSymlink) {
+    try {
+      fs.symlinkSync(sharedConfigPath, codexConfigPath);
+    } catch (error) {
+      fs.rmSync(root, { recursive: true, force: true });
+      if (process.platform !== "win32" || !["EPERM", "EACCES", "ENOTSUP"].includes(error.code)) throw error;
+      t.skip("File symlinks require Windows Developer Mode or administrator privileges");
+      return;
+    }
+  }
+  const linkTarget = useSymlink ? fs.readlinkSync(codexConfigPath) : undefined;
   const linkInode = fs.lstatSync(codexConfigPath).ino;
   const directoryMode = fs.statSync(sharedDirectory).mode & 0o777;
-  const fileMode = fs.statSync(sharedConfigPath).mode & 0o777;
+  const fileMode = fs.statSync(backingConfigPath).mode & 0o777;
   fs.writeFileSync(codexModelsCachePath, "old codex models cache\n", { mode: 0o600 });
 
   let startAttempts = 0;
@@ -1120,16 +1131,19 @@ test("failed fresh-conversation setting restores every mutable setup file before
     assert.equal(fs.readFileSync(keyPath, "utf8"), "old key\n");
     assert.equal(fs.readFileSync(profilePath, "utf8"), "old profile\n");
     assert.equal(fs.readFileSync(codexConfigPath, "utf8"), "old codex config\n");
-    assert.equal(fs.lstatSync(codexConfigPath).isSymbolicLink(), true);
-    assert.equal(fs.lstatSync(codexConfigPath).ino, linkInode);
-    assert.equal(fs.readlinkSync(codexConfigPath), linkTarget);
+    assert.equal(fs.lstatSync(codexConfigPath).isSymbolicLink(), useSymlink);
+    if (useSymlink) {
+      assert.equal(fs.lstatSync(codexConfigPath).ino, linkInode);
+      assert.equal(fs.readlinkSync(codexConfigPath), linkTarget);
+    }
     assert.equal(fs.statSync(sharedDirectory).mode & 0o777, directoryMode);
-    assert.equal(fs.statSync(sharedConfigPath).mode & 0o777, fileMode);
+    assert.equal(fs.statSync(backingConfigPath).mode & 0o777, fileMode);
     assert.equal(fs.readFileSync(codexModelsCachePath, "utf8"), "old codex models cache\n");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+}
 
 test("failed terminal migration restores removed launchd ownership before verifying the old runtime", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-terminal-checkpoint-"));

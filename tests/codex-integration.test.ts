@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { supportsFileSymlinks } from "./file-symlink-support";
 import {
   activateCodexIntegration,
   deactivateCodexIntegration,
@@ -31,6 +32,7 @@ import {
 } from "../src/codex-integration-shared";
 
 const roots: string[] = [];
+const fileSymlinksAvailable = supportsFileSymlinks();
 
 function nativeConfig(mode: "browser-only" | "full") {
   const config = defaultConfig(mode);
@@ -62,7 +64,7 @@ afterEach(() => {
 });
 
 describe("reversible native Codex route integration", () => {
-  test("route install, update, switching and removal preserve a symlinked shared Codex config", () => {
+  test.skipIf(!fileSymlinksAvailable)("route install, update, switching and removal preserve a symlinked shared Codex config", () => {
     const { root, codexHome } = fixture();
     const shared = join(root, "shared");
     mkdirSync(shared, { mode: 0o750 });
@@ -96,7 +98,7 @@ describe("reversible native Codex route integration", () => {
     expect(readFileSync(target, "utf8")).toBe(original);
   });
 
-  test("config compensation preserves the link and refuses redirected or invalid targets", () => {
+  test.skipIf(!fileSymlinksAvailable)("config compensation preserves the link and refuses redirected or invalid targets", () => {
     const { root, codexHome } = fixture();
     const alias = join(codexHome, "config.toml");
     const target = join(root, "shared.toml");

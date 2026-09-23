@@ -3542,7 +3542,7 @@ test("stopped-thinking detection recognizes localized UI without matching respon
     createWindow(html: string): { document: Document; NodeFilter: typeof NodeFilter };
   };
   const worker = readFileSync("src/adapters/chatgpt-web/browser-worker.ts", "utf8");
-  const source = worker.split("const thinkingStatusVisible = (statusLabels: readonly string[]): boolean => {")[1]?.split("      };\n      const stoppedThinkingVisible")[0];
+  const source = worker.replace(/\r\n/g, "\n").split("const thinkingStatusVisible = (statusLabels: readonly string[]): boolean => {")[1]?.split("      };\n      const stoppedThinkingVisible")[0];
   if (!source) throw new Error("Stopped-thinking predicate is missing");
   const javascript = new Bun.Transpiler({ loader: "ts" }).transformSync(
     `function detect(root, options, document, NodeFilter, renderedInDom, overlapsRenderedAnswer, overlapsCommentary) { const statusLabels = options.stoppedThinkingLabels; ${source} }`,

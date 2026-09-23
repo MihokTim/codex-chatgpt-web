@@ -246,7 +246,20 @@ function reasoningPicker(options: { max?: string; locks?: Array<string | null>; 
       signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
     }),
   };
-  const sliderControl = { press: async (key: string) => { keys.push(key); value += key === "ArrowRight" ? 1 : -1; } };
+  const sliderControl = {
+    isEnabled: async () => true,
+    waitFor: async () => {},
+    focus: async () => {},
+    evaluate: async (read: (element: Element) => unknown) => {
+      const { createDocument } = require("@mixmark-io/domino") as { createDocument(html: string): Document };
+      const document = createDocument('<body><button id="effort"></button></body>');
+      const element = document.querySelector("#effort")!;
+      Object.defineProperty(element, "isConnected", { value: true });
+      Object.defineProperty(document, "activeElement", { value: element });
+      return read(element);
+    },
+    press: async (key: string) => { keys.push(key); value += key === "ArrowRight" ? 1 : -1; },
+  };
   const slider = {
     isVisible: async () => false, // Live DOM: aria-hidden=true, zero-width semantic span.
     filter: () => { throw new Error("Semantic input must not be visibility-filtered"); },
@@ -282,7 +295,7 @@ function reasoningPicker(options: { max?: string; locks?: Array<string | null>; 
     innerText: async () => opened ? "Thinking effort" : ["Instant", "Medium", "High", "Extra High", "Pro"][value]!,
     getAttribute: async (name: string) => name === "aria-expanded" ? String(opened) : null,
   };
-  const composer = { filter() { return this; }, last() { return this; }, isEditable: async () => true, locator: () => ({ locator: () => control }) };
+  const composer = { filter() { return this; }, last() { return this; }, focus: async () => {}, evaluate: sliderControl.evaluate, isEditable: async () => true, locator: () => ({ locator: () => control }) };
   const modelRows = { count: async () => 3, first() { return this; }, waitFor: async () => {}, nth: () => { throw new Error("Model rows are not effort choices"); } };
   const menu = { filter() { return this; }, last() { return this; }, isVisible: async () => true, locator: () => modelRows };
   const page = {
