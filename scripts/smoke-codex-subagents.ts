@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -6,32 +6,54 @@ import { bridgeToResponsesSSE } from "../src/bridge";
 import { defaultConfig } from "../src/config";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
 import { parseRequest } from "../src/responses/parser";
+import {
+  COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS,
+  hasCompleteCompatibilityV1PreferredRoster,
+} from "../src/subagent-model-roster";
 import type { AdapterEvent } from "../src/types";
 
 const protocol = process.argv.includes("--v1") ? "v1" : "v2";
 const solChild = process.argv.includes("--sol-child");
-const explicitChildModel = solChild ? "chatgpt-web/light" : "gpt-5.6-sol";
-const explicitChildReasoningEffort = solChild ? "ultra" : "max";
+const childModelArgument = process.argv.slice(2).find(argument => argument.startsWith("--child-model="));
 const codexArg = process.argv.slice(2).find(argument => !argument.startsWith("--"));
 const codex = resolve(codexArg ?? "/Applications/ChatGPT.app/Contents/Resources/codex");
 if (!existsSync(codex)) throw new Error(`Codex executable is missing: ${codex}`);
 
-const bundled = spawnSync(codex, ["debug", "models", "--bundled"], {
-  encoding: "utf8",
-  stdio: ["ignore", "pipe", "pipe"],
-  timeout: 15_000,
-});
-if (bundled.status !== 0) {
-  throw new Error(`Could not read bundled Codex models: ${bundled.error?.message || bundled.stderr}`);
+const catalogArgument = process.argv.slice(2).find(argument => argument.startsWith("--catalog="));
+let sourceCatalogText: string;
+if (catalogArgument) {
+  sourceCatalogText = readFileSync(resolve(catalogArgument.slice("--catalog=".length)), "utf8");
+} else {
+  const bundled = spawnSync(codex, ["debug", "models", "--bundled"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 15_000,
+  });
+  if (bundled.status !== 0) {
+    throw new Error(`Could not read bundled Codex models: ${bundled.error?.message || bundled.stderr}`);
+  }
+  sourceCatalogText = bundled.stdout;
 }
 
-const sourceCatalog = JSON.parse(bundled.stdout) as { models?: unknown[] };
+const sourceCatalog = JSON.parse(sourceCatalogText) as { models?: unknown[] };
 const catalogConfig = defaultConfig("browser-only");
 catalogConfig.solAvailable = true;
 catalogConfig.proAvailable = true;
 catalogConfig.extraHighAvailable = true;
 catalogConfig.subagentProtocol = protocol === "v1" ? "compatibility-v1" : "native";
 const catalog = augmentNativeModelCatalog(sourceCatalog, catalogConfig);
+const modelRows = catalog.models as Array<Record<string, unknown>>;
+const preferredRosterAvailable = hasCompleteCompatibilityV1PreferredRoster(modelRows);
+const defaultNativeModel = modelRows
+  .filter(model => typeof model.slug === "string" && !model.slug.startsWith("chatgpt-web/")
+    && model.visibility === "list" && model.supported_in_api === true)
+  .toSorted((left, right) => Number(left.priority) - Number(right.priority))[0]?.slug;
+if (typeof defaultNativeModel !== "string") throw new Error("Catalog has no native model for the lifecycle smoke");
+const explicitChildModel = childModelArgument?.slice("--child-model=".length)
+  ?? (solChild ? "chatgpt-web/light" : defaultNativeModel);
+const explicitChildReasoningEffort = explicitChildModel.startsWith("chatgpt-web/") ? "ultra" : "max";
+const discoverSpawnDeclaration = solChild || childModelArgument !== undefined
+  || (protocol === "v1" && preferredRosterAvailable);
 
 const root = join(tmpdir(), `codex-chatgpt-web-subagents-${process.pid}-${Date.now()}`);
 const codexHome = join(root, "codex");
@@ -177,7 +199,7 @@ async function* finalAnswer(text: string): AsyncGenerator<AdapterEvent> {
 
 function responseFor(role: Role, step: number, body: Record<string, unknown>): AsyncIterable<AdapterEvent> {
   if (role === "root") {
-    if (solChild) {
+    if (discoverSpawnDeclaration) {
       if (step === 0) return toolCall("tool_search", { query: `${toolNamespace} spawn_agent`, limit: 1 });
       step--;
     }
@@ -243,12 +265,19 @@ const server = Bun.serve({
     try {
       const body = await request.json() as Record<string, unknown>;
       // Capture the real native tool declaration, not a reimplementation of its roster filter.
-      const toolsText = JSON.stringify(parseRequest(body).context.tools ?? []);
-      for (const match of toolsText.matchAll(/chatgpt-web\/[a-z-]+/g)) advertisedModels.add(match[0]);
+      const parsedTools = parseRequest(body).context.tools ?? [];
+      const toolsText = JSON.stringify(parsedTools);
+      for (const match of toolsText.matchAll(/chatgpt-web\/[a-z-]+|gpt-[a-z0-9.-]+/g)) advertisedModels.add(match[0]);
       const role = roleOf(body);
       const step = steps.get(role) ?? 0;
       steps.set(role, step + 1);
       observed.add(`${role}:${step}`);
+      const spawnDeclarations = parsedTools.filter(tool => tool.name === "spawn_agent");
+      if (childModelArgument && role === "root" && spawnDeclarations.length > 0) {
+        mkdirSync(resolve("output"), { recursive: true });
+        const proofName = explicitChildModel.replace(/[^A-Za-z0-9_.-]/g, "_");
+        writeFileSync(resolve(`output/subagent-${proofName}-${protocol}-declarations.json`), JSON.stringify(spawnDeclarations, null, 2));
+      }
       const clientMetadata = body.client_metadata && typeof body.client_metadata === "object"
         ? body.client_metadata as Record<string, unknown>
         : {};
@@ -403,10 +432,16 @@ try {
     );
   }
   if (solChild && !advertisedModels.has(explicitChildModel)) throw new Error("Native tool declarations did not advertise Sol Pro");
+  if (protocol === "v1" && preferredRosterAvailable) {
+    for (const slug of COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS) {
+      if (!advertisedModels.has(slug)) throw new Error(`Native tool declarations did not advertise ${slug}`);
+    }
+  }
   const proof = { protocol, observed: [...observed].toSorted(), childModel: explicitChildModel, childEffort: explicitChildReasoningEffort, advertisedModels: [...advertisedModels], requests: requestLog };
-  if (solChild) {
+  if (solChild || childModelArgument) {
     mkdirSync(resolve("output"), { recursive: true });
-    writeFileSync(resolve(`output/subagent-sol-${protocol}-proof.json`), JSON.stringify(proof, null, 2));
+    const proofName = childModelArgument ? explicitChildModel.replace(/[^A-Za-z0-9_.-]/g, "_") : "sol";
+    writeFileSync(resolve(`output/subagent-${proofName}-${protocol}-proof.json`), JSON.stringify(proof, null, 2));
   }
   process.stdout.write(`CODEX_SUBAGENT_${protocol.toUpperCase()}_LIFECYCLE_SMOKE_OK ${JSON.stringify({ observed: proof.observed, childModel: explicitChildModel, childEffort: explicitChildReasoningEffort, advertisedModels: [...advertisedModels] })}\n`);
 } finally {
