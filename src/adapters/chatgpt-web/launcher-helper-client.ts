@@ -212,6 +212,9 @@ export class LauncherBrowserHelperClient {
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
     await this.ensureChild();
     if (turn.abortSignal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
+    if (turn.modelFamily && !this.helperFeatures.has("pinned-model-family")) {
+      throw new Error("Launcher browser helper does not support pinned model family; restart the launcher");
+    }
     if (turn.onMultipartStageAcknowledged && !this.helperFeatures.has("multipart-stage-ack")) {
       throw new Error(
         "Launcher browser helper does not support multipart acknowledgement forwarding; update or restart the launcher",
@@ -522,6 +525,11 @@ export class LauncherBrowserHelperClient {
           pending.prepared = prepared;
           if (prepared.skillFiles?.length && !this.helperFeatures.has("skill-attachments")) {
             throw new Error("Launcher browser helper does not support skill attachments; update or restart the launcher");
+          }
+          if (prepared.multipart?.parts.length === 6 && !this.helperFeatures.has("multipart-2-6")) {
+            throw new Error(
+              "Launcher browser helper does not support six-part Bigger Context prompts; update or restart the launcher",
+            );
           }
           return Promise.resolve(pending.turn.onPreparedSelected?.(message.reused)).then(() => {
             if (this.pending.get(message.id) !== pending) return;
