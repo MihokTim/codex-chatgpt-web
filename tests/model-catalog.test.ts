@@ -45,7 +45,53 @@ function source(): Record<string, unknown> {
   };
 }
 
+function gpt6Source(): Record<string, unknown> {
+  const catalog = source();
+  const legacy = catalog.models as Array<Record<string, unknown>>;
+  const template = legacy[1]!;
+  catalog.models = [
+    ...["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].map((slug, index) => ({
+      ...structuredClone(template), slug, priority: index + 1,
+    })),
+    { ...structuredClone(template), slug: "gpt-reserve", visibility: "hide", priority: 0 },
+    ...legacy,
+  ];
+  return catalog;
+}
+
+function delegationRoster(models: Array<Record<string, unknown>>): unknown[] {
+  return models
+    .filter(model => model.supported_in_api === true && model.visibility === "list")
+    .toSorted((left, right) => Number(left.priority) - Number(right.priority))
+    .slice(0, 5)
+    .map(model => model.slug);
+}
+
 describe("native /models augmentation", () => {
+  test("applies the Compatibility V1 GPT-6 delegation roster after catalog augmentation", () => {
+    const native = gpt6Source();
+    const snapshot = structuredClone(native);
+    const config = defaultConfig("full");
+    config.proAvailable = true;
+    config.extraHighAvailable = true;
+    const result = augmentNativeModelCatalog(native, config);
+    const models = result.models as Array<Record<string, unknown>>;
+
+    expect(delegationRoster(models)).toEqual([
+      "chatgpt-web/pro", "chatgpt-web/light", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+    ]);
+    expect(native).toEqual(snapshot);
+    expect(models.find(model => model.slug === "gpt-reserve")?.priority).toBe(0);
+  });
+
+  test("does not add unavailable Web Pro routes to a GPT-6 catalog", () => {
+    const config = defaultConfig("full");
+    config.proAvailable = false;
+    const models = augmentNativeModelCatalog(gpt6Source(), config).models as Array<Record<string, unknown>>;
+    expect(models.some(model => model.slug === "chatgpt-web/pro" || model.slug === "chatgpt-web/light")).toBe(false);
+    expect(models.find(model => model.slug === "gpt-6-astra")?.priority).toBe(1);
+  });
+
   test("preserves every native model in order and appends one fixed model per ChatGPT Web mode", () => {
     const native = source();
     const nativeSnapshot = structuredClone(native);

@@ -1,8 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
 import { forwardNativeCodexRequest } from "../src/native-passthrough";
 
-test("forwards native Codex requests verbatim to the official backend", async () => {
-  const originalBody = Bun.zstdCompressSync(Buffer.from('{"model":"gpt-5.6-sol","stream":true}'));
+test.each(["gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])("forwards %s native requests verbatim to the official backend", async model => {
+  const originalBody = Bun.zstdCompressSync(Buffer.from(JSON.stringify({ model, stream: true })));
   const encoded = new ArrayBuffer(originalBody.byteLength);
   new Uint8Array(encoded).set(originalBody);
   const request = new Request("http://127.0.0.1:17841/v1/responses", {
@@ -38,8 +38,8 @@ test("forwards native Codex requests verbatim to the official backend", async ()
   expect(await response.text()).toBe("data: native\n\n");
 });
 
-test("forwards native Codex compaction requests to the official compact endpoint", async () => {
-  const originalBody = Bun.zstdCompressSync(Buffer.from('{"model":"gpt-5.6-sol","input":[]}'));
+test.each(["gpt-5.6-sol", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])("forwards %s compaction to the official compact endpoint", async model => {
+  const originalBody = Bun.zstdCompressSync(Buffer.from(JSON.stringify({ model, input: [] })));
   const encoded = new ArrayBuffer(originalBody.byteLength);
   new Uint8Array(encoded).set(originalBody);
   const request = new Request("http://127.0.0.1:17841/v1/responses/compact", {
