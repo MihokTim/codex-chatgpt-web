@@ -1,8 +1,8 @@
-import { chatGptWebTraceId, createChatGptWebAdapter } from "./adapters/chatgpt-web";
+import { chatGptWebExecutionNamespace, chatGptWebTraceId, createChatGptWebAdapter } from "./adapters/chatgpt-web";
 import { closeChatGptBrowserWorkers } from "./adapters/chatgpt-web/browser-worker";
 import { closeTurnBrokers, TurnBroker } from "./adapters/chatgpt-web/turn-broker";
 import { timingSafeEqual } from "node:crypto";
-import { chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
+import { chatGptTurnExecutionKey, chatGptTurnSessions } from "./adapters/chatgpt-web/turn-execution";
 import {
   cancelAllStructuredCompactions,
   cancelStructuredCompactionNativeTurn,
@@ -44,6 +44,7 @@ import {
   extractCompactUserMessages,
 } from "./responses/compaction";
 import { parseRequest } from "./responses/parser";
+import { TerminalFailureReplays } from "./responses/terminal-failure-replay";
 import { expandPreviousResponseInput, flushResponseState, rememberResponseState } from "./responses/state";
 import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "./types";
 import type { CodexProviderConfig } from "./types";
@@ -352,6 +353,7 @@ export class HttpTurnCounter {
 }
 
 type ChatGptWebAdapterFactory = (provider: CodexProviderConfig) => ProviderAdapter;
+const terminalFailureReplays = new TerminalFailureReplays();
 
 export interface ResponseRequestOptions {
   /** DEV and other in-process harnesses can keep continuation state in their own canonical store. */
@@ -616,6 +618,13 @@ export async function responseRequest(
       headers: { "content-type": "application/json" },
     });
   }
+  // Reconnects can append emitted commentary to the round body. Bind terminal failures to the
+  // canonical instruction and conversation epoch; a new user instruction may proceed normally.
+  const terminalReplayKey = traceId
+    ? `${chatGptWebExecutionNamespace(provider)}:${route.slug}:${chatGptTurnExecutionKey(parsed)}:${traceId}`
+    : undefined;
+  const terminalReplay = terminalFailureReplays.response(terminalReplayKey);
+  if (terminalReplay) return terminalReplay;
   const adapter = adapterFactory(provider);
   const queue = new AsyncEventQueue<AdapterEvent>();
   const abort = new AbortController();
@@ -624,6 +633,7 @@ export async function responseRequest(
   const run = async () => {
     try {
       await adapter.runTurn!(parsed, { headers: req.headers, abortSignal: abort.signal }, event => {
+        terminalFailureReplays.remember(terminalReplayKey, event);
         options.onAdapterEvent?.(event);
         queue.push(event);
       });
