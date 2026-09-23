@@ -16,7 +16,7 @@ import {
   LEGACY_CHATGPT_CONNECTOR_NAMES,
 } from "../../config";
 import { estimateTokens } from "../../lib/token-estimate";
-import { CHATGPT_STOPPED_THINKING_LABELS } from "./ui-labels";
+import { CHATGPT_FAILED_THINKING_LABELS, CHATGPT_STOPPED_THINKING_LABELS } from "./ui-labels";
 import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
 import {
@@ -88,6 +88,7 @@ import {
   chatGptBrowserTabClosedError,
   chatGptRetainedConversationUnavailableError,
   chatGptStoppedThinkingError,
+  chatGptFailedThinkingError,
 } from "./adapter-error";
 import {
   ChatGptLunaCheckpointStream,
@@ -1726,6 +1727,7 @@ interface ChatGptResponseDomSnapshot {
   markdownSegments: ChatGptMarkdownSegment[];
   completionActionVisible: boolean;
   stoppedThinkingVisible: boolean;
+  failedThinkingVisible: boolean;
   traceBlocks: ChatGptVisibleTraceBlock[];
 }
 
@@ -1743,6 +1745,7 @@ const absentResponseDomSnapshot = (): ChatGptResponseDomSnapshot => ({
   markdownSegments: [],
   completionActionVisible: false,
   stoppedThinkingVisible: false,
+  failedThinkingVisible: false,
   traceBlocks: [],
 });
 
@@ -3706,6 +3709,7 @@ export class ChatGptBrowserWorker {
           snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
         }
       }
+      if (snapshot.failedThinkingVisible) throw chatGptFailedThinkingError();
       if (snapshot.stoppedThinkingVisible) throw chatGptStoppedThinkingError();
       const externalProgressSnapshot = externalProgress?.snapshot();
       if (externalProgress
@@ -4391,11 +4395,11 @@ export class ChatGptBrowserWorker {
           complete: block.complete === true || index < blocks.length - 1,
         } : {}),
       }));
-      const stoppedThinkingVisible = (() => {
+      const thinkingStatusVisible = (statusLabels: readonly string[]): boolean => {
         // Only ChatGPT UI in the bound response may terminate the turn. A model quoting this
         // phrase in its answer or reasoning is ordinary content, not a stopped-thinking status.
         // Match the site's observed labels regardless of the account/document language.
-        const labels = new Set<string>(options.stoppedThinkingLabels);
+        const labels = new Set<string>(statusLabels);
         const isStoppedLabel = (value: string | null): boolean => labels.has(value?.replace(/\s+/g, " ").trim() ?? "");
         const isStatus = (candidate: HTMLElement): boolean => {
           if (overlapsRenderedAnswer(candidate) || overlapsCommentary(candidate)
@@ -4408,6 +4412,11 @@ export class ChatGptBrowserWorker {
         const ariaMatch = Array.from(root.querySelectorAll<HTMLElement>("[aria-label]"))
           .some(candidate => isStoppedLabel(candidate.getAttribute("aria-label")) && isStatus(candidate));
         if (ariaMatch) return true;
+        // Status controls may split a single Japanese label across several inline elements.
+        const controlMatch = Array.from(root.querySelectorAll<HTMLElement>(
+          'button, [role="status"], [data-streaming-response-status]',
+        )).some(candidate => isStoppedLabel(candidate.innerText) && isStatus(candidate));
+        if (controlMatch) return true;
         const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
           if (!isStoppedLabel(node.textContent)) continue;
@@ -4415,7 +4424,9 @@ export class ChatGptBrowserWorker {
           if (parent && isStatus(parent)) return true;
         }
         return false;
-      })();
+      };
+      const stoppedThinkingVisible = thinkingStatusVisible(options.stoppedThinkingLabels);
+      const failedThinkingVisible = thinkingStatusVisible(options.failedThinkingLabels);
       return {
         key: observerKey,
         snapshot: {
@@ -4425,12 +4436,14 @@ export class ChatGptBrowserWorker {
           markdownSegments,
           completionActionVisible: completionAction !== undefined,
           stoppedThinkingVisible,
+          failedThinkingVisible,
           traceBlocks,
         },
       };
     }, {
       completionActionSelector: CHATGPT_COMPLETION_ACTION_SELECTOR,
       stoppedThinkingLabels: [...CHATGPT_STOPPED_THINKING_LABELS],
+      failedThinkingLabels: [...CHATGPT_FAILED_THINKING_LABELS],
       knownKey: cache?.key,
       attributeFilter: [...CHATGPT_DOM_REVISION_ATTRIBUTES],
     }, { timeout: 2_000 }).catch(() => undefined);
@@ -5244,6 +5257,7 @@ export class ChatGptBrowserWorker {
             continue;
           }
         }
+        if (snapshot.failedThinkingVisible) throw chatGptFailedThinkingError();
         if (snapshot.stoppedThinkingVisible) throw chatGptStoppedThinkingError();
         if (snapshot.responsePresent) consecutiveObservationRebinds = 0;
         // The page was read successfully, so the fault budget is genuinely consecutive even when

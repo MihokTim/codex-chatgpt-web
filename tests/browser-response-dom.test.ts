@@ -12,6 +12,8 @@ type Snapshot = {
   fullHtml: string;
   markdownSegments: ChatGptMarkdownSegment[];
   completionActionVisible: boolean;
+  failedThinkingVisible: boolean;
+  stoppedThinkingVisible: boolean;
   traceBlocks: { kind: string; text: string }[];
 };
 
@@ -121,4 +123,44 @@ test("DIL response extraction preserves ownership, commentary and completion bou
   const noCopy = await snapshot(smokeHtml.replace('data-testid="copy-turn-action-button"', 'data-testid="other-action"'));
   expect(noCopy.visibleText).toBe("CODEX WEB GPT READY");
   expect(noCopy.completionActionVisible).toBeFalse();
+});
+
+test("observed Japanese failed-thinking status terminates the bound response without becoming answer text", async () => {
+  // Synthetic fixtures for the observed Japanese status; these are not captured live HTML.
+  for (const status of [
+    '<div data-streaming-response-status><button>思考に失敗しました</button></div>',
+    '<button aria-label=" 思考に失敗しました ">Status</button>',
+    '<div data-streaming-response-status><button><span>思考に</span><span>失敗しました</span></button></div>',
+  ]) {
+    const response = await snapshot(`<section id="turn"><div data-message-author-role="assistant">${status}</div></section>`);
+    expect(response.failedThinkingVisible).toBeTrue();
+    expect(response.stoppedThinkingVisible).toBeFalse();
+    expect(response.visibleText).toBe("");
+    expect(response.completionActionVisible).toBeFalse();
+  }
+});
+
+test("Japanese stopped-thinking remains distinct from failed-thinking in the production DOM snapshot", async () => {
+  const response = await snapshot('<section id="turn"><div data-message-author-role="assistant"><div data-streaming-response-status><button>思考を停止しました</button></div></div></section>');
+  expect(response.stoppedThinkingVisible).toBeTrue();
+  expect(response.failedThinkingVisible).toBeFalse();
+  expect(response.visibleText).toBe("");
+  expect(response.completionActionVisible).toBeFalse();
+});
+
+test("failed-thinking words in answers, quoted reasoning, hidden UI and another turn are not terminal", async () => {
+  const label = "思考に失敗しました";
+  for (const content of [
+    `<div class="markdown"><p>${label}</p></div>`,
+    `<div class="markdown"><button aria-label="${label}">${label}</button></div>`,
+    `<div data-testid="cot-v5"><div class="markdown"><p>${label}</p></div></div>`,
+    `<pre><code>${label}</code></pre>`,
+    `<blockquote><button>${label}</button></blockquote>`,
+    `<div style="display:none"><button>${label}</button></div>`,
+    '<button>思考中</button>',
+    `<button>「${label}」</button>`,
+  ]) {
+    const response = await snapshot(`<section id="old"><button>${label}</button></section><section id="turn">${content}</section>`);
+    expect(response.failedThinkingVisible ?? false).toBeFalse();
+  }
 });

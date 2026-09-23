@@ -226,15 +226,15 @@ test("active compaction delivers the current result and converts every later MCP
     broker.completeTool(token, request!.callId, {
       content: [{ type: "text", text: "current result" }],
     });
-    await expect(current).resolves.toMatchObject({
+    expect(await current).toMatchObject({
       content: [{ type: "text", text: "current result" }],
     });
-    await expect(callTurnBroker(broker.socketPath, {
+    expect(await callTurnBroker(broker.socketPath, {
       method: "invoke",
       bindingId: claimed.bindingId,
       wireName: "exec_command",
       arguments: { cmd: "git status --short" },
-    })).resolves.toMatchObject({
+    })).toMatchObject({
       content: [{ type: "text", text: "compact now" }],
       isError: true,
     });
@@ -275,7 +275,9 @@ test("active compaction drains an MCP call already queued without an outer Codex
       isError: true,
     });
     expect(interrupted).toBe(1);
-    await expect(invocation).resolves.toMatchObject({
+    // Await socket I/O before the assertion: Bun 1.4 on Windows can starve its
+    // pipe callback while the asynchronous expect matcher waits for this promise.
+    expect(await invocation).toMatchObject({
       content: [{ type: "text", text: "compact instead" }],
       isError: true,
     });
@@ -1481,6 +1483,14 @@ test("a timed-out fresh compaction retains its owner until helper cleanup comple
     expect(events.filter(event => event.type === "error")).toHaveLength(2);
     expect(events.some(event => event.type === "done")).toBeFalse();
     await observe();
+    expect(browserStarts).toBe(1);
+    expect(events.at(-1)).toMatchObject({ type: "error", code: "compaction_handoff_timeout", retryable: false });
+    // A later explicit native turn is distinct; reconnecting the failed turn is not a retry budget.
+    const later = request(true);
+    (later._rawBody as { client_metadata: Record<string, string> }).client_metadata = {
+      "x-codex-turn-metadata": JSON.stringify({ thread_id: "thread_retained_compaction", turn_id: "turn_after_timeout" }),
+    };
+    await adapter.runTurn!(later, { headers: new Headers() }, event => events.push(event));
     expect(browserStarts).toBe(2);
     expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
   } finally {
