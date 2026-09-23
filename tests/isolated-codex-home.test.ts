@@ -9,7 +9,7 @@ import { installCodexIntegration, uninstallCodexIntegration, preflightCodexInteg
 import { installRoute } from "../src/codex-integration-route";
 import { installCompatibilityV1Features, textFormat } from "../src/codex-integration-document";
 import { CODEX_REALTIME_WEBRTC_CALL_BASE_URL, getCodexJournalPath, getCodexJournalRecoveryPath } from "../src/codex-integration-shared";
-import { planHomeMigration, migrateHome } from "../src/codex-home-migration";
+import { planHomeMigration, migrateHome, moveDefaultWebSelection } from "../src/codex-home-migration";
 import { resolveWebHome } from "../launcher/electron/web-home.cjs";
 
 function fixture(action: (f: { native: string; web: string; core: string; original: string; config: ReturnType<typeof defaultConfig>; legacy: () => void }) => void) {
@@ -84,6 +84,20 @@ test("normal install migrates released journal, native cache and local auth; re-
   installCodexIntegration(config);
   expect(inspectCodexIntegration().errors).toEqual([]);
 }));
+test("migration moves the exact Pro/ultra selection into the isolated Web profile", () => fixture(({ native, web, config, legacy }) => {
+  writeFileSync(join(native, "config.toml"), 'model = "chatgpt-web/pro"\r\nmodel_reasoning_effort = "ultra"\r\npersonality = "pragmatic"\r\n');
+  legacy();
+  preflightCodexIntegration(config);
+  const before = readFileSync(join(native, "config.toml"), "utf8");
+  const plan = planHomeMigration()!;
+  expect(plan.restored).toBe('personality = "pragmatic"\r\n');
+  expect(() => migrateHome(plan, () => { throw new Error("injected after native restore"); })).toThrow("injected");
+  expect(readFileSync(join(native, "config.toml"), "utf8")).toBe(before);
+  installCodexIntegration(config);
+  expect(readFileSync(join(native, "config.toml"), "utf8")).toBe('personality = "pragmatic"\r\n');
+  assertWeb(web);
+  expect(inspectCodexIntegration().errors).toEqual([]);
+}));
 for (const step of ["native-restored", "web-installed"]) test(`migration compensates failure at ${step}`, () => fixture(({ native, web, config, legacy }) => {
   legacy();
   writeFileSync(join(native, "models_cache.json"), "cache-before");
@@ -104,9 +118,13 @@ for (const file of ["auth.json", "AGENTS.md", "models_cache.json"]) test(`migrat
   expect(readFileSync(join(web, file), "utf8")).toBe("existing");
 }));
 test("migration refuses unmanaged Web settings in native config", () => fixture(({ native, config, legacy }) => {
-  writeFileSync(join(native, "config.toml"), 'model = "chatgpt-web/pro"\n'); legacy();
+  writeFileSync(join(native, "config.toml"), 'model = "chatgpt-web/light"\n'); legacy();
   expect(() => installCodexIntegration(config)).toThrow("unmanaged Web model");
 }));
+test("migration keeps annotated or non-default Pro selection under manual control", () => {
+  expect(() => moveDefaultWebSelection('model = "chatgpt-web/pro" # chosen\n')).toThrow("unmanaged Web model");
+  expect(() => moveDefaultWebSelection('model = "chatgpt-web/pro"\nmodel_reasoning_effort = "high"\n')).toThrow("unmanaged Web model");
+});
 test("Web profile refuses post-install model drift and preserves unrelated user preferences", () => fixture(({ web, config }) => {
   mkdirSync(web, { recursive: true });
   const original = 'model = "chatgpt-web/high" # user\n[windows]\nsandbox = "unelevated"\n';
