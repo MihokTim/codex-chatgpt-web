@@ -181,7 +181,7 @@ export function replacementBaseline(
 
   if (journal.version === 9 || journal.version === 10) {
     const withoutHook = journal.version === 10
-      ? restoreCodexInterruptHook(currentText, journal.interruptHook)
+      ? restoreCodexInterruptHook(currentText, journal.interruptHook, { allowAbsent: true })
       : currentText;
     const baseline = restoreOwnedManagedFeatures(withoutHook, journal);
     const document = parseDocument(baseline);
@@ -282,7 +282,6 @@ export function installRoute(
 }
 
 export function verifyInstalledRoute(text: string, journal: ManagedRouteJournal): void {
-  if (journal.version === 10 && journal.webProfile) verifyWebProfile(text, journal.webProfile, true);
   const lines = splitLines(text);
   const current = assignments(lines);
   if (current.openai_base_url.value !== journal.installed.openai_base_url) {
@@ -319,6 +318,7 @@ export function verifyInstalledRoute(text: string, journal: ManagedRouteJournal)
     }
     if (journal.version === 5 || journal.version === 6) verifyInstalledFeatures(text, journal);
   }
+  if (journal.version === 10 && journal.webProfile) verifyWebProfile(text, journal.webProfile, true);
 }
 
 function previousAssignmentMatches(current: PreviousAssignment, previous: PreviousAssignment): boolean {

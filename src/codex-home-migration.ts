@@ -49,7 +49,7 @@ export function migrateHome<T>(plan: NonNullable<ReturnType<typeof planHomeMigra
   const paths = [journal.configPath, join(nativeHome, "models_cache.json"), getCodexJournalPath(), getCodexJournalRecoveryPath(),
     ...["config.toml", "models_cache.json", "auth.json", "AGENTS.md"].map(name => join(webHome, name)),
     ...(journal.version === 2 ? [journal.catalogPath] : [])];
-  const snapshots = paths.map(snapshotFile);
+  const snapshots = paths.map(path => snapshotFile(path));
   const backupDir = join(getConfigDir(), "backups", `home-isolation-${Date.now()}`);
   mkdirSync(backupDir, { recursive: true, mode: 0o700 });
   const manifest = snapshots.filter(s => s.exists).map((s, i) => {

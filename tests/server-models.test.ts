@@ -14,6 +14,7 @@ test("proxies official /models auth and query, then appends the fixed ChatGPT We
   let upstream: Request | undefined;
   const config = defaultConfig("full");
   config.subagentProtocol = "native";
+  config.extraHighAvailable = true;
   config.proAvailable = true;
   const response = await modelsRequest(request, config, async input => {
     upstream = input;
@@ -104,6 +105,7 @@ test("Zero Risk returns one generic Web row without using scanned capabilities",
   const config = defaultConfig("full");
   config.browserInteractionMode = "manual";
   config.solAvailable = true;
+  config.extraHighAvailable = true;
   config.proAvailable = true;
   const response = await modelsRequest(
     new Request("http://127.0.0.1:17841/v1/models", {
@@ -169,7 +171,7 @@ test("ChatGPT-only native catalog rows do not turn model discovery into a 502", 
   const body = await response.json() as { models: Array<{ slug: string; supported_in_api?: boolean }> };
   expect(body.models[0]).toMatchObject({ slug: "gpt-chatgpt-only", supported_in_api: false });
   expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/")))
-    .toHaveLength(3);
+    .toHaveLength(2);
   expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/"))
     .every(model => model.supported_in_api === true)).toBe(true);
 });

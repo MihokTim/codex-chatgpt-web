@@ -714,7 +714,8 @@ test("authenticated lifecycle control cancels orphaned browser turns", async () 
   }
 });
 
-test("authenticated targeted cancellation terminates one browser trace without reopening it", async () => {
+for (const reason of [undefined, "browser_surface_bootstrap_timeout", "helper_heartbeat_expired"] as const)
+test(`targeted cancellation preserves peer turns and its cause: ${reason ?? "user close"}`, async () => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   const server = startServer(config);
   chatGptTurnSessions.clear();
@@ -728,9 +729,9 @@ test("authenticated targeted cancellation terminates one browser trace without r
     physicalSettlement: targetBrowser.then(() => undefined, () => undefined),
     trace: new ChatGptTraceFeed(),
     text: new ChatGptTextFeed(),
-    cancel: () => {
+    cancel: reason => {
       targetCancelled += 1;
-      rejectTarget(new Error("tab closed"));
+      rejectTarget(reason ?? new Error("tab closed"));
     },
   }), "trace_target");
   chatGptTurnSessions.getOrCreate("other-key", () => ({
@@ -746,7 +747,7 @@ test("authenticated targeted cancellation terminates one browser trace without r
     const unauthorized = await fetch(`http://127.0.0.1:${server.port}/admin/cancel-turn`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer invalid" },
-      body: JSON.stringify({ traceId: "trace_target" }),
+      body: JSON.stringify({ traceId: "trace_target", ...(reason ? { reason } : {}) }),
     });
     expect(unauthorized.status).toBe(401);
 
@@ -756,7 +757,7 @@ test("authenticated targeted cancellation terminates one browser trace without r
         "content-type": "application/json",
         authorization: `Bearer ${config.controlToken}`,
       },
-      body: JSON.stringify({ traceId: "trace_target" }),
+      body: JSON.stringify({ traceId: "trace_target", ...(reason ? { reason } : {}) }),
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
@@ -768,7 +769,7 @@ test("authenticated targeted cancellation terminates one browser trace without r
     });
     expect(targetCancelled).toBe(1);
     expect(otherCancelled).toBe(0);
-    expect(target.settledOutcome()).toMatchObject({ type: "error" });
+    expect(target.settledOutcome()).toMatchObject({ type: "error", error: { code: reason ?? "client_cancelled", retryable: false } });
     expect(chatGptTurnSessions.getOrCreate("target-key", () => {
       throw new Error("cancelled trace must remain terminal");
     }, "trace_target")).toBe(target);
@@ -963,7 +964,7 @@ test("a restart recovery turn without a new user instruction fails terminally in
   expect(adapterConstructions).toBe(0);
 });
 
-test("authenticated lifecycle control aborts active HTTP work before acknowledging cancellation", async () => {
+test.each(["alpha/search", "images/generations"])("authenticated lifecycle control aborts active %s before acknowledging cancellation", async path => {
   const config = { ...defaultConfig("browser-only"), port: 0 };
   let upstreamAbortObserved = false;
   const server = startServer(config, {
@@ -975,13 +976,15 @@ test("authenticated lifecycle control aborts active HTTP work before acknowledgi
     }),
   });
   const endpoint = `http://127.0.0.1:${server.port}`;
-  const activeRequest = fetch(`${endpoint}/v1/alpha/search`, {
+  const activeRequest = fetch(`${endpoint}/v1/${path}`, {
     method: "POST",
     headers: {
       authorization: "Bearer test-codex-session",
       "content-type": "application/json",
     },
-    body: JSON.stringify({ query: "retained turn" }),
+    body: JSON.stringify(path === "alpha/search"
+      ? { query: "retained turn" }
+      : { model: "gpt-image-1", prompt: "A blue square" }),
   }).catch(() => null);
 
   try {
@@ -1132,6 +1135,8 @@ test("health proves that Codex received a successful augmented model catalog", a
     expect(await (await fetch(`${endpoint}/healthz`)).json()).toMatchObject({
       successful_model_catalog_requests: 0,
       last_successful_model_catalog_request_at: null,
+      recovery_fences: { used: expect.any(Number), limit: 512, remaining: expect.any(Number) },
+      compaction_failure_fences: { used: expect.any(Number), limit: 512, remaining: expect.any(Number) },
     });
 
     const models = await fetch(`${endpoint}/v1/models`, {
@@ -1174,6 +1179,79 @@ test("server exposes authenticated standalone Web Search on the routed v1 base U
     expect(await upstreamRequest!.json()).toEqual({ query: "bridge route" });
   } finally {
     await server.stop(true);
+  }
+});
+
+test("standalone native image generation and edits preserve their upstream protocol", async () => {
+  const config = { ...defaultConfig("browser-only"), port: 0 };
+  const requests: Request[] = [];
+  const reply = '{ "created": 1778832973, "data": [{ "b64_json": "native-image-bytes" }] }';
+  const denied = '{ "error": { "code": "rate_limit_exceeded", "message": "Image allowance reached" } }';
+  const upstreamServer = Bun.serve({
+    port: 0,
+    fetch: request => {
+      const edit = new URL(request.url).pathname.endsWith("/edits");
+      return new Response(Bun.gzipSync(edit ? denied : reply), {
+        status: edit ? 429 : 200,
+        headers: {
+          "content-type": "application/json", "content-encoding": "gzip",
+          "x-codex-imagegen-request-id": "native-image-request",
+        },
+      });
+    },
+  });
+  const server = startServer(config, {
+    fetchUpstream: async request => {
+      requests.push(request);
+      const path = new URL(request.url).pathname;
+      return fetch(new Request(`http://127.0.0.1:${upstreamServer.port}${path}`, request.clone()));
+    },
+  });
+  const endpoint = `http://127.0.0.1:${server.port}`;
+  try {
+    for (const operation of ["generations", "edits"] as const) {
+      const body = operation === "generations"
+        ? '{ "model": "gpt-image-1", "prompt": "A blue square", "n": 1 }'
+        : '{ "model": "gpt-image-1", "prompt": "Make it green", "images": [{ "image_url": "data:image/png;base64,AAAA" }] }';
+      const response = await fetch(`${endpoint}/v1/images/${operation}?fixture=1`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-codex-session",
+          "content-type": "application/json",
+          "chatgpt-account-id": "test-account",
+          "x-codex-image-turn-id": "native-image-turn",
+        },
+        body,
+      });
+      expect(response.status).toBe(operation === "generations" ? 200 : 429);
+      expect(await response.text()).toBe(operation === "generations" ? reply : denied);
+      expect(response.headers.get("content-encoding")).toBeNull();
+      expect(response.headers.get("x-codex-imagegen-request-id")).toBe("native-image-request");
+      const upstream = requests.at(-1)!;
+      expect(upstream.url).toBe(`https://chatgpt.com/backend-api/codex/images/${operation}?fixture=1`);
+      expect(upstream.method).toBe("POST");
+      expect(upstream.redirect).toBe("manual");
+      expect(upstream.headers.get("authorization")).toBe("Bearer test-codex-session");
+      expect(upstream.headers.get("chatgpt-account-id")).toBe("test-account");
+      expect(upstream.headers.get("x-codex-image-turn-id")).toBe("native-image-turn");
+      expect(upstream.headers.get("host")).toBeNull();
+      expect(await upstream.text()).toBe(body);
+    }
+    expect(requests).toHaveLength(2);
+    const unauthorized = await fetch(`${endpoint}/v1/images/generations`, { method: "POST", body: "{}" });
+    expect(unauthorized.status).toBe(401);
+    expect(requests).toHaveLength(2);
+    await fetch(`${endpoint}/admin/drain`, {
+      method: "POST", headers: { authorization: `Bearer ${config.controlToken}` },
+    });
+    const drained = await fetch(`${endpoint}/v1/images/edits`, {
+      method: "POST", headers: { authorization: "Bearer test-codex-session" }, body: "{}",
+    });
+    expect(drained.status).toBe(503);
+    expect(requests).toHaveLength(2);
+  } finally {
+    await server.stop(true);
+    await upstreamServer.stop(true);
   }
 });
 
@@ -1225,6 +1303,44 @@ test("authenticated shutdown requires a verified idle drain", async () => {
       }
     }
     expect(stopped).toBe(true);
+  } finally {
+    await server.stop(true);
+  }
+});
+
+test("model catalog health distinguishes no request, transport failure, upstream denial, and recovery without secrets", async () => {
+  let outcome: "transport" | "denied" | "invalid" | "ready" = "transport";
+  const server = startServer({ ...defaultConfig("browser-only"), port: 0 }, {
+    fetchUpstream: async () => {
+      if (outcome === "transport") throw Object.assign(new Error("private proxy credentials and host"), { code: "UnsupportedProxyProtocol" });
+      if (outcome === "denied") return new Response("private upstream account detail", { status: 403 });
+      if (outcome === "invalid") return Response.json({ models: [] });
+      return Response.json({ models: [{ slug: "native", visibility: "list", supported_reasoning_levels: [] }] });
+    },
+  });
+  const base = `http://127.0.0.1:${server.port}`;
+  const health = async () => await (await fetch(`${base}/healthz`)).json() as Record<string, any>;
+  try {
+    expect(await health()).toMatchObject({ model_catalog_requests: 0, last_model_catalog_result: null });
+    const unauthenticated = await fetch(`${base}/v1/models`);
+    expect(unauthenticated.status).toBe(502);
+    await unauthenticated.text();
+    expect((await health()).last_model_catalog_result.failure.stage).toBe("request");
+    for (const [next, status, stage] of [
+      ["transport", 502, "transport"], ["denied", 403, "upstream"], ["invalid", 502, "catalog"], ["ready", 200, undefined],
+    ] as const) {
+      outcome = next;
+      const response = await fetch(`${base}/v1/models`, { headers: { authorization: "Bearer private-session-token" } });
+      expect(response.status).toBe(status);
+      await response.text();
+      const snapshot = await health();
+      expect(snapshot.last_model_catalog_result).toMatchObject({ status });
+      expect(snapshot.last_model_catalog_result.failure?.stage).toBe(stage);
+      if (next === "transport") expect(snapshot.last_model_catalog_result.failure.code).toBe("UnsupportedProxyProtocol");
+      expect(JSON.stringify(snapshot)).not.toContain("private");
+      expect(snapshot.successful_model_catalog_requests).toBe(next === "ready" ? 1 : 0);
+    }
+    expect((await health()).model_catalog_requests).toBe(5);
   } finally {
     await server.stop(true);
   }

@@ -357,7 +357,8 @@ function usageOf(response: ResponsesEnvelope): DevChatUsage {
 
 export function defaultDevChatModel(config: AppConfig): DevChatModel {
   if (config.browserInteractionMode === "manual") return "chatgpt-web/zero-risk";
-  return config.solAvailable ? "chatgpt-web/light" : "chatgpt-web/luna";
+  // The local light route now selects Sol Pro; Medium remains the inexpensive automatic default.
+  return config.solAvailable ? "chatgpt-web/medium" : "chatgpt-web/luna";
 }
 
 function isLunaDevChatModel(model: DevChatModel): boolean {
@@ -399,6 +400,7 @@ export function createLauncherDevAdapter(
       threadEnvironmentStatePath: join(runtimeStateRoot, "thread-environments.json"),
       lunaCheckpointStatePath: join(runtimeStateRoot, "luna-checkpoints.json"),
       turnTimeoutMs: 60 * 60_000,
+      experimentalSkillAttachments: config.experimentalSkillAttachments,
       ...(config.experimentalBiggerContext
         ? { experimentalBiggerContext: true }
         : {}),
@@ -595,6 +597,7 @@ export class DevChatDriver {
     const inputTokens = estimateChatGptWebInputTokens(parsed, {
       localToolsEnabled: this.config.mode === "full",
       solAvailable: this.config.solAvailable,
+      extraHighAvailable: this.config.extraHighAvailable === true,
       proAvailable: this.config.proAvailable,
     });
     const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, this.config);

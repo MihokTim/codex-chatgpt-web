@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
-import { chatGptRetainedConversationUnavailableError } from "../src/adapters/chatgpt-web/adapter-error";
+import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError, chatGptRetainedConversationUnavailableError } from "../src/adapters/chatgpt-web/adapter-error";
 import {
   MAX_COMPACTION_HANDOFF_TIMEOUT_MS,
   cancelAllStructuredCompactions,
@@ -125,6 +125,11 @@ test("one browser conversation spans native turns and rotates only at compaction
   const otherEffort = structuredClone(before);
   otherEffort.options.reasoning = "medium";
   expect(chatGptConversationKey(otherEffort, "provider")).not.toBe(chatGptConversationKey(before, "provider"));
+  const solFamily = structuredClone(before);
+  solFamily.options.browserModelFamily = "sol";
+  const latestFamily = structuredClone(before);
+  latestFamily.options.browserModelFamily = "latest";
+  expect(chatGptConversationKey(solFamily, "provider")).not.toBe(chatGptConversationKey(latestFamily, "provider"));
   const otherThread = structuredClone(before);
   (otherThread._rawBody as { client_metadata: Record<string, unknown> }).client_metadata = {
     "x-codex-turn-metadata": JSON.stringify({
@@ -226,15 +231,15 @@ test("active compaction delivers the current result and converts every later MCP
     broker.completeTool(token, request!.callId, {
       content: [{ type: "text", text: "current result" }],
     });
-    await expect(current).resolves.toMatchObject({
+    expect(await current).toMatchObject({
       content: [{ type: "text", text: "current result" }],
     });
-    await expect(callTurnBroker(broker.socketPath, {
+    expect(await callTurnBroker(broker.socketPath, {
       method: "invoke",
       bindingId: claimed.bindingId,
       wireName: "exec_command",
       arguments: { cmd: "git status --short" },
-    })).resolves.toMatchObject({
+    })).toMatchObject({
       content: [{ type: "text", text: "compact now" }],
       isError: true,
     });
@@ -275,7 +280,9 @@ test("active compaction drains an MCP call already queued without an outer Codex
       isError: true,
     });
     expect(interrupted).toBe(1);
-    await expect(invocation).resolves.toMatchObject({
+    // Await socket I/O before the assertion: Bun 1.4 on Windows can starve its
+    // pipe callback while the asynchronous expect matcher waits for this promise.
+    expect(await invocation).toMatchObject({
       content: [{ type: "text", text: "compact instead" }],
       isError: true,
     });
@@ -289,9 +296,12 @@ test("active compaction drains an MCP call already queued without an outer Codex
 });
 
 test("a completed retained agent returns an exact checkpoint and its browser is physically retired", async () => {
-  expect(MAX_COMPACTION_HANDOFF_TIMEOUT_MS).toBe(5 * 60_000);
+  // Local policy retains a two-hour ceiling while still clamping a longer caller timeout.
+  expect(MAX_COMPACTION_HANDOFF_TIMEOUT_MS).toBe(120 * 60_000);
   const sourceRequest = request(false);
-  sourceRequest.options.reasoning = "max";
+  sourceRequest.options = { reasoning: "max", browserModelFamily: "sol" };
+  const compactionRequest = request(true);
+  compactionRequest.options = { ...sourceRequest.options };
   const conversationKey = chatGptConversationKey(sourceRequest, "provider")!;
   const source = new ChatGptTurnSession({
     mode: "read-only",
@@ -335,25 +345,25 @@ test("a completed retained agent returns an exact checkpoint and its browser is 
     },
   };
 
-  const compactRequest = request(true);
-  compactRequest.options.reasoning = "max";
   await expect(requestRetainedCompactionHandoff(
     worker as never,
-    compactRequest,
+    compactionRequest,
     source,
     broker,
-    { localToolsEnabled: true, solAvailable: true, proAvailable: true },
+    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
     "trace_handoff",
     undefined,
-    60 * 60_000,
+    180 * 60_000,
   )).resolves.toBe("Retained agent checkpoint");
   expect(captured?.conversationKey).toBe(conversationKey);
   expect(captured?.reasoning).toBe("max");
   expect(captured?.browserEffortOverride).toBe("xhigh");
+  expect(captured?.capabilities.browserModelFamily).toBe("sol");
   expect(captured?.requireRetainedConversation).toBeTrue();
   expect(captured?.nativeConnector).toBeTrue();
   expect(captured?.capabilities.localToolsEnabled).toBeFalse();
   expect(browserRetired).toBeTrue();
+  expect(captured?.abortSignal?.reason).toBeInstanceOf(ChatGptCompactionHandoffAccepted);
   expect(transactionAborted).toBeTrue();
   expect(transactionTtl).toBe(MAX_COMPACTION_HANDOFF_TIMEOUT_MS);
 });
@@ -387,7 +397,7 @@ test("completed retained compaction never treats ordinary assistant text as a ha
     request(true),
     source,
     broker,
-    { localToolsEnabled: true, solAvailable: true, proAvailable: true },
+    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
     "trace_no_text_fallback",
   )).rejects.toThrow("structured handoff missing");
 });
@@ -422,7 +432,7 @@ test("retained compaction deadline bounds browser settlement after the control h
     request(true),
     source,
     broker,
-    { localToolsEnabled: true, solAvailable: true, proAvailable: true },
+    { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
     "trace_deadline",
     undefined,
     25,
@@ -1030,7 +1040,7 @@ test("adapter compact returns one same-agent handoff and preserves a pre-existin
       appName: "Codex Native DEV",
       localToolsEnabled: true,
       solAvailable: true,
-      proAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
     },
   };
   const broker = TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!);
@@ -1125,7 +1135,7 @@ test("a compact HTTP observer can reconnect without sending a second retained-ch
       appName: "Codex Native DEV",
       localToolsEnabled: true,
       solAvailable: true,
-      proAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
     },
   };
   const broker = TurnBroker.forSocket(provider.chatgptWeb!.brokerSocketPath!);
@@ -1210,18 +1220,19 @@ test("a compact HTTP observer can reconnect without sending a second retained-ch
   }
 });
 
-test("structured compact rebuilds canonical context when its retained source is absent", async () => {
+test.each([false, true])("structured compact rebuilds canonical context when its retained source is absent (Bigger Context=%s)", async experimentalBiggerContext => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-missing-retained-compact-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
     baseUrl: `browser://missing-retained-${Date.now()}`,
     chatgptWeb: {
+      experimentalBiggerContext,
       browserHost: "launcher",
       browserHostDescriptorPath: join(root, "launcher.json"),
       brokerSocketPath: defaultBrokerEndpoint(root),
       localToolsEnabled: true,
       solAvailable: true,
-      proAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
     },
   };
   const worker = ChatGptBrowserWorker.forProvider(provider);
@@ -1233,13 +1244,21 @@ test("structured compact rebuilds canonical context when its retained source is 
     expect(turn.conversationKey).toBeUndefined();
     expect(turn.compaction).toBeTrue();
     const prepared = await turn.prepare();
-    expect(prepared.text).toContain("Original task");
-    expect(prepared.text).toContain("Continue with the next step");
+    const contextText = prepared.multipart?.parts.join("\n") ?? prepared.text;
+    expect(contextText).toContain("Original task");
+    expect(contextText).toContain("Continue with the next step");
+    if (experimentalBiggerContext) {
+      expect(prepared.multipart!.parts).toHaveLength(6);
+      expect(prepared.trimmedCompactionMessages).toBeUndefined();
+      const lastRecord = prepared.multipart!.parts.flatMap(part => JSON.parse(part).records).at(-1);
+      expect(lastRecord.message.content).toBe(compact.context.messages.at(-1)!.content);
+    }
     prepared.release();
     return "Fallback checkpoint from canonical Codex context";
   };
   const compact = request(true);
   const events: AdapterEvent[] = [];
+  if (experimentalBiggerContext) compact.context.messages.at(-1)!.content += "x".repeat(160_000);
   try {
     await createChatGptWebAdapter(provider).runTurn!(
       compact,
@@ -1270,7 +1289,7 @@ test("fresh multipart compaction gives each acknowledged phase its own handoff b
       brokerSocketPath: defaultBrokerEndpoint(root),
       localToolsEnabled: true,
       solAvailable: true,
-      proAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
       turnTimeoutMs: 40,
     },
   };
@@ -1279,9 +1298,11 @@ test("fresh multipart compaction gives each acknowledged phase its own handoff b
   (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
     expect(turn.onMultipartStageAcknowledged).toBeDefined();
     expect(turn.onSubmitted).toBeDefined();
-    mock.timers.tick(25);
-    expect(turn.abortSignal?.aborted).toBeFalse();
-    await turn.onMultipartStageAcknowledged!(1);
+    for (let part = 1; part <= 5; part++) {
+      mock.timers.tick(25);
+      expect(turn.abortSignal?.aborted).toBeFalse();
+      await turn.onMultipartStageAcknowledged!(part);
+    }
     mock.timers.tick(25);
     expect(turn.abortSignal?.aborted).toBeFalse();
     turn.onSubmitted!();
@@ -1319,7 +1340,7 @@ test("cancel-all waits for physical settlement of a fresh compaction fallback", 
       brokerSocketPath: defaultBrokerEndpoint(root),
       localToolsEnabled: true,
       solAvailable: true,
-      proAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
     },
   };
   const worker = ChatGptBrowserWorker.forProvider(provider);
@@ -1372,7 +1393,7 @@ test("a timed-out fresh compaction retains its owner until helper cleanup comple
       brokerSocketPath: defaultBrokerEndpoint(root),
       localToolsEnabled: true,
       solAvailable: true,
-      proAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
       turnTimeoutMs: 40,
     },
   };
@@ -1422,6 +1443,14 @@ test("a timed-out fresh compaction retains its owner until helper cleanup comple
     expect(events.filter(event => event.type === "error")).toHaveLength(2);
     expect(events.some(event => event.type === "done")).toBeFalse();
     await observe();
+    expect(browserStarts).toBe(1);
+    expect(events.at(-1)).toMatchObject({ type: "error", code: "compaction_handoff_timeout", retryable: false });
+    // A later explicit native turn is distinct; reconnecting the failed turn is not a retry budget.
+    const later = request(true);
+    (later._rawBody as { client_metadata: Record<string, string> }).client_metadata = {
+      "x-codex-turn-metadata": JSON.stringify({ thread_id: "thread_retained_compaction", turn_id: "turn_after_timeout" }),
+    };
+    await adapter.runTurn!(later, { headers: new Headers() }, event => events.push(event));
     expect(browserStarts).toBe(2);
     expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
   } finally {
@@ -1434,7 +1463,7 @@ test("a timed-out fresh compaction retains its owner until helper cleanup comple
   }
 });
 
-test("structured compact rebuilds canonical context when its retained browser disappeared", async () => {
+test.each([false, true])("structured compact rebuild after retained browser loss preserves rate limit=%s", async rateLimited => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-stale-retained-compact-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -1445,7 +1474,7 @@ test("structured compact rebuilds canonical context when its retained browser di
       brokerSocketPath: defaultBrokerEndpoint(root),
       localToolsEnabled: true,
       solAvailable: true,
-      proAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
     },
   };
   const worker = ChatGptBrowserWorker.forProvider(provider);
@@ -1475,6 +1504,9 @@ test("structured compact rebuilds canonical context when its retained browser di
     const prepared = await turn.prepare();
     expect(prepared.text).toContain("Original task");
     prepared.release();
+    if (rateLimited) throw new ChatGptWebAdapterError("ChatGPT rate limit: too many requests.", {
+      status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded", retryable: false,
+    });
     return "Fallback checkpoint after retained browser loss";
   };
   const events: AdapterEvent[] = [];
@@ -1487,6 +1519,14 @@ test("structured compact rebuilds canonical context when its retained browser di
       event => events.push(event),
     );
     expect(browserStarts).toBe(2);
+    if (rateLimited) {
+      expect(events.at(-1)).toMatchObject({
+        type: "error", status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded",
+        retryable: false, message: "ChatGPT rate limit: too many requests.",
+      });
+      expect(events.some(event => event.type === "done")).toBeFalse();
+      return;
+    }
     expect(events.some(event => event.type === "text_delta"
       && event.text.includes("Fallback checkpoint after retained browser loss"))).toBeTrue();
     expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
@@ -1509,7 +1549,7 @@ test("a disappeared retained source cannot leave its fresh compaction rebuild pa
       brokerSocketPath: defaultBrokerEndpoint(root),
       localToolsEnabled: true,
       solAvailable: true,
-      proAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
       turnTimeoutMs: 25,
     },
   };
@@ -1551,9 +1591,9 @@ test("a disappeared retained source cannot leave its fresh compaction rebuild pa
     expect(browserStarts).toBe(2);
     expect(events.at(-1)).toMatchObject({
       type: "error",
-      code: "compaction_handoff_failed",
+      code: "compaction_handoff_timeout",
       retryable: false,
-      message: "ChatGPT did not complete the context handoff. Retry the task.",
+      message: "ChatGPT compaction did not fully settle within 25ms",
     });
   } finally {
     releaseBrowser?.();

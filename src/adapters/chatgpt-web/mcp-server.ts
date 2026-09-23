@@ -7,6 +7,7 @@ import { VERSION } from "../../version";
 import type { ChatGptTurnEnvironment } from "./environment";
 import { CODEX_COMPACTION_CONTROL_WIRE_NAME } from "./native-compaction-control";
 import { callTurnBroker, TurnBrokerTimeoutError, type BrokerToolResult } from "./turn-broker";
+import { observeMcpToolCalls } from "./mcp-observation";
 
 interface ClaimedTurn {
   bindingId: string;
@@ -30,11 +31,14 @@ const BRIDGE_TOOL_NAMES = new Set([
 const GATEWAY_AGENT_WAIT_TOOL_NAMES = new Set([
   "multi_agent_v1__wait_agent",
   "multi_agent_v2__wait_agent",
+  "collaboration__wait_agent",
 ]);
 
 const turnTokenSchema = z.string().min(20).max(256);
 const jsonArgumentsSchema = z.record(z.string(), z.unknown()).default({});
-export const CHATGPT_WEB_AGENT_WAIT_POLL_MS = 10_000;
+// Match Codex's default wait interval while returning before the MCP invocation deadline.
+export const CHATGPT_WEB_AGENT_WAIT_POLL_MS = 30_000;
+const AGENT_WAIT_TRANSPORT_RULE = `ChatGPT Web transport rule: wait for exactly ${CHATGPT_WEB_AGENT_WAIT_POLL_MS / 1_000} seconds per call, matching the Codex default, then release the MCP channel so spawned Web agents can use their own tools. A wait timeout is not task completion; check agent progress and wait again if needed. Keep the native tool's declared arguments.`;
 // The OpenAI tunnel currently owns a two-minute command-response deadline. The local MCP server
 // must settle first so an abandoned native tool call is returned as an MCP error instead of
 // letting the tunnel tear down and poison its long-lived stdio transport.
@@ -135,8 +139,7 @@ function safeVisibleTools(environment: ChatGptTurnEnvironment, contract: ChatGpt
 }
 
 function isAgentWaitTool(tool: CodexTool): boolean {
-  return tool.name === "wait_agent"
-    && (tool.namespace === "multi_agent_v1" || tool.namespace === "multi_agent_v2");
+  return isGatewayAgentWaitTool(wireName(tool));
 }
 
 function isGatewayAgentWaitTool(name: string): boolean {
@@ -144,10 +147,9 @@ function isGatewayAgentWaitTool(name: string): boolean {
 }
 
 function browserToolDescription(tool: CodexTool): string {
-  const waitRule = "ChatGPT Web transport rule: wait for exactly 10 seconds per call, then release the MCP channel so spawned Web agents can use their own tools. Repeat with the same target ids until a terminal status is returned.";
-  if (isAgentWaitTool(tool)) return `${tool.description}\n\n${waitRule}`;
+  if (isAgentWaitTool(tool)) return `${tool.description}\n\n${AGENT_WAIT_TRANSPORT_RULE}`;
   if (!tool.namespace && tool.name === "exec") {
-    return `${tool.description}\n\n${waitRule} This rule is enforced for wait_agent calls made inside exec; recursive raw exec is unavailable.`;
+    return `${tool.description}\n\n${AGENT_WAIT_TRANSPORT_RULE} This rule is enforced for wait_agent calls made inside exec; recursive raw exec is unavailable.`;
   }
   return tool.description;
 }
@@ -161,6 +163,8 @@ function browserToolParameters(tool: CodexTool): Record<string, unknown> {
   const timeout = properties.timeout_ms && typeof properties.timeout_ms === "object" && !Array.isArray(properties.timeout_ms)
     ? properties.timeout_ms as Record<string, unknown>
     : {};
+  // The cloned native schema must not advertise a default that contradicts our required interval.
+  delete timeout.default;
   const required = Array.isArray(parameters.required)
     ? parameters.required.filter((value): value is string => typeof value === "string")
     : [];
@@ -174,7 +178,7 @@ function browserToolParameters(tool: CodexTool): Record<string, unknown> {
         const: CHATGPT_WEB_AGENT_WAIT_POLL_MS,
         minimum: CHATGPT_WEB_AGENT_WAIT_POLL_MS,
         maximum: CHATGPT_WEB_AGENT_WAIT_POLL_MS,
-        description: "Required transport-safe polling interval. Use exactly 10000 and repeat the same targets until completion.",
+        description: `Required transport-safe polling interval. Use exactly ${CHATGPT_WEB_AGENT_WAIT_POLL_MS}; a timed-out wait does not mean the agents have finished.`,
       },
     },
     required: [...new Set([...required, "timeout_ms"])],
@@ -245,7 +249,7 @@ interface GatewayToolCatalogPage {
 
 function gatewayToolDescription(tool: GatewayToolDescriptor): string {
   if (!isGatewayAgentWaitTool(tool.name)) return tool.description;
-  return `${tool.description}\n\nChatGPT Web transport rule: wait for exactly 10 seconds per call, then release the MCP channel so spawned Web agents can use their own tools. Repeat with the same target ids until a terminal status is returned.`;
+  return `${tool.description}\n\n${AGENT_WAIT_TRANSPORT_RULE}`;
 }
 
 function gatewayToolCatalogProgram(options: {
@@ -365,7 +369,7 @@ function execGatewayProgram(
 /**
  * Preserve the native freeform exec surface while applying the same wait_agent deadline contract
  * as direct calls. The model still owns its JavaScript; only the tool registry it receives is a
- * transparent proxy whose two wait functions validate their transport-bound argument before dispatch.
+ * transparent proxy whose native wait functions validate their transport-bound argument before dispatch.
  */
 function transportBoundRawExecProgram(input: string, blockedExecName: string): string {
   return [
@@ -617,6 +621,12 @@ export async function runChatGptMcpServer(options: {
         yield_time_ms: z.number().int().min(250).max(30_000).optional(),
         max_output_tokens: z.number().int().min(1).max(1_000_000).optional(),
         tty: z.boolean().optional(),
+        sandbox_permissions: z.enum(["use_default", "require_escalated"]).optional()
+          .describe("Native Codex sandbox request, only when the current command tool supports it. Codex decides whether to approve."),
+        justification: z.string().optional()
+          .describe("Approval question for a native require_escalated request; omit otherwise."),
+        prefix_rule: z.array(z.string()).optional()
+          .describe("Optional native approval prefix for require_escalated; Codex owns its approval and persistence."),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
@@ -625,22 +635,36 @@ export async function runChatGptMcpServer(options: {
       turnReference(contract, input),
       extra,
       async claimed => {
-        const { cmd, workdir, yield_time_ms, max_output_tokens, tty } = input;
+        const { cmd, workdir, yield_time_ms, max_output_tokens, tty, sandbox_permissions, justification, prefix_rule } = input;
         const bound = claimed.environment;
+        const permissions = {
+          ...(sandbox_permissions !== undefined ? { sandbox_permissions } : {}),
+          ...(justification !== undefined ? { justification } : {}),
+          ...(prefix_rule !== undefined ? { prefix_rule } : {}),
+        };
         const execCommandArguments = {
           cmd,
           ...(workdir ? { workdir } : {}),
           ...(yield_time_ms !== undefined ? { yield_time_ms } : {}),
           ...(max_output_tokens !== undefined ? { max_output_tokens } : {}),
           ...(tty !== undefined ? { tty } : {}),
+          ...permissions,
         };
         const shellCommandArguments = {
           command: cmd,
           ...(workdir ? { workdir } : {}),
           ...(yield_time_ms !== undefined ? { timeout_ms: yield_time_ms } : {}),
+          ...permissions,
         };
         const tool = exactTool(bound, "exec_command") ?? exactTool(bound, "shell_command");
         if (tool) {
+          // Never silently discard an approval request on a native registry that cannot express it.
+          const properties = tool.parameters.properties;
+          for (const key of Object.keys(permissions)) {
+            if (!properties || typeof properties !== "object" || !Object.hasOwn(properties, key)) {
+              throw new Error(`The current native ${tool.name} tool does not support ${key}`);
+            }
+          }
           const args = tool.name === "exec_command" ? execCommandArguments : shellCommandArguments;
           return invoke(claimed.bindingId, bound, tool, { arguments: args }, extra.signal);
         }
@@ -766,7 +790,8 @@ export async function runChatGptMcpServer(options: {
         const { query, offset, limit, include_schema } = input;
         const bound = claimed.environment;
         const needle = query?.trim().toLowerCase();
-        const directMatches = safeVisibleTools(bound, contract).filter(tool => !needle || [
+        const visibleTools = safeVisibleTools(bound, contract);
+        const directMatches = visibleTools.filter(tool => !needle || [
           wireName(tool),
           tool.name,
           tool.namespace ?? "",
@@ -817,10 +842,23 @@ export async function runChatGptMcpServer(options: {
         }
         const page = [...directPage, ...nestedPage];
         const total = directMatches.length + nestedTotal;
+        // A filtered registry miss does not mean deferred tools are unavailable. Expose the
+        // actual native discovery entry separately; it is not a query match or an automatic call.
+        const discoveryTools = needle && total === 0
+          ? visibleTools.filter(tool => tool.toolSearch).map(tool => ({
+            wire_name: wireName(tool),
+            name: tool.name,
+            namespace: tool.namespace ?? null,
+            description: browserToolDescription(tool),
+            kind: "tool_search",
+            ...(include_schema ? { parameters: browserToolParameters(tool) } : {}),
+          }))
+          : [];
         return result({
           tools: page,
           total,
           next_offset: offset + page.length < total ? offset + page.length : null,
+          ...(discoveryTools.length > 0 ? { discovery_tools: discoveryTools } : {}),
         });
       },
     ),
@@ -929,5 +967,5 @@ export async function runChatGptMcpServer(options: {
     );
   }
 
-  await server.connect(new StdioServerTransport());
+  await server.connect(observeMcpToolCalls(new StdioServerTransport(), BRIDGE_TOOL_NAMES));
 }

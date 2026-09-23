@@ -38,6 +38,7 @@ export function chatGptConversationKey(
     threadId: identity.threadId,
     modelId: parsed.modelId,
     reasoning: parsed.options.reasoning,
+    browserModelFamily: parsed.options.browserModelFamily,
     compaction: compactionEpoch(raw?.input),
   })).digest("hex");
 }

@@ -168,6 +168,8 @@ function executionKey(parsed: CodexParsedRequest, payload: unknown): string {
   return createHash("sha256").update(JSON.stringify({
     modelId: parsed.modelId,
     reasoning: parsed.options.reasoning,
+    // Astra Pro and Sol Pro share the adapter model/effort, but must not share a browser execution.
+    browserModelFamily: parsed.options.browserModelFamily,
     payload,
   })).digest("hex");
 }
@@ -275,6 +277,8 @@ export class ChatGptTurnSession {
   readonly physicalSettlement: Promise<void>;
   private readonly outstandingById = new Map<string, BrokerToolRequest>();
   private readonly deliveredResultIds = new Set<string>();
+  private readonly deliveredResultProofs = new Map<string, string>();
+  private cancellationRequested = false;
   private outstandingReasoning: string[] = [];
   private finalReasoning: string[] = [];
   private outstandingPrelude: AdapterEvent[] = [];
@@ -375,9 +379,10 @@ export class ChatGptTurnSession {
     return this.outstandingById.has(callId);
   }
 
-  markResultDelivered(callId: string): void {
+  markResultDelivered(callId: string, nativeResultProof?: string): void {
     if (!this.outstandingById.delete(callId)) throw new Error(`ChatGPT bridge tool result does not match an outstanding call: ${callId}`);
     this.deliveredResultIds.add(callId);
+    if (nativeResultProof) this.deliveredResultProofs.set(callId, nativeResultProof);
     if (this.outstandingById.size === 0) {
       this.outstandingReasoning = [];
       this.outstandingPrelude = [];
@@ -387,6 +392,19 @@ export class ChatGptTurnSession {
   reasoningForOutstandingReplay(): string[] {
     return [...this.outstandingReasoning];
   }
+
+  completedToolResultProofs(): ReadonlyMap<string, string> | undefined {
+    if (this.outstandingById.size || !this.deliveredResultIds.size) return undefined;
+    return this.deliveredToolResultProofs();
+  }
+
+  /** Proofs already delivered to this context, including while its next batch is paused. */
+  deliveredToolResultProofs(): ReadonlyMap<string, string> | undefined {
+    if (this.deliveredResultProofs.size !== this.deliveredResultIds.size) return undefined;
+    return new Map(this.deliveredResultProofs);
+  }
+
+  wasCancelled(): boolean { return this.cancellationRequested; }
 
   eventsForOutstandingReplay(): AdapterEvent[] {
     return [...this.outstandingPrelude];
@@ -457,6 +475,7 @@ export class ChatGptTurnSession {
   }
 
   cancel(reason?: Error): void {
+    this.cancellationRequested = true;
     this.runtime.cancel(reason);
   }
 

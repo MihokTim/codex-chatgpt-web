@@ -10,18 +10,58 @@ import {
   readdirSync,
   realpathSync,
 } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, toNamespacedPath } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { expandUserPath } from "../../config";
 import { findTopLevelAssignment } from "../../codex-integration-document";
-import type { CodexTool } from "../../types";
+import type { CodexParsedRequest, CodexTool } from "../../types";
+import {
+  extractChatGptCompactionSourceRevision,
+  extractChatGptRootThreadMetadata,
+  extractChatGptThreadSpawnLineage,
+  extractChatGptTurnIdentity,
+} from "./environment";
+import { planChatGptEnvironmentResolution, sameChatGptEnvironmentAuthority } from "./environment-resolution-policy";
 import type {
   ChatGptRootThreadMetadata,
   ChatGptThreadSpawnLineage,
   ChatGptTurnEnvironment,
+  ChatGptUnattributedEnvironmentMessage,
 } from "./environment";
 
 type RolloutIdentity = ChatGptRootThreadMetadata | ChatGptThreadSpawnLineage;
+
+/** Shared request resolution; native deliveries always require their canonical destination. */
+export function resolveChatGptRequestEnvironment(parsed: CodexParsedRequest, options: {
+  codexHome: string;
+  sqliteHome?: string;
+  nativeDelegations?: Record<string, unknown>[];
+}): ChatGptTurnEnvironment {
+  const plan = planChatGptEnvironmentResolution(parsed);
+  if (plan.kind === "trusted" && !options.nativeDelegations) return plan.environment;
+  const identity = extractChatGptTurnIdentity(parsed);
+  const lineage = extractChatGptThreadSpawnLineage(parsed) ?? extractChatGptRootThreadMetadata(parsed);
+  // Standalone compaction can authenticate only its latest source turn, never an arbitrary ancestor.
+  const compactionSourceTurnId = parsed._compactionRequest
+    ? extractChatGptCompactionSourceRevision(parsed).turnId : undefined;
+  const environment = lineage && identity.turnId ? resolveCurrentCodexRolloutEnvironment({
+    ...options, lineage, turnId: identity.turnId, tools: parsed.context.tools,
+    ...(compactionSourceTurnId ? { compactionSourceTurnId } : {}),
+    ...(plan.historicalEnvironmentMessages ? { historicalEnvironmentMessages: plan.historicalEnvironmentMessages } : {}),
+  }) : undefined;
+  if (environment) {
+    if (plan.claims.some(claim => !sameChatGptEnvironmentAuthority(claim, environment))) {
+      throw new Error(options.nativeDelegations
+        ? "Codex app delegation environment conflicts with its native destination"
+        : `${plan.conflictLabel} environment conflicts with its current Codex rollout`);
+    }
+    return environment;
+  }
+  if (options.nativeDelegations) throw new Error("Codex app delegation requires its native destination rollout");
+  // The store alone may carry prior authority forward, and only when no raw update is present.
+  if (plan.kind === "rollout") throw plan.missingError;
+  return plan.environment;
+}
 
 const CODEX_ID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const CODEX_ID = new RegExp(`^${CODEX_ID_SOURCE}$`, "i");
@@ -42,12 +82,17 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function pathIdentity(value: string): string {
   const normalized = resolve(value);
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  return process.platform === "win32" ? toNamespacedPath(normalized).toLowerCase() : normalized;
 }
 
 function contains(root: string, path: string): boolean {
   const rel = relative(pathIdentity(root), pathIdentity(path));
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function matchesAgentPath(value: unknown, expected: string): boolean {
+  // V1 reports /root without an assigned path; rollout metadata can omit the field.
+  return expected === "/root" ? value == null : value === expected;
 }
 
 function canonicalRolloutName(name: string, threadId: string): boolean {
@@ -102,7 +147,8 @@ function indexedRollout(
     if (!row) return { kind: "absent" };
     const child = "parentThreadId" in identity;
     const matchesOwner = child
-      ? row.agent_path === identity.agentName && row.parent_thread_id === identity.parentThreadId && row.status === "open"
+      ? matchesAgentPath(row.agent_path, identity.agentName)
+        && row.parent_thread_id === identity.parentThreadId && row.status === "open"
       : row.parent_thread_id == null && (row.agent_path == null || row.agent_path === "/root");
     if (typeof row.rollout_path !== "string" || !matchesOwner) {
       throw new Error(`Codex state does not authenticate the requested ${child ? "subagent" : "root thread"} rollout`);
@@ -187,7 +233,7 @@ function firstRolloutRecord(fd: number, size: number): Record<string, unknown> {
   throw new Error("Codex rollout has no complete session metadata record");
 }
 
-function latestTurnContext(fd: number, size: number): Record<string, unknown> | undefined {
+function* reverseRolloutRecords(fd: number, size: number): Generator<Record<string, unknown>> {
   let position = size;
   let carry = Buffer.alloc(0);
   let firstSegmentAtEof = true;
@@ -216,16 +262,89 @@ function latestTurnContext(fd: number, size: number): Record<string, unknown> | 
         throw new Error("Codex rollout JSONL record exceeds the bounded record size");
       }
       const item = parseJsonLine(line);
-      if (item.type === "turn_context") return record(item.payload);
+      yield item;
     }
     carry = Buffer.from(data.subarray(0, lineEnd));
     if (carry.length > MAX_ROLLOUT_JSON_LINE_BYTES) {
       throw new Error("Codex rollout JSONL record exceeds the bounded record size");
     }
   }
-  if (carry.length === 0) return undefined;
-  const item = parseJsonLine(carry);
-  return item.type === "turn_context" ? record(item.payload) : undefined;
+  if (carry.length > 0) yield parseJsonLine(carry);
+}
+
+function latestTurnContext(fd: number, size: number): Record<string, unknown> | undefined {
+  for (const item of reverseRolloutRecords(fd, size)) {
+    if (item.type === "turn_context") return record(item.payload);
+  }
+  return undefined;
+}
+
+/** Verify native app deliveries without loading the complete task history into memory. */
+function verifyNativeDelegations(fd: number, size: number, turnId: string, items: Record<string, unknown>[]): void {
+  const pending = new Map(items.map(item => [item.id, item]));
+  if (pending.size !== items.length) throw new Error("Codex app delegation repeats a native item id");
+  for (const row of reverseRolloutRecords(fd, size)) {
+    const payload = record(row.payload);
+    if (row.type === "event_msg" && payload?.type === "turn_aborted" && payload.turn_id === turnId) {
+      throw new Error("Codex app delegation belongs to an aborted turn");
+    }
+    if (row.type !== "response_item" || !payload || !pending.has(payload.id)) continue;
+    const expected = pending.get(payload.id)!;
+    const fields = ["type", "id", "namespace", "name", "call_id", "output"];
+    if (fields.some(key => !isDeepStrictEqual(payload[key], expected[key]))
+      || record(payload.internal_chat_message_metadata_passthrough)?.turn_id
+        !== record(expected.internal_chat_message_metadata_passthrough)?.turn_id) {
+      throw new Error("Codex app delegation conflicts with its native rollout item");
+    }
+    pending.delete(payload.id);
+    if (pending.size === 0) return;
+  }
+  throw new Error("Codex app delegation is absent from its native rollout");
+}
+
+function verifyHistoricalEnvironmentMessages(
+  fd: number,
+  size: number,
+  turnId: string,
+  messages: ChatGptUnattributedEnvironmentMessage[],
+): void {
+  const pending = new Map(messages.map(message => [message.id, message.content]));
+  if (pending.size !== messages.length) throw new Error("Codex environment history repeats a message id");
+  let position = 0;
+  let carry = Buffer.alloc(0);
+  while (position < size) {
+    const length = Math.min(ROLLOUT_READ_CHUNK_BYTES, size - position);
+    const chunk = Buffer.alloc(length);
+    if (readSync(fd, chunk, 0, length, position) !== length) {
+      throw new Error("Codex rollout changed during environment history lookup");
+    }
+    position += length;
+    const data = Buffer.concat([carry, chunk]);
+    let start = 0;
+    for (let end = data.indexOf(0x0a); end >= 0; end = data.indexOf(0x0a, start)) {
+      const line = data.subarray(start, end);
+      start = end + 1;
+      if (!line.length) continue;
+      if (line.length > MAX_ROLLOUT_JSON_LINE_BYTES) throw new Error("Codex rollout JSONL record exceeds the bounded record size");
+      const item = parseJsonLine(line);
+      const payload = record(item.payload);
+      // Core writes task_started before this turn's environment update. Merely finding matching
+      // XML somewhere in the file would also accept a current update as historical.
+      if (item.type === "event_msg" && payload?.type === "task_started" && payload.turn_id === turnId) {
+        if (pending.size === 0) return;
+        throw new Error("Codex rollout does not authenticate the historical environment messages");
+      }
+      if (item.type !== "response_item" || payload?.type !== "message" || payload.role !== "user"
+        || typeof payload.id !== "string" || !pending.has(payload.id)) continue;
+      if (!isDeepStrictEqual(payload.content, pending.get(payload.id))) {
+        throw new Error("Historical environment message differs from its native Codex record");
+      }
+      pending.delete(payload.id);
+    }
+    carry = Buffer.from(data.subarray(start));
+    if (carry.length > MAX_ROLLOUT_JSON_LINE_BYTES) throw new Error("Codex rollout JSONL record exceeds the bounded record size");
+  }
+  throw new Error("Codex rollout has no current task boundary for environment history");
 }
 
 function validateSessionMeta(
@@ -249,10 +368,10 @@ function validateSessionMeta(
   if (item.type !== "session_meta"
     || payload?.id !== lineage.threadId
     || payload.parent_thread_id !== lineage.parentThreadId
-    || payload.agent_path !== lineage.agentName
+    || !matchesAgentPath(payload.agent_path, lineage.agentName)
     || payload.thread_source !== "subagent"
     || spawn?.parent_thread_id !== lineage.parentThreadId
-    || spawn.agent_path !== lineage.agentName) {
+    || !matchesAgentPath(spawn.agent_path, lineage.agentName)) {
     throw new Error("Codex rollout session metadata does not authenticate the requested subagent");
   }
 }
@@ -558,6 +677,8 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
   turnId: string;
   compactionSourceTurnId?: string;
   tools?: readonly CodexTool[];
+  historicalEnvironmentMessages?: ChatGptUnattributedEnvironmentMessage[];
+  nativeDelegations?: Record<string, unknown>[];
 }): ChatGptTurnEnvironment | undefined {
   const { codexHome, lineage, turnId, tools, compactionSourceTurnId } = options;
   const nativeThreadId = CODEX_ID.test(lineage.threadId);
@@ -595,6 +716,12 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
       }
       const environment = environmentFromTurnContext(latest, latest.turn_id as string, tools);
       validateMetadataConsistency(lineage, environment);
+      if (options.historicalEnvironmentMessages) {
+        verifyHistoricalEnvironmentMessages(fd, size, turnId, options.historicalEnvironmentMessages);
+      }
+      if (options.nativeDelegations) {
+        verifyNativeDelegations(fd, size, turnId, options.nativeDelegations);
+      }
       matching.push(environment);
     } finally {
       closeSync(fd);

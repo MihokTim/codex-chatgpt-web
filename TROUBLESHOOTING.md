@@ -108,6 +108,11 @@ Browser-only mode needs no connector. Full harness mode requires all of the foll
 Do not rename or refresh an old **Codex Native** connector. ChatGPT caches the public MCP contract by
 connector identity, so create **Codex Native2** as a new connector.
 
+After updating, if `codex_exec` still does not expose `sandbox_permissions`, `justification`, and
+`prefix_rule`, recreate the current mode's connector so ChatGPT loads the updated tool schema.
+These fields only forward a permission request to Codex; its sandbox and approval policy still
+decide whether the command can run. Ordinary commands do not require these optional fields.
+
 ### ChatGPT shows `Error creating connector`
 
 1. Confirm that the Tunnel ID and the regular API key used by the launcher were created under the
@@ -142,6 +147,19 @@ Do not assume that a generic 502 means the Tunnel is broken. Since v4.0.7, a nat
 outlives its turn binding is reported explicitly as `codex_tool_timeout` and retired rather than
 being presented as an ambiguous proxy success.
 
+## Native compaction returns `404 Not Found`
+
+For an ordinary Codex model, `/v1/responses/compact` forwards to the native legacy compact
+endpoint. That endpoint can return an upstream 404 even when the model and authorization work.
+Check whether a config layer sets `[features].remote_compaction_v2 = false`. Current Codex enables
+V2 by default; remove that override or set the existing key to `true`, then restart Codex and retry
+compaction on the same native model. V2 uses `/responses` with a compaction trigger.
+
+If it still fails, include the effective feature setting, selected model, exact failure time and
+safe log. `native_compaction_upstream_failed` records the route, model, HTTP status and available
+request identifiers without prompt contents or credentials. A separate Web context-length error
+still requires its own diagnosis; changing the native protocol does not increase Web input limits.
+
 ## ChatGPT says the account is temporarily limited
 
 The bridge permits at most five simultaneous browser tabs as an account-safety ceiling. Five is not
@@ -173,9 +191,16 @@ intentionally do not receive unrestricted filesystem access.
 
 ## Image generation stops before an image appears
 
-Image generation is not currently a supported turn type. ChatGPT uses a separate generation backend
-and lifecycle that the text-response bridge cannot reliably prove complete or retrieve through its
-current contract. This is tracked as a possible future feature, not as a text-streaming timeout.
+Image generation inside the ChatGPT browser conversation is not currently a supported turn type.
+ChatGPT uses a separate generation lifecycle that the text-response bridge cannot reliably prove
+complete or retrieve through its current contract.
+
+Codex's native Image Gen tool uses a different path: it sends `/v1/images/generations` or
+`/v1/images/edits` through the configured Codex base URL. The bridge forwards those requests to the
+native Codex backend using the incoming Codex authorization. A local `404 Not found` on these paths
+in 5.0.4 or earlier is a missing bridge route, not proof of an OpenAI plugin or backend failure.
+Upstream authentication and image-allowance errors remain unchanged; the ChatGPT browser connector
+does not provide credentials or additional allowance for native Image Gen.
 
 ## Update, repair, and remove
 
@@ -206,7 +231,8 @@ safe log**. A useful report contains:
 - Codex Desktop and/or CLI version;
 - OS and architecture;
 - ChatGPT account tier;
-- Browser-only or Full harness mode and the exact selected model;
+- Browser-only, Full harness (automatic), or Zero Risk mode and the exact selected model;
+- For Zero Risk, the ChatGPT model/effort and the last completed step: copying, pasting, sending in ChatGPT, confirming Sent, or the first MCP call;
 - exact reproduction steps and complete final error;
 - whether it reproduces in a fresh Codex task; and
 - a safe log captured immediately after that reproduction.

@@ -3,7 +3,7 @@ import { installWebProfile, verifyWebProfile } from "./codex-web-profile";
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AppConfig } from "./config";
-import { atomicWriteFile, getConfigPath, loadConfig, saveConfig } from "./config";
+import { getConfigPath, loadConfig, saveConfig } from "./config";
 import { installCodexInterruptHook, installCodexInterruptHookCommand } from "./codex-interrupt-hook";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
@@ -15,6 +15,7 @@ import {
   routeUrl,
   sha256,
   snapshotFile,
+  writeFileSnapshot,
   writeIntegrationState,
 } from "./codex-integration-shared";
 import type {
@@ -102,6 +103,24 @@ function journalProtocol(journal: Exclude<AnyCodexIntegrationJournal, { version:
     : "native";
 }
 
+function recoverableWebProfile(
+  text: string,
+  journal: Exclude<AnyCodexIntegrationJournal, { version: 2 }>,
+  allowRestoredBaseline: boolean,
+): CodexIntegrationJournal["webProfile"] {
+  if (journal.version !== 10 || !journal.webProfile) return undefined;
+  try {
+    verifyWebProfile(text, journal.webProfile, journal.active);
+  } catch (error) {
+    // Explicit repair may start from the exact pre-install profile after the managed route and
+    // hook were removed together. Accept only that recorded baseline; arbitrary model drift still
+    // fails both checks and remains protected.
+    if (!allowRestoredBaseline || !journal.active) throw error;
+    verifyWebProfile(text, journal.webProfile, false);
+  }
+  return journal.webProfile;
+}
+
 export {
   getCodexConfigPath,
   getCodexHome,
@@ -146,7 +165,7 @@ export function setCodexSubagentProtocol(
     getCodexModelsCachePath(),
     getCodexJournalPath(),
     getCodexJournalRecoveryPath(),
-  ].map(snapshotFile);
+  ].map(path => snapshotFile(path, { followSymlink: path === getCodexConfigPath() }));
   try {
     const journal = installCodexIntegration(nextConfig);
     saveConfig(nextConfig);
@@ -175,8 +194,9 @@ export function preflightCodexIntegration(
 ): void {
   if (planHomeMigration()) { installConfiguredRoute("", routeUrl(config), config, false, false); return; }
   const configPath = getCodexConfigPath();
-  const configExists = existsSync(configPath);
-  const currentText = configExists ? readFileSync(configPath, "utf8") : "";
+  const configSnapshot = snapshotFile(configPath, { followSymlink: true });
+  const configExists = configSnapshot.exists;
+  const currentText = configSnapshot.data?.toString("utf8") ?? "";
   const existing = readJournal();
   const installedUrl = routeUrl(config);
   if (existing) assertJournalTargetsConfig(existing, configPath);
@@ -188,6 +208,7 @@ export function preflightCodexIntegration(
       installConfiguredRoute("", installedUrl, config, true, true);
       return;
     }
+    if (options.replaceExistingRoute === true) recoverableWebProfile(currentText, existing, true);
     try {
       verifyManagedJournalState(currentText, existing);
     } catch (error) {
@@ -249,7 +270,12 @@ export function installCodexIntegration(
   }
 
   if (hasManagedJournal && existing && existing.version !== 2) {
-    if (existing.version === 10 && existing.webProfile) verifyWebProfile(currentText, existing.webProfile, existing.active);
+    const preservedWebProfile = configExists && existing.version === 10
+      ? existing.webProfile
+      : undefined;
+    if (configExists && options.replaceExistingRoute === true) {
+      recoverableWebProfile(currentText, existing, true);
+    }
     let baseline: string;
     let preservePrevious = true;
     try {
@@ -294,7 +320,7 @@ export function installCodexIntegration(
       previousRealtimeWebrtcCallBaseUrl: preservePrevious && (existing.version === 9 || existing.version === 10)
         ? existing.previousRealtimeWebrtcCallBaseUrl
         : patched.previousRealtimeWebrtcCallBaseUrl,
-      webProfile: patched.webProfile,
+      webProfile: preservedWebProfile ?? patched.webProfile,
       interruptHook: patched.interruptHook,
       ...(config.subagentProtocol === "compatibility-v1" ? {
         previousMultiAgent: patched.previousMultiAgent,
@@ -433,7 +459,9 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
     previousRealtimeWebrtcCallBaseUrl: existing.version === 9 || existing.version === 10
       ? existing.previousRealtimeWebrtcCallBaseUrl
       : route.previousRealtimeWebrtcCallBaseUrl,
-    webProfile: route.webProfile,
+    webProfile: existing.version === 10 && existing.webProfile
+      ? existing.webProfile
+      : route.webProfile,
     interruptHook: route.interruptHook,
     ...(protocol === "compatibility-v1" ? {
       previousMultiAgent: route.previousMultiAgent,
@@ -463,13 +491,13 @@ export function uninstallCodexIntegration(): UninstallCodexIntegrationResult {
   } else {
     restored = restoreManagedRoute(current, journal);
   }
-  const configSnapshot = snapshotFile(journal.configPath);
+  const configSnapshot = snapshotFile(journal.configPath, { followSymlink: true });
   const catalogSnapshot = journal.version === 2 ? snapshotFile(journal.catalogPath) : undefined;
   const modelsCacheSnapshot = snapshotFile(getCodexModelsCachePath());
   const journalSnapshot = snapshotFile(getCodexJournalPath());
   const recoverySnapshot = snapshotFile(getCodexJournalRecoveryPath());
   try {
-    atomicWriteFile(journal.configPath, restored);
+    writeFileSnapshot(configSnapshot, restored);
     if (catalogSnapshot?.exists) rmSync(catalogSnapshot.path);
     rmSync(modelsCacheSnapshot.path, { force: true });
     rmSync(getCodexJournalPath(), { force: true });

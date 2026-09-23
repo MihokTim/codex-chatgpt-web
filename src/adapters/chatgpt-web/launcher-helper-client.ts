@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { notifyLauncherTurn, readLauncherBrowserHostDescriptor } from "../../launcher-browser-host";
-import { ChatGptWebAdapterError } from "./adapter-error";
+import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
 import type { CompiledChatGptWebPrompt } from "./prompt";
 import type { BrowserTurn, ResolvedBrowserConfig } from "./browser-worker";
 import {
@@ -227,6 +227,9 @@ export class LauncherBrowserHelperClient {
         "Launcher browser helper does not support causal Codex tool-boundary acknowledgement; update or restart the launcher",
       );
     }
+    if (turn.capabilities.browserModelFamily && !this.helperFeatures.has("explicit-browser-family")) {
+      throw new Error("Launcher browser helper does not support explicit model family; restart the launcher");
+    }
     if (turn.externalProgress && !this.helperFeatures.has("completion-fence")) {
       throw new Error(
         "Launcher browser helper does not support the MCP completion fence; update or restart the launcher",
@@ -248,7 +251,13 @@ export class LauncherBrowserHelperClient {
               );
               return;
             }
-            void this.send({ type: "abort", id: turn.traceId }).catch(error => {
+            void this.send({
+              type: "abort",
+              id: turn.traceId,
+              ...(turn.abortSignal?.reason instanceof ChatGptCompactionHandoffAccepted
+                ? { reason: "compaction_handoff_accepted" }
+                : {}),
+            }).catch(error => {
               this.finishWithError(
                 turn.traceId,
                 error instanceof Error ? error : new Error(String(error)),
@@ -518,6 +527,14 @@ export class LauncherBrowserHelperClient {
             return;
           }
           pending.prepared = prepared;
+          if (prepared.skillFiles?.length && !this.helperFeatures.has("skill-attachments")) {
+            throw new Error("Launcher browser helper does not support skill attachments; update or restart the launcher");
+          }
+          if (prepared.multipart?.parts.length === 6 && !this.helperFeatures.has("multipart-2-6")) {
+            throw new Error(
+              "Launcher browser helper does not support six-part Bigger Context prompts; update or restart the launcher",
+            );
+          }
           return Promise.resolve(pending.turn.onPreparedSelected?.(message.reused)).then(() => {
             if (this.pending.get(message.id) !== pending) return;
             return this.send({
@@ -526,6 +543,7 @@ export class LauncherBrowserHelperClient {
               prepared: {
                 text: prepared.text,
                 images: prepared.images,
+                ...(prepared.skillFiles ? { skillFiles: prepared.skillFiles } : {}),
                 ...(prepared.multipart ? { multipart: prepared.multipart } : {}),
                 ...(prepared.trimmedCompactionMessages !== undefined
                   ? { trimmedCompactionMessages: prepared.trimmedCompactionMessages }

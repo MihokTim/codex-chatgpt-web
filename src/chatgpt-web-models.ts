@@ -39,6 +39,10 @@ export const CHATGPT_WEB_INSTANT_COMPOSER_CHAR_LIMIT = 211_256;
 export const CHATGPT_WEB_MEDIUM_HIGH_COMPOSER_CHAR_LIMIT = 1_048_572;
 /** Hidden ChatGPT product prompt and Codex Native schema reserve included in usage estimates. */
 export const CHATGPT_WEB_PLATFORM_RESERVE_TOKENS = 8_192;
+/** Reserve for each attachment in the final browser message; inert stages carry no images. */
+export function chatGptWebImageTokenReserve(detail?: string): number {
+  return detail === "original" ? 8_192 : 4_096;
+}
 /** Pro-account usable browser windows and separately measured one-message boundaries. */
 export const CHATGPT_WEB_PRO_AUTO_COMPACT_TOKEN_LIMIT = 95_000;
 export const CHATGPT_WEB_PRO_STANDARD_MESSAGE_TOKEN_LIMIT = 103_000;
@@ -59,7 +63,11 @@ export const CHATGPT_WEB_ZERO_RISK_PRO_CONTEXT_WINDOW =
 export const CHATGPT_WEB_ZERO_RISK_PRO_AUTO_COMPACT_TOKEN_LIMIT =
   CHATGPT_WEB_PRO_AUTO_COMPACT_TOKEN_LIMIT * 3;
 export const CHATGPT_WEB_PRO_INSTANT_COMPOSER_CHAR_LIMIT = 545_000;
-export const CHATGPT_WEB_PRO_REASONING_COMPOSER_CHAR_LIMIT = 1_045_000;
+// Rechecked 2026-09-19: Pro-account Medium/High accept 500k characters but the server
+// rejects larger messages with HTTP 413 (message_length_exceeds_limit), even below
+// the token budget. Composer insertion itself still accepts them. Keep headroom;
+// Instant and the Pro model have different bounds, not this reasoning-mode ceiling.
+export const CHATGPT_WEB_PRO_REASONING_COMPOSER_CHAR_LIMIT = 500_000;
 export const CHATGPT_WEB_PRO_MODEL_COMPOSER_CHAR_LIMIT = 1_635_000;
 /**
  * The underlying Luna model owns this context window. ChatGPT Free's much smaller browser request
@@ -141,7 +149,7 @@ export function resolveChatGptWebContextLimits(
       CHATGPT_WEB_INSTANT_CONTEXT_WINDOW,
       CHATGPT_WEB_INSTANT_AUTO_COMPACT_TOKEN_LIMIT,
     );
-  } else if (effort === "medium" || effort === "high") {
+  } else if (effort === "medium" || effort === "high" || (effort === "xhigh" && capabilities.extraHighAvailable)) {
     limits = contextLimits(
       CHATGPT_WEB_MEDIUM_HIGH_CONTEXT_WINDOW,
       CHATGPT_WEB_MEDIUM_HIGH_AUTO_COMPACT_TOKEN_LIMIT,
@@ -168,7 +176,7 @@ export function resolveChatGptWebTransportLimits(
     if (effort === "low") {
       return { browserComposerCharLimit: CHATGPT_WEB_INSTANT_COMPOSER_CHAR_LIMIT };
     }
-    if (effort === "medium" || effort === "high") {
+    if (effort === "medium" || effort === "high" || (effort === "xhigh" && capabilities.extraHighAvailable)) {
       return { browserComposerCharLimit: CHATGPT_WEB_MEDIUM_HIGH_COMPOSER_CHAR_LIMIT };
     }
     throw new Error(`ChatGPT Plus transport limit is not defined for unavailable effort: ${effort}`);
@@ -191,12 +199,34 @@ export function resolveChatGptWebTransportLimits(
   };
 }
 
+/**
+ * Visible text that fits one ordinary input after its hidden reserve and images. This is derived
+ * from the existing context contract, not a new measured browser limit or a compaction trigger.
+ * Bigger Context expands the transaction, never this per-message budget.
+ */
+export function resolveChatGptWebMessageTokenBudget(
+  backendModel: typeof CHATGPT_WEB_BACKEND_MODEL,
+  effort: ChatGptWebAdapterEffort,
+  capabilities: ChatGptWebAccountCapabilities,
+  imageTokens = 0,
+): number {
+  const { contextWindow } = resolveChatGptWebContextLimits(
+    backendModel, effort, { ...capabilities, experimentalBiggerContext: false },
+  );
+  const { browserMessageTokenLimit } = resolveChatGptWebTransportLimits(backendModel, effort, capabilities);
+  return Math.max(0, Math.min(
+    contextWindow - CHATGPT_WEB_PLATFORM_RESERVE_TOKENS - imageTokens - 1,
+    browserMessageTokenLimit ?? Infinity,
+  ));
+}
+
 interface ChatGptWebModelRouteBase {
   slug: string;
   displayName: string;
   description: string;
   codexEffort: ChatGptWebCodexEffort;
   requiresPro: boolean;
+  requiresExtraHigh?: boolean;
 }
 
 export interface ChatGptWebAutomaticModelRoute extends ChatGptWebModelRouteBase {
@@ -216,6 +246,8 @@ export type ChatGptWebModelRoute = ChatGptWebAutomaticModelRoute | ChatGptWebZer
 
 export interface ChatGptWebAccountCapabilities {
   solAvailable: boolean;
+  /** Missing in older saved observations; setup must probe before exposing Extra High. */
+  extraHighAvailable?: boolean;
   proAvailable: boolean;
   experimentalBiggerContext?: boolean;
   browserInteractionMode?: "automatic" | "manual";
@@ -282,13 +314,13 @@ export const CHATGPT_WEB_LUNA_MODEL_ROUTES: readonly ChatGptWebModelRoute[] = [
 export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] = [
   {
     slug: "chatgpt-web/light",
-    displayName: "ChatGPT Web — Instant",
-    description: "ChatGPT Web Instant through the native Codex harness.",
+    displayName: "ChatGPT Web — Sol Pro",
+    description: "GPT-5.6 Sol Pro through ChatGPT Web (replaces Instant).",
     interactionMode: "automatic",
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
-    codexEffort: "low",
-    adapterEffort: "low",
-    requiresPro: false,
+    codexEffort: "ultra",
+    adapterEffort: "max",
+    requiresPro: true,
   },
   {
     slug: "chatgpt-web/medium",
@@ -318,7 +350,8 @@ export const CHATGPT_WEB_MODEL_ROUTES: readonly ChatGptWebAutomaticModelRoute[] 
     backendModel: CHATGPT_WEB_BACKEND_MODEL,
     codexEffort: "xhigh",
     adapterEffort: "xhigh",
-    requiresPro: true,
+    requiresPro: false,
+    requiresExtraHigh: true,
   },
   {
     slug: "chatgpt-web/pro",
@@ -358,9 +391,9 @@ export function availableChatGptWebModelRoutes(
       : [CHATGPT_WEB_ZERO_RISK_MODEL_ROUTE];
   }
   if (!capabilities.solAvailable) return CHATGPT_WEB_LUNA_MODEL_ROUTES;
-  return capabilities.proAvailable
-    ? CHATGPT_WEB_MODEL_ROUTES
-    : CHATGPT_WEB_MODEL_ROUTES.filter(route => !route.requiresPro);
+  return CHATGPT_WEB_MODEL_ROUTES.filter(route =>
+    (!route.requiresPro || capabilities.proAvailable)
+    && (!route.requiresExtraHigh || capabilities.extraHighAvailable));
 }
 
 export function requireChatGptWebModelRoute(
@@ -393,7 +426,8 @@ export function requireChatGptWebModelRoute(
   if (!capabilities.solAvailable) {
     throw new Error(`${route.displayName} is not available for this Luna-only account`);
   }
-  if (route.requiresPro && !capabilities.proAvailable) {
+  if ((route.requiresPro && !capabilities.proAvailable)
+    || (route.requiresExtraHigh && !capabilities.extraHighAvailable)) {
     throw new Error(`${route.displayName} is not available for this account`);
   }
   return route;

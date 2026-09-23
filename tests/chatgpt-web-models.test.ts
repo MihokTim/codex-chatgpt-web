@@ -1,3 +1,4 @@
+import { compactionBrowserEffortOverride } from "../src/adapters/chatgpt-web/browser-customizations";
 import { describe, expect, test } from "bun:test";
 import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation-key";
 import {
@@ -32,28 +33,29 @@ function parsed(modelId: string, reasoning = "medium"): CodexParsedRequest {
 }
 
 describe("fixed ChatGPT Web model routes", () => {
-  const plus = { solAvailable: true, proAvailable: false };
-  const pro = { solAvailable: true, proAvailable: true };
+  const plus = { solAvailable: true, extraHighAvailable: false, proAvailable: false };
+  const pro = { solAvailable: true, extraHighAvailable: true, proAvailable: true };
 
   test("uses unique stable slugs and one explicit adapter effort per model", () => {
     expect(new Set(CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug)).size).toBe(CHATGPT_WEB_MODEL_ROUTES.length);
     expect(CHATGPT_WEB_MODEL_ROUTES.map(route => [route.slug, route.codexEffort, route.adapterEffort])).toEqual([
-      ["chatgpt-web/light", "low", "low"],
+      ["chatgpt-web/light", "ultra", "max"],
       ["chatgpt-web/medium", "medium", "medium"],
       ["chatgpt-web/high", "high", "high"],
       ["chatgpt-web/extra-high", "xhigh", "xhigh"],
       ["chatgpt-web/pro", "ultra", "max"],
     ]);
-    expect(CHATGPT_WEB_MODEL_ROUTES[0]?.displayName).toBe("ChatGPT Web — Instant");
+    expect(CHATGPT_WEB_MODEL_ROUTES[0]?.displayName).toBe("ChatGPT Web — Sol Pro");
   });
 
   test("exposes only Plus-eligible routes without the Pro account capability", () => {
     expect(availableChatGptWebModelRoutes(plus).map(route => route.slug)).toEqual([
-      "chatgpt-web/light",
       "chatgpt-web/medium",
       "chatgpt-web/high",
     ]);
-    expect(availableChatGptWebModelRoutes({ solAvailable: true, proAvailable: true }))
+    expect(() => requireChatGptWebModelRoute("chatgpt-web/light", plus))
+      .toThrow("Sol Pro is not available for this account");
+    expect(availableChatGptWebModelRoutes({ solAvailable: true, extraHighAvailable: true, proAvailable: true }))
       .toEqual(CHATGPT_WEB_MODEL_ROUTES);
     expect(() => requireChatGptWebModelRoute("chatgpt-web/extra-high", plus))
       .toThrow("Extra High is not available for this account");
@@ -61,8 +63,24 @@ describe("fixed ChatGPT Web model routes", () => {
       .toThrow("Pro is not available for this account");
   });
 
+  test("Extra High stays routable without granting Pro or Pro-sized context", () => {
+    const config = { ...defaultConfig("full"), extraHighAvailable: true, proAvailable: false };
+    expect(availableChatGptWebModelRoutes(config).map(route => route.slug))
+      .toEqual(["chatgpt-web/medium", "chatgpt-web/high", "chatgpt-web/extra-high"]);
+    const request = parsed("chatgpt-web/extra-high", "low");
+    expect(routeChatGptWebRequest(request, config).adapterEffort).toBe("xhigh");
+    expect(request.options.reasoning).toBe("xhigh");
+    expect(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "xhigh", config))
+      .toEqual(resolveChatGptWebContextLimits(CHATGPT_WEB_BACKEND_MODEL, "high", config));
+    expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "xhigh", config))
+      .toEqual(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "high", config));
+    expect(() => requireChatGptWebModelRoute("chatgpt-web/pro", config)).toThrow("not available");
+    expect(() => requireChatGptWebModelRoute("chatgpt-web/extra-high", { ...config, extraHighAvailable: undefined }))
+      .toThrow("not available");
+  });
+
   test("exposes Luna and Think when the authenticated account has no Sol selector", () => {
-    const free = { solAvailable: false, proAvailable: false };
+    const free = { solAvailable: false, extraHighAvailable: false, proAvailable: false };
     expect(availableChatGptWebModelRoutes(free)).toEqual(CHATGPT_WEB_LUNA_MODEL_ROUTES);
     expect(requireChatGptWebModelRoute("chatgpt-web/luna", free).backendModel)
       .toBe(CHATGPT_WEB_LUNA_BACKEND_MODEL);
@@ -72,14 +90,14 @@ describe("fixed ChatGPT Web model routes", () => {
       .toThrow("Luna-only account");
     expect(() => requireChatGptWebModelRoute("chatgpt-web/luna", {
       solAvailable: true,
-      proAvailable: false,
+      extraHighAvailable: false, proAvailable: false,
     })).toThrow("only available for Luna-only accounts");
   });
 
   test("Zero Risk exposes one generic route independent of account capabilities", () => {
     const manual = {
       solAvailable: false,
-      proAvailable: false,
+      extraHighAvailable: false, proAvailable: false,
       browserInteractionMode: "manual" as const,
     };
     expect(availableChatGptWebModelRoutes(manual)).toEqual([CHATGPT_WEB_ZERO_RISK_MODEL_ROUTE]);
@@ -103,7 +121,7 @@ describe("fixed ChatGPT Web model routes", () => {
   test("Zero Risk always publishes its fixed three-turn compaction interval and rejects multipart Bigger Context", () => {
     const manual = {
       solAvailable: true,
-      proAvailable: true,
+      extraHighAvailable: true, proAvailable: true,
       browserInteractionMode: "manual" as const,
     };
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_ZERO_RISK_BACKEND_MODEL, "low", manual)).toEqual({
@@ -175,7 +193,7 @@ describe("fixed ChatGPT Web model routes", () => {
     for (const effort of ["medium", "high", "xhigh"] as const) {
       expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, effort, pro)).toEqual({
         browserMessageTokenLimit: 103_000,
-        browserComposerCharLimit: 1_045_000,
+        browserComposerCharLimit: 500_000,
       });
     }
     expect(resolveChatGptWebTransportLimits(CHATGPT_WEB_BACKEND_MODEL, "max", pro)).toEqual({
@@ -187,7 +205,7 @@ describe("fixed ChatGPT Web model routes", () => {
   test("publishes Luna's real model window without early native compaction", () => {
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_LUNA_BACKEND_MODEL, "low", {
       solAvailable: false,
-      proAvailable: false,
+      extraHighAvailable: false, proAvailable: false,
     })).toEqual({
       contextWindow: 1_050_000,
       effectiveContextWindowPercent: 100,
@@ -206,7 +224,7 @@ describe("fixed ChatGPT Web model routes", () => {
     });
     expect(resolveChatGptWebContextLimits(CHATGPT_WEB_LUNA_BACKEND_MODEL, "low", {
       solAvailable: false,
-      proAvailable: false,
+      extraHighAvailable: false, proAvailable: false,
       experimentalBiggerContext: true,
     })).toEqual({
       contextWindow: 1_050_000,
@@ -228,6 +246,7 @@ describe("fixed ChatGPT Web model routes", () => {
 
   test("binds the Pro model to the browser Pro effort and fails closed for unknown routes", () => {
     const config = defaultConfig("full");
+    config.extraHighAvailable = true;
     config.proAvailable = true;
     const request = parsed("chatgpt-web/pro", "low");
     expect(routeChatGptWebRequest(request, config).adapterEffort).toBe("max");
@@ -238,6 +257,7 @@ describe("fixed ChatGPT Web model routes", () => {
 
   test("keeps Pro compaction on the same retained Pro conversation", () => {
     const config = defaultConfig("full");
+    config.extraHighAvailable = true;
     config.proAvailable = true;
     const normal = parsed("chatgpt-web/pro", "low");
     const compact = parsed("chatgpt-web/pro", "low");
@@ -297,4 +317,41 @@ describe("fixed ChatGPT Web model routes", () => {
     expect(proRequest.modelId).toBe(CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL);
     expect(proRequest.options.reasoning).toBe("low");
   });
+});
+
+test("the existing light slug retains the local Sol Pro route without changing the Pro slug", () => {
+  expect(CHATGPT_WEB_MODEL_ROUTES.find(route => route.slug === "chatgpt-web/light")).toMatchObject({
+    displayName: "ChatGPT Web — Sol Pro", adapterEffort: "max", codexEffort: "ultra", requiresPro: true,
+  });
+  expect(CHATGPT_WEB_MODEL_ROUTES.find(route => route.slug === "chatgpt-web/pro")).toMatchObject({
+    displayName: "ChatGPT Web — Pro", adapterEffort: "max", codexEffort: "ultra", requiresPro: true,
+  });
+});
+
+
+test("compaction overrides honor the new independent Extra High capability", () => {
+  const capabilities = { localToolsEnabled: true, solAvailable: true, proAvailable: true, extraHighAvailable: true };
+  expect(compactionBrowserEffortOverride(CHATGPT_WEB_BACKEND_MODEL, "max", capabilities)).toBe("xhigh");
+  expect(compactionBrowserEffortOverride(CHATGPT_WEB_BACKEND_MODEL, "max", { ...capabilities, extraHighAvailable: false })).toBeUndefined();
+  expect(compactionBrowserEffortOverride(CHATGPT_WEB_BACKEND_MODEL, "high", capabilities)).toBeUndefined();
+  expect(compactionBrowserEffortOverride("chatgpt-web-zero-risk-pro", "max", capabilities)).toBeUndefined();
+  expect(compactionBrowserEffortOverride("gpt-5.6-luna", "max", capabilities)).toBeUndefined();
+});
+
+
+test("public routes bind explicit browser families without trusting a stale caller family", () => {
+  const config = { ...defaultConfig("full"), proAvailable: true, extraHighAvailable: true };
+  for (const [slug, family, effort] of [
+    ["chatgpt-web/light", "sol", "max"],
+    ["chatgpt-web/pro", "latest", "max"],
+    ["chatgpt-web/high", "latest", "high"],
+  ] as const) {
+    const input: CodexParsedRequest = {
+      modelId: slug, stream: true, context: { messages: [] },
+      options: { reasoning: "low", browserModelFamily: family === "sol" ? "latest" : "sol" },
+    };
+    routeChatGptWebRequest(input, config);
+    expect(input.modelId).toBe(CHATGPT_WEB_BACKEND_MODEL);
+    expect(input.options).toMatchObject({ browserModelFamily: family, reasoning: effort });
+  }
 });

@@ -1,38 +1,67 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { bridgeToResponsesSSE } from "../src/bridge";
 import { defaultConfig } from "../src/config";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
+import { parseRequest } from "../src/responses/parser";
+import {
+  COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS,
+  hasCompleteCompatibilityV1PreferredRoster,
+} from "../src/subagent-model-roster";
 import type { AdapterEvent, CodexParsedRequest } from "../src/types";
 import { routeChatGptWebRequest } from "../src/server";
 
 const protocol = process.argv.includes("--v1") ? "v1" : "v2";
 const webDefaults = process.argv.includes("--web-defaults");
-const explicitChildModel = webDefaults ? "chatgpt-web/pro" : "gpt-5.6-sol";
-const explicitChildReasoningEffort = webDefaults ? "ultra" : "max";
+const solChild = process.argv.includes("--sol-child");
+const childModelArgument = process.argv.slice(2).find(argument => argument.startsWith("--child-model="));
 const codexArg = process.argv.slice(2).find(argument => !argument.startsWith("--"));
-const codex = resolve(codexArg ?? process.env.CODEX_EXECUTABLE ?? Bun.which("codex") ?? "/Applications/ChatGPT.app/Contents/Resources/codex");
+const codex = resolve(
+  codexArg ?? process.env.CODEX_EXECUTABLE ?? Bun.which("codex") ?? "/Applications/ChatGPT.app/Contents/Resources/codex",
+);
 if (!existsSync(codex)) throw new Error(`Codex executable is missing: ${codex}`);
 
-const bundled = spawnSync(codex, ["debug", "models", "--bundled"], {
-  encoding: "utf8",
-  stdio: ["ignore", "pipe", "pipe"],
-  timeout: 15_000,
-});
-if (bundled.status !== 0) {
-  throw new Error(`Could not read bundled Codex models: ${bundled.error?.message || bundled.stderr}`);
+const catalogArgument = process.argv.slice(2).find(argument => argument.startsWith("--catalog="));
+let sourceCatalogText: string;
+if (catalogArgument) {
+  sourceCatalogText = readFileSync(resolve(catalogArgument.slice("--catalog=".length)), "utf8");
+} else {
+  const bundled = spawnSync(codex, ["debug", "models", "--bundled"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 15_000,
+  });
+  if (bundled.status !== 0) {
+    throw new Error(`Could not read bundled Codex models: ${bundled.error?.message || bundled.stderr}`);
+  }
+  sourceCatalogText = bundled.stdout;
 }
 
-const sourceCatalog = JSON.parse(bundled.stdout) as { models?: unknown[] };
+const sourceCatalog = JSON.parse(sourceCatalogText) as { models?: unknown[] };
 const catalogConfig = defaultConfig("browser-only");
 catalogConfig.solAvailable = true;
 catalogConfig.proAvailable = true;
+catalogConfig.extraHighAvailable = true;
 catalogConfig.subagentProtocol = protocol === "v1" ? "compatibility-v1" : "native";
 const originalCatalog = JSON.stringify(sourceCatalog);
 const catalog = augmentNativeModelCatalog(sourceCatalog, catalogConfig);
-if (JSON.stringify(sourceCatalog) !== originalCatalog) throw new Error("Web augmentation mutated the native catalog");
+if (JSON.stringify(sourceCatalog) !== originalCatalog) {
+  throw new Error("Web augmentation mutated the native catalog");
+}
+const modelRows = catalog.models as Array<Record<string, unknown>>;
+const preferredRosterAvailable = hasCompleteCompatibilityV1PreferredRoster(modelRows);
+const defaultNativeModel = modelRows
+  .filter(model => typeof model.slug === "string" && !model.slug.startsWith("chatgpt-web/")
+    && model.visibility === "list" && model.supported_in_api === true)
+  .toSorted((left, right) => Number(left.priority) - Number(right.priority))[0]?.slug;
+if (typeof defaultNativeModel !== "string") throw new Error("Catalog has no native model for the lifecycle smoke");
+const explicitChildModel = childModelArgument?.slice("--child-model=".length)
+  ?? (solChild ? "chatgpt-web/light" : webDefaults ? "chatgpt-web/pro" : defaultNativeModel);
+const explicitChildReasoningEffort = explicitChildModel.startsWith("chatgpt-web/") ? "ultra" : "max";
+const discoverSpawnDeclaration = webDefaults || solChild || childModelArgument !== undefined
+  || (protocol === "v1" && preferredRosterAvailable);
 
 const root = join(tmpdir(), `codex-chatgpt-web-subagents-${process.pid}-${Date.now()}`);
 const codexHome = join(root, "codex");
@@ -40,6 +69,7 @@ mkdirSync(codexHome, { recursive: true });
 writeFileSync(join(root, "models.json"), `${JSON.stringify(catalog)}\n`);
 
 type Role = "root" | "child" | "grandchild";
+const advertisedModels = new Set<string>();
 const steps = new Map<Role, number>();
 const rolesByThread = new Map<string, Role>();
 const observed = new Set<string>();
@@ -51,6 +81,7 @@ const requestLog: Array<{
   agentName?: string;
   model?: string;
   reasoningEffort?: string;
+  configuredReasoningEffort?: string;
   inputTypes: string[];
   functionOutputs: string[];
   encryptedContent: boolean;
@@ -176,6 +207,10 @@ async function* finalAnswer(text: string): AsyncGenerator<AdapterEvent> {
 
 function responseFor(role: Role, step: number, body: Record<string, unknown>): AsyncIterable<AdapterEvent> {
   if (role === "root") {
+    if (discoverSpawnDeclaration) {
+      if (step === 0) return toolCall("tool_search", { query: `${toolNamespace} spawn_agent`, limit: 1 });
+      step--;
+    }
     if (step === 0) return toolCall("spawn_agent", protocol === "v1" ? {
       message: "CHILD_LIFECYCLE: spawn the requested grandchild, wait for it, then report success.",
       fork_context: false,
@@ -221,10 +256,16 @@ function responseFor(role: Role, step: number, body: Record<string, unknown>): A
       ? { targets: [spawnedAgentId(body)], timeout_ms: 500 }
       : { timeout_ms: 500 });
     if (webDefaults && step === 2) return toolCall(protocol === "v1" ? "send_input" : "followup_task", protocol === "v1" ? {
-      target: spawnedAgentId(body), message: "GRANDCHILD_LIFECYCLE: acknowledge one follow-up.", interrupt: true,
-    } : { target: "/root/lifecycle_child/lifecycle_grandchild", message: "GRANDCHILD_LIFECYCLE: acknowledge one follow-up." });
+      target: spawnedAgentId(body),
+      message: "GRANDCHILD_LIFECYCLE: acknowledge one follow-up.",
+      interrupt: true,
+    } : {
+      target: "/root/lifecycle_child/lifecycle_grandchild",
+      message: "GRANDCHILD_LIFECYCLE: acknowledge one follow-up.",
+    });
     if (webDefaults && step === 3) return toolCall("wait_agent", protocol === "v1"
-      ? { targets: [spawnedAgentId(body)], timeout_ms: 500 } : { timeout_ms: 500 });
+      ? { targets: [spawnedAgentId(body)], timeout_ms: 500 }
+      : { timeout_ms: 500 });
     if (step === (webDefaults ? 4 : 2)) return finalAnswer("CHILD_LIFECYCLE_OK");
     return finalAnswer("CHILD_FOLLOWUP_OK");
   }
@@ -242,18 +283,30 @@ const server = Bun.serve({
     }
     try {
       const body = await request.json() as Record<string, unknown>;
+      // Capture the real native tool declaration, not a reimplementation of its roster filter.
+      const parsedTools = parseRequest(body).context.tools ?? [];
+      const toolsText = JSON.stringify(parsedTools);
+      for (const match of toolsText.matchAll(/chatgpt-web\/[a-z-]+|gpt-[a-z0-9.-]+/g)) advertisedModels.add(match[0]);
       const role = roleOf(body);
       const step = steps.get(role) ?? 0;
       steps.set(role, step + 1);
       observed.add(`${role}:${step}`);
+      const spawnDeclarations = parsedTools.filter(tool => tool.name === "spawn_agent");
+      if (childModelArgument && role === "root" && spawnDeclarations.length > 0) {
+        mkdirSync(resolve("output"), { recursive: true });
+        const proofName = explicitChildModel.replace(/[^A-Za-z0-9_.-]/g, "_");
+        writeFileSync(resolve(`output/subagent-${proofName}-${protocol}-declarations.json`), JSON.stringify(spawnDeclarations, null, 2));
+      }
       const clientMetadata = body.client_metadata && typeof body.client_metadata === "object"
         ? body.client_metadata as Record<string, unknown>
         : {};
       let agentName: string | undefined;
+      let configuredReasoningEffort: string | undefined;
       if (typeof clientMetadata["x-codex-turn-metadata"] === "string") {
         try {
-          const parsed = JSON.parse(clientMetadata["x-codex-turn-metadata"] as string) as { agent_name?: unknown };
+          const parsed = JSON.parse(clientMetadata["x-codex-turn-metadata"] as string) as { agent_name?: unknown; reasoning_effort?: unknown };
           if (typeof parsed.agent_name === "string") agentName = parsed.agent_name;
+          if (typeof parsed.reasoning_effort === "string") configuredReasoningEffort = parsed.reasoning_effort;
         } catch { /* diagnostic only */ }
       }
       requestLog.push({
@@ -261,6 +314,7 @@ const server = Bun.serve({
         step,
         ...(typeof clientMetadata.thread_id === "string" ? { threadId: clientMetadata.thread_id } : {}),
         ...(agentName ? { agentName } : {}),
+        ...(configuredReasoningEffort ? { configuredReasoningEffort } : {}),
         ...(typeof body.model === "string" ? { model: body.model } : {}),
         ...(body.reasoning && typeof body.reasoning === "object"
           && typeof (body.reasoning as Record<string, unknown>).effort === "string"
@@ -289,6 +343,8 @@ const server = Bun.serve({
         responseFor(role, step, body),
         "chatgpt-web/pro",
         collaborationMap,
+        undefined,
+        new Set(["tool_search"]),
       ), {
         headers: {
           "content-type": "text/event-stream",
@@ -338,6 +394,7 @@ try {
     "--skip-git-repo-check",
     "--json",
     "--sandbox", "read-only",
+    "-c", 'approval_policy="never"',
     "--model",
     "chatgpt-web/pro",
     "ROOT_LIFECYCLE: complete the nested subagent lifecycle and the follow-up.",
@@ -368,24 +425,43 @@ try {
   }
   for (const required of [
     "root:0", "root:1", "root:2", "root:3", "root:4",
+    ...(discoverSpawnDeclaration ? ["root:5"] : []),
     "child:0", "child:1", "child:2", "child:3",
     "grandchild:0",
     ...(webDefaults ? ["grandchild:1", "child:4", "child:5"] : []),
   ]) {
     if (!observed.has(required)) failures.push(`missing lifecycle step ${required}`);
   }
-  for (const request of requestLog) {
-    const { role, step } = request;
-    if (role !== "root" || webDefaults) {
-      const expectedModel = webDefaults && role === "child" ? "chatgpt-web/extra-high" : webDefaults ? "chatgpt-web/pro" : explicitChildModel;
-      if (request.model !== expectedModel) failures.push(`${role}:${step} model ${request.model} != ${expectedModel}`);
-      if (!webDefaults && request.reasoningEffort !== explicitChildReasoningEffort) failures.push(`${role}:${step} effort ${request.reasoningEffort} != ${explicitChildReasoningEffort}`);
-    }
-    if (webDefaults) {
-      const parsed = { modelId: request.model, options: { reasoning: request.reasoningEffort } } as CodexParsedRequest;
+  if (webDefaults) {
+    for (const request of requestLog) {
+      const expectedModel = request.role === "child" ? "chatgpt-web/extra-high" : "chatgpt-web/pro";
+      if (request.model !== expectedModel) {
+        failures.push(`${request.role}:${request.step} model ${request.model} != ${expectedModel}`);
+      }
+      const parsed = {
+        modelId: request.model,
+        options: { reasoning: request.configuredReasoningEffort ?? request.reasoningEffort },
+      } as CodexParsedRequest;
       routeChatGptWebRequest(parsed, catalogConfig);
-      const expected = role === "child" ? "xhigh" : "max";
-      if (parsed.options.reasoning !== expected) failures.push(`${role}:${step} browser effort ${parsed.options.reasoning} != ${expected}`);
+      const expectedEffort = request.role === "child" ? "xhigh" : "max";
+      if (parsed.options.reasoning !== expectedEffort) {
+        failures.push(`${request.role}:${request.step} browser effort ${parsed.options.reasoning} != ${expectedEffort}`);
+      }
+    }
+  } else {
+    for (const role of ["child", "grandchild"] as const) {
+      const firstRequest = requestLog.find(entry => entry.role === role && entry.step === 0);
+      if (firstRequest?.model !== explicitChildModel) {
+        failures.push(`${role} used ${firstRequest?.model ?? "no model"}, expected ${explicitChildModel}`);
+      }
+      // Recent native Responses Lite clients normalize wire reasoning to medium even when
+      // the selected task effort is ultra. Check the actual configured task metadata first.
+      const configuredEffort = firstRequest?.configuredReasoningEffort ?? firstRequest?.reasoningEffort;
+      if (configuredEffort !== explicitChildReasoningEffort) {
+        failures.push(
+          `${role} configured reasoning ${configuredEffort ?? "none"}, expected ${explicitChildReasoningEffort}`,
+        );
+      }
     }
   }
   if (failures.length > 0) {
@@ -395,8 +471,23 @@ try {
         + `\nCodex stdout: ${stdout.slice(-8_000)}\nCodex stderr: ${stderr.slice(-8_000)}`,
     );
   }
-  process.stdout.write(`CODEX_SUBAGENT_${protocol.toUpperCase()}_LIFECYCLE_SMOKE_OK ${JSON.stringify([...observed].toSorted())}\n`);
+  if (solChild && !advertisedModels.has(explicitChildModel)) throw new Error("Native tool declarations did not advertise Sol Pro");
+  if (protocol === "v1" && preferredRosterAvailable) {
+    for (const slug of COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS) {
+      if (!advertisedModels.has(slug)) throw new Error(`Native tool declarations did not advertise ${slug}`);
+    }
+  }
+  const proof = { protocol, observed: [...observed].toSorted(), childModel: explicitChildModel, childEffort: explicitChildReasoningEffort, advertisedModels: [...advertisedModels], requests: requestLog };
+  if (solChild || childModelArgument) {
+    mkdirSync(resolve("output"), { recursive: true });
+    const proofName = childModelArgument ? explicitChildModel.replace(/[^A-Za-z0-9_.-]/g, "_") : "sol";
+    writeFileSync(resolve(`output/subagent-${proofName}-${protocol}-proof.json`), JSON.stringify(proof, null, 2));
+  }
+  process.stdout.write(`CODEX_SUBAGENT_${protocol.toUpperCase()}_LIFECYCLE_SMOKE_OK ${JSON.stringify({ observed: proof.observed, childModel: explicitChildModel, childEffort: explicitChildReasoningEffort, advertisedModels: [...advertisedModels] })}\n`);
 } finally {
   await server.stop(true);
+  if (dirname(resolve(root)) !== resolve(tmpdir()) || !root.includes("codex-chatgpt-web-subagents-")) {
+    throw new Error("Refusing cleanup outside the dedicated temporary test directory");
+  }
   rmSync(root, { recursive: true, force: true });
 }

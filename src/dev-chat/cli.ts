@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline/promises";
 import { existsSync } from "node:fs";
 import { stdin, stdout } from "node:process";
-import { loadConfig, resolveDevSetupConnectorName } from "../config";
+import { DEV_CHATGPT_CONNECTOR_NAME, loadConfig } from "../config";
 import {
   inspectLauncherBrowserHost,
   inspectLauncherBrowserHostLiveness,
@@ -57,7 +57,7 @@ Interactive commands:
   /exit                Exit
 
 Experimental settings:
-  Bigger Context       Enable in Settings; adapts context across 1, 2, or 3 messages
+  Bigger Context       Enable in Settings; adapts context across 1, 2, or 6 messages
 `;
 
 function takeFlag(args: string[], name: string): boolean {
@@ -157,7 +157,7 @@ function printHeader(
   stdout.write(`model ${state.model} · ${mode === "full" ? "tools explicitly simulated" : "browser-only, no outer tools"} · live launcher browser\n`);
   stdout.write(`context ${statusLine(status)}\n`);
   if (biggerContext) {
-    stdout.write(`${yellow("Bigger Context experimental")} · adaptive 1/2/3-message context · same-agent compaction handoff · elevated rate-limit/cooldown risk\n`);
+    stdout.write(`${yellow("Bigger Context experimental")} · adaptive 1/2/6-message context · same-agent compaction handoff · elevated rate-limit/cooldown risk\n`);
   }
   stdout.write(`${dim("Codex route is untouched. No Responses port is bound, replaced, stopped, or restarted.")}\n`);
 }
@@ -330,7 +330,7 @@ export async function runDevCommand(args: string[]): Promise<void> {
       stdout.write(`launcher: ${launcher.running ? `running (pid ${launcher.pid})` : `not ready${launcher.error ? ` · ${launcher.error}` : ""}`}\n`);
       stdout.write(`config: ${config.configured ? `${config.mode} (${config.purpose})` : `not ready${config.error ? ` · ${config.error}` : ""}`}\n`);
       stdout.write(`MCP runtime: ${mcpRuntime.required ? (mcpRuntime.ready ? "ready" : `not ready${mcpRuntime.detail ? ` · ${mcpRuntime.detail}` : ""}`) : "not required"}\n`);
-      stdout.write(`Bigger Context: ${features.biggerContext ? "enabled (experimental, adaptive 1/2/3 messages; same-agent compaction handoff)" : "disabled"}\n`);
+      stdout.write(`Bigger Context: ${features.biggerContext ? "enabled (experimental, adaptive 1/2/6 messages; same-agent compaction handoff)" : "disabled"}\n`);
       stdout.write("Codex route: isolated and unused\nResponses listener: not started\n");
     }
     return;
@@ -342,7 +342,6 @@ export async function runDevCommand(args: string[]): Promise<void> {
     if (browserOnly === full) throw new Error("Choose exactly one DEV setup mode: --browser-only or --full");
     const tunnelId = takeOption(args, "--tunnel-id");
     const runtimeKeyFile = takeOption(args, "--runtime-key-file");
-    const appName = takeOption(args, "--app-name");
     const descriptorPath = takeOption(args, "--browser-host-descriptor") ?? paths.descriptorPath;
     const acknowledgedUnofficial = takeFlag(args, "--acknowledge-unofficial");
     const refreshAccountCapabilities = takeFlag(args, "--refresh-account-capabilities");
@@ -351,6 +350,9 @@ export async function runDevCommand(args: string[]): Promise<void> {
     if (automaticBrowserInteraction && manualBrowserInteraction) {
       throw new Error("Choose at most one browser interaction mode");
     }
+    const skillAttachments = takeFlag(args, "--skill-attachments");
+    const inlineSkills = takeFlag(args, "--inline-skills");
+    if (skillAttachments && inlineSkills) throw new Error("Choose --skill-attachments or --inline-skills");
     const biggerContext = takeFlag(args, "--bigger-context");
     const standardContext = takeFlag(args, "--standard-context");
     if (biggerContext && standardContext) {
@@ -366,9 +368,9 @@ export async function runDevCommand(args: string[]): Promise<void> {
         ? { browserInteractionMode: manualBrowserInteraction ? "manual" : "automatic" }
         : {}),
       ...(biggerContext || standardContext ? { experimentalBiggerContext: biggerContext } : {}),
+      ...(skillAttachments || inlineSkills ? { experimentalSkillAttachments: skillAttachments } : {}),
       ...(tunnelId ? { tunnelId } : {}),
       ...(runtimeKeyFile ? { runtimeKeyFile } : {}),
-      ...(appName ? { appName } : {}),
     });
     stdout.write(
       `Isolated DEV profile configured (${result.mode}) at ${result.configPath}.\n`
@@ -392,7 +394,7 @@ export async function runDevCommand(args: string[]): Promise<void> {
     );
   }
   const config = loadConfig();
-  if (config.mode === "full" && config.appName !== resolveDevSetupConnectorName(config.appName)) {
+  if (config.mode === "full" && config.appName !== DEV_CHATGPT_CONNECTOR_NAME) {
     throw new Error("DEV connector identity is outdated. Refresh the DEV profile in the launcher before starting a named chat");
   }
   const runtimeStateRoot = paths.runtimePath;

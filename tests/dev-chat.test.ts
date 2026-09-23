@@ -158,7 +158,8 @@ test("coherent DEV MCP payloads are bounded, deterministic, and distinct", () =>
 });
 
 test("new DEV chats default to the cheapest account-supported browser model", () => {
-  expect(defaultDevChatModel({ ...defaultConfig("full"), solAvailable: true })).toBe("chatgpt-web/light");
+  expect(defaultDevChatModel({ ...defaultConfig("full"), solAvailable: true })).toBe("chatgpt-web/medium");
+  expect(defaultDevChatModel({ ...defaultConfig("full"), solAvailable: true, proAvailable: true })).toBe("chatgpt-web/medium");
   expect(defaultDevChatModel({ ...defaultConfig("full"), solAvailable: false })).toBe("chatgpt-web/luna");
   expect(DEV_CHAT_MODELS).toContain("chatgpt-web/think");
   expect(defaultDevChatModel({
@@ -226,7 +227,7 @@ test("Bigger Context triples the DEV compaction window and fails closed for Luna
     ...defaultConfig("browser-only"),
     purpose: "dev-harness" as const,
     solAvailable: true,
-    proAvailable: true,
+    extraHighAvailable: true, proAvailable: true,
   };
   const factory = (): ProviderAdapter => ({
     name: "dev-bigger-context-test",
@@ -255,7 +256,7 @@ test("Bigger Context triples the DEV compaction window and fails closed for Luna
   const luna = new DevChatDriver({
     ...biggerConfig,
     solAvailable: false,
-    proAvailable: false,
+    extraHighAvailable: false, proAvailable: false,
   }, store, factory, root, { biggerContext: true });
   expect(() => luna.open("luna-window", "chatgpt-web/luna")).toThrow("unavailable for Luna");
   expect(() => luna.open("think-window", "chatgpt-web/think")).toThrow("unavailable for Luna");
@@ -268,7 +269,7 @@ test("browser-only DEV driver runs real turns without advertising simulated tool
     ...defaultConfig("browser-only"),
     purpose: "dev-harness" as const,
     solAvailable: true,
-    proAvailable: true,
+    extraHighAvailable: true, proAvailable: true,
   };
   const factory = (): ProviderAdapter => ({
     name: "dev-browser-only-test",
@@ -456,9 +457,9 @@ test("synthetic fill crosses the production threshold and triggers the real comp
   });
   const store = new DevChatStore(join(root, "chats"));
   const driver = new DevChatDriver(config, store, factory, root);
-  const state = driver.open("auto-compact", "chatgpt-web/light").state;
-  driver.fill(state, 30_000);
-  expect(driver.status(state).inputTokens).toBeGreaterThanOrEqual(32_000);
+  const state = driver.open("auto-compact", "chatgpt-web/medium").state;
+  driver.fill(state, 78_000);
+  expect(driver.status(state).inputTokens).toBeGreaterThanOrEqual(80_000);
   const events: string[] = [];
   const result = await driver.send(state, "Continue after compacting the synthetic history.", event => events.push(event.type));
   expect(result).toMatchObject({ text: "DEV turn completed after compaction.", compactions: 1 });

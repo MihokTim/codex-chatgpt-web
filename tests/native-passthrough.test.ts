@@ -1,8 +1,8 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { forwardNativeCodexRequest } from "../src/native-passthrough";
 
-test("forwards native Codex requests verbatim to the official backend", async () => {
-  const originalBody = Bun.zstdCompressSync(Buffer.from('{"model":"gpt-5.6-sol","stream":true}'));
+test.each(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"])("forwards %s native requests verbatim to the official backend", async model => {
+  const originalBody = Bun.zstdCompressSync(Buffer.from(JSON.stringify({ model, stream: true })));
   const encoded = new ArrayBuffer(originalBody.byteLength);
   new Uint8Array(encoded).set(originalBody);
   const request = new Request("http://127.0.0.1:17841/v1/responses", {
@@ -38,8 +38,8 @@ test("forwards native Codex requests verbatim to the official backend", async ()
   expect(await response.text()).toBe("data: native\n\n");
 });
 
-test("forwards native Codex compaction requests to the official compact endpoint", async () => {
-  const originalBody = Bun.zstdCompressSync(Buffer.from('{"model":"gpt-5.6-sol","input":[]}'));
+test.each(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"])("forwards %s compaction to the official compact endpoint", async model => {
+  const originalBody = Bun.zstdCompressSync(Buffer.from(JSON.stringify({ model, input: [] })));
   const encoded = new ArrayBuffer(originalBody.byteLength);
   new Uint8Array(encoded).set(originalBody);
   const request = new Request("http://127.0.0.1:17841/v1/responses/compact", {
@@ -64,6 +64,43 @@ test("forwards native Codex compaction requests to the official compact endpoint
   expect(Buffer.from(await upstreamRequest!.arrayBuffer())).toEqual(Buffer.from(originalBody));
   expect(response.status).toBe(200);
   expect(await response.json()).toEqual({ output: [] });
+});
+
+test("native compaction failures record routing evidence without exposing request content or credentials", async () => {
+  const warnings = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    for (const endpoint of ["responses/compact", "responses"] as const) {
+      const body = JSON.stringify({ model: "gpt-5.6-sol", input: [
+        { role: "user", content: "PRIVATE_PROMPT" },
+        ...(endpoint === "responses" ? [{ type: "compaction_trigger" }] : []),
+      ] });
+      const request = new Request(`http://127.0.0.1:17841/v1/${endpoint}`, {
+        method: "POST", body,
+        headers: { authorization: "Bearer PRIVATE_TOKEN", "chatgpt-account-id": "PRIVATE_ACCOUNT" },
+      });
+      const response = await forwardNativeCodexRequest(request, endpoint, async forwarded => {
+        expect(await forwarded.text()).toBe(body);
+        return Response.json({ detail: "Not Found" }, {
+          status: 404, headers: { "x-request-id": "request-123", "cf-ray": "ray-123-KBP" },
+        });
+      });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ detail: "Not Found" });
+    }
+    const logs = warnings.mock.calls.map(call => String(call[0]));
+    expect(logs).toHaveLength(2);
+    expect(logs[0]).toContain('"endpoint":"responses/compact"');
+    expect(logs[1]).toContain('"endpoint":"responses"');
+    for (const log of logs) {
+      expect(log).toContain('"model":"gpt-5.6-sol"');
+      expect(log).toContain('"status":404');
+      expect(log).toContain('"requestId":"request-123"');
+      expect(log).toContain('"cfRay":"ray-123-KBP"');
+      expect(log).not.toContain("PRIVATE_");
+    }
+  } finally {
+    warnings.mockRestore();
+  }
 });
 
 test("forwards standalone Web Search through the authenticated native Codex route", async () => {

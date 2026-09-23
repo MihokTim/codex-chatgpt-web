@@ -59,7 +59,10 @@ function effortMenuSelectorForId(menuId: string): string {
 
 export async function chatGptEffortMenuForControl(page: Page, control: Locator): Promise<Locator> {
   const menuId = await control.getAttribute("aria-controls").catch(() => null);
-  if (menuId) return page.locator(effortMenuSelectorForId(menuId));
+  if (menuId) {
+    const ownedMenu = page.locator(effortMenuSelectorForId(menuId));
+    if (await ownedMenu.isVisible().catch(() => false)) return ownedMenu;
+  }
   return page.locator(CHATGPT_EFFORT_MENU_SELECTOR).filter({ visible: true }).last();
 }
 
@@ -67,6 +70,11 @@ async function visibleEffortSurface(
   page: Page,
   control: Locator,
 ): Promise<Omit<ChatGptEffortActivation, "method"> | undefined> {
+  // The exit animation keeps a closed menu's slider visible after Escape. Read the
+  // owner state first: selecting that outgoing range races its removal from the DOM.
+  const expanded = await control.getAttribute("aria-expanded").catch(() => null);
+  const state = await control.getAttribute("data-state").catch(() => null);
+  if (expanded === "false" || state === "closed") return undefined;
   const menu = await chatGptEffortMenuForControl(page, control);
   const surface = chatGptEffortSlider(page);
   if (await menu.isVisible().catch(() => false) || await surface.sliderContainer.isVisible().catch(() => false)) {
@@ -174,7 +182,7 @@ export async function assertTemporaryChatPage(page: Page): Promise<void> {
 export async function detectChatGptAccountCapabilities(
   page: Page,
   options: { selectorTimeoutMs?: number; stableAbsenceMs?: number } = {},
-): Promise<ChatGptWebAccountCapabilities> {
+): Promise<ChatGptWebAccountCapabilities & { extraHighAvailable: boolean }> {
   const composers = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true });
   const composer = composers.last();
   const composerForm = composer.locator("xpath=ancestor::form[1]");
@@ -199,7 +207,7 @@ export async function detectChatGptAccountCapabilities(
     if (composerReady && formReady && documentReady) {
       absenceSince ??= Date.now();
       if (Date.now() - absenceSince >= stableAbsenceMs) {
-        return { solAvailable: false, proAvailable: false };
+        return { solAvailable: false, extraHighAvailable: false, proAvailable: false };
       }
     } else {
       absenceSince = undefined;
@@ -231,7 +239,7 @@ export async function detectChatGptAccountCapabilities(
         { cause: new Error("ChatGPT effort slider exposed an invalid ARIA range") },
       );
     }
-    return { solAvailable: true, proAvailable: state.max - state.min + 1 >= 5 };
+    return { solAvailable: true, extraHighAvailable: state.max - state.min + 1 >= 4, proAvailable: state.max - state.min + 1 >= 5 };
   } finally {
     await page.keyboard.press("Escape").catch(() => {});
   }
