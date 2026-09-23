@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { CHATGPT_WEB_MODEL_ROUTES, availableChatGptWebModelRoutes, chatGptWebRouteEfforts } from "../src/chatgpt-web-models";
 import { defaultConfig } from "../src/config";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
+import { resolveCompatibilityV1PreferredRoster } from "../src/subagent-model-roster";
 
 const codex = resolve(process.argv[2] ?? "/Applications/ChatGPT.app/Contents/Resources/codex");
 function runCodex(args: string[], env = process.env): { stdout: string; stderr: string } {
@@ -89,7 +90,7 @@ try {
     .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))
     .slice(0, 5)
     .map(model => model.slug);
-  const expectedSpawnOverrides = [
+  const expectedSpawnOverrides = resolveCompatibilityV1PreferredRoster(catalog.models ?? []) ?? [
     (sourceCatalog.models as Array<{ slug: string; visibility: string; supported_in_api: boolean; priority?: number }>)
       .filter(model => model.supported_in_api && model.visibility === "list")
       .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))[0]?.slug,
