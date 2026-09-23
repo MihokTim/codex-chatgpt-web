@@ -2,6 +2,7 @@ import type { Page } from "playwright-core";
 import { activateChatGptEffortMenu, parseChatGptEffortSliderState } from "../../chatgpt-session";
 import type { ChatGptWebAdapterEffort, ChatGptWebModelFamily } from "../../chatgpt-web-models";
 import { ChatGptWebAdapterError } from "./adapter-error";
+import { parseChatGptModelAnnouncement } from "./model-announcement";
 
 type EffortMenu = Awaited<ReturnType<typeof activateChatGptEffortMenu>>;
 
@@ -63,9 +64,8 @@ export function chatGptModelFamilyMatches(
   // Never interpret a future Latest Pro model as 6, or a lower effort as the final Pro response.
   const expected = family === "6" && effort !== "max" ? "5.6" : family;
   const states = descriptions.flatMap(text => {
-    const match = /^(?:GPT[-\s]?)?(\d+(?:\.\d+)?)(?:\s+(Sol|Astra))?\s+([^,，]+)(?:[,，]|$)/i
-      .exec(text.replace(/\s+/g, " ").trim());
-    return match ? [{ version: match[1], name: match[2]?.toLowerCase(), mode: match[3]!.trim() }] : [];
+    const state = parseChatGptModelAnnouncement(text);
+    return state ? [state] : [];
   });
   return states.length > 0 && states.every(state => state.version === expected
     && (!state.name || state.name === (expected === "5.6" ? "sol" : "astra"))

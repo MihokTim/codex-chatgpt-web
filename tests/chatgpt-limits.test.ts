@@ -25,6 +25,16 @@ test("Limits identifies actual selected Pro family and keeps missing or conflict
   }
 });
 
+test.each([", 5 of 5.", "，5 of 5.", "、5件中5件目。", "، ٥ من ٥.", "; 5 sur 5.", ": 5 von 5."])("Limits attributes localized Pro announcements to their own family: %s", suffix => {
+  expect(chatGptUsageModelFromAnnouncements([`6 Pro${suffix}`])).toBe("gpt-6-pro");
+  expect(chatGptUsageModelFromAnnouncements([`5.6 Pro${suffix}`])).toBe("gpt-5.6-pro");
+  expect(chatGptUsageModelFromAnnouncements([`6 Pro${suffix}`, `5.6 Pro${suffix}`])).toBe("pro-unknown");
+  expect(chatGptUsageModelFromAnnouncements([`7 Pro${suffix}`])).toBe("pro-unknown");
+  expect(chatGptUsageModelFromAnnouncements([`6 Pro-preview${suffix}`])).toBe("pro-unknown");
+  expect(chatGptUsageModelFromAnnouncements([`6 Pro for better answers${suffix}`])).toBe("pro-unknown");
+  expect(chatGptUsageModelFromAnnouncements([`6 Sol Pro${suffix}`])).toBe("pro-unknown");
+});
+
 test("Limits exposes only hashed account identity and distinguishes personal and workspace accounts", async () => {
   let accountId = "account-personal";
   let structure = "personal";

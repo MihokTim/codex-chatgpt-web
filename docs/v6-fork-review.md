@@ -29,6 +29,7 @@ For Codex itself, [OpenAI's changelog](https://learn.chatgpt.com/docs/changelog)
 | Canonical environment and app deliveries | Sixteen environment cases failed before adaptation, including repeated/id-less compaction claims and cwd-less filesystem refreshes. | Extend V6's rollout authentication; preserve grouped runtime versus human instructions. Native app deliveries require exact destination rollout evidence. `tests/environment.test.ts`, `tests/codex-app-delegation.test.ts`, `tests/compaction-v1.test.ts`, `tests/server-compaction.test.ts`. |
 | Failed-thinking and tool-boundary recovery | V6 lacks the observed Japanese failed-thinking status and the verified one-continuation policy. Its ordinary stopped-thinking state is distinct. | Preserve completed tool proofs; allow at most one automatic continuation; wait for old capability/browser retirement. Reject cancellation, changed history, missing outputs, partial answers and a second failure. `tests/failed-thinking-recovery*.test.ts`, `tests/compaction-failed-thinking.test.ts`, `tests/compaction-source-boundary.test.ts`, `tests/browser-response-dom.test.ts`. |
 | Effort control recovery | Headless DOM fixtures reproduce focus loss and an unchanged slider on V6. | Retain V6 family selection; verify focus, range and persisted effort, with one control reopen. Typed failures remain terminal. `tests/effort-focus.test.ts`, `tests/model-selection-errors.test.ts`. |
+| Localized model confirmation | V6 rejects localized Pro announcements after successfully selecting the model. Its usage classifier has a similar separator gap. | Share Unicode punctuation parsing between confirmation and usage classification, preserving family, Pro and slider checks. The original reproduction has five failures before the patch, including both named Pro routes in real browser DOM fixtures. `tests/chatgpt-model-selection.test.ts`, `tests/chatgpt-limits.test.ts`, `tests/effort-focus.test.ts`. |
 | Owned-page observation recovery | V6 can lose a recovery attempt while its viewport is still unavailable. | Share the existing two-attachment budget between viewport and DOM probes; reconnect only the owned target. `tests/browser-observation-recovery.test.ts`. |
 | Helper feature negotiation | V6 transports family/six-part fields, but an older advertised helper can lack their semantics. | Negotiate `pinned-model-family` and `multipart-2-6` before use. Keep V6's bundled-sibling preference. `tests/launcher-helper-client.test.ts`. |
 | Fork provenance and updates | Upstream binaries cannot identify or preserve this fork's patches. | Record source/input identity, validate metadata, and refuse automatic upstream replacement. `tests/build-provenance.test.ts`, `tests/fork-metadata.test.ts`, `launcher/tests/update.test.cjs`. |
@@ -50,9 +51,7 @@ The regression fixtures exercise synthetic/local scenarios. They are not represe
 
 This fork does not claim to solve account limits, server-side refusals or every long-session failure. An application restart may still be needed after changing the native route. Native passthrough and Web generation are different acceptance checks.
 
-## Commit disposition
-
-### Validation on Windows x64
+## Validation on Windows x64
 
 - Core: 943 passed, 3 skipped, 0 failed (946 tests, 70 files).
 - Launcher: 332 passed, 5 skipped, 0 failed (337 tests).
@@ -62,6 +61,14 @@ This fork does not claim to solve account limits, server-side refusals or every 
 - File symlink cases are skipped only after a filesystem capability probe fails on Windows; the regular-file rollback scenario still runs. Other skips belong to upstream platform-specific checks.
 
 These results precede packaging. Runtime manifests and the packaged smoke marker identify the final artifact; live account acceptance is reported separately from local mock/DOM tests.
+
+### Localized selection correction in fork.2
+
+The original live acceptance covered High, not either named Pro route. On a Japanese ChatGPT surface, both named Pro routes subsequently failed before sending: V6's unmodified parser recognized ASCII/full-width commas but not the localized punctuation separating the selected mode from its position announcement. The usage classifier had the same separator gap. Both now use one parser based on Unicode punctuation categories, without a language-specific separator list. Tests cover Latin, CJK and Arabic punctuation and reject different families and suffixed Pro variants. This is an upstream V6 defect, so the correction is a separate focused commit without rewriting the official baseline.
+
+Regression fixtures use synthetic markup and the observed model labels only; they contain no account or conversation data. The change preserves the V6 family selector and does not introduce a model fallback, a retry or another prompt submission. No live GPT-6 Pro generation is required for this check; selecting and verifying its controls without submitting protects the account's limited Pro allowance.
+
+## Commit disposition
 
 Every non-merge commit unique to the previous fork through `600b269` is listed below. "Replaced" means V6 or the new implementation provides the intended behavior; "Retired" records a deliberate scope/policy removal, not an upstream fix claim. The old combined V6 merge (`23d4e05`) is also excluded from the new lineage.
 

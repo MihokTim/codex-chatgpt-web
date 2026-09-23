@@ -6,7 +6,7 @@ import { VERSION } from "../src/version";
 test("the bundled fork identity matches the source and rejects another reviewed revision", () => {
   expect(validateForkMetadata(metadata, VERSION)).toEqual({ ...metadata, schemaVersion: 1 });
   expect(() => assertForkMetadataMatchesSource(metadata, metadata, VERSION)).not.toThrow();
-  const other = { ...metadata, buildId: `${VERSION}-fork.2` };
+  const other = { ...metadata, buildId: `${VERSION}-fork.${Number(metadata.buildId.split("-fork.")[1]) + 1}` };
   expect(() => assertForkMetadataMatchesSource(other, metadata, VERSION)).toThrow("does not match");
   const changedSource = { ...metadata, upstream: { ...metadata.upstream, commit: "a".repeat(40) } };
   expect(() => assertForkMetadataMatchesSource(changedSource, metadata, VERSION)).toThrow("does not match");
