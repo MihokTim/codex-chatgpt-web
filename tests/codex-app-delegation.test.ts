@@ -144,8 +144,9 @@ for (const mutation of ["roots", "permissions", "missing-id", "untagged", "human
 for (const name of ["create_thread", "send_message_to_thread"]) test(`${name} becomes an instruction with the recipient's environment and preserves the native history`, () => {
   const f = fixture(name);
   const before = readFileSync(f.rollout, "utf8");
-  expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, f.home).resolve(parseRequest(f.body)))
-    .toThrow("missing cwd");
+  // V6 recognizes the native send-message envelope before normalization; create still needs it.
+  if (name === "create_thread") expect(() => new ChatGptThreadEnvironmentStore(undefined, Date.now, f.home)
+    .resolve(parseRequest(f.body))).toThrow("missing cwd");
   const parsed = f.normalize();
   expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, f.home).resolve(parsed).cwd).toBe(f.cwd);
   expect(JSON.stringify(extractChatGptTurnUserRevision(parsed))).toContain("Split the integration commit");
@@ -163,7 +164,7 @@ test("a delivery after a completed user turn supersedes the old instruction", ()
     { type: "message", role: "user", id: "msg_old", content: "Old work", internal_chat_message_metadata_passthrough: { turn_id: old } },
     { type: "message", role: "assistant", content: [{ type: "output_text", text: "Done" }] });
   f.save();
-  expect(() => extractChatGptTurnUserRevision(parseRequest(f.body))).toThrow("conflicts");
+  expect(JSON.stringify(extractChatGptTurnUserRevision(parseRequest(f.body)))).toContain("Split the integration commit");
   const parsed = f.normalize();
   expect(JSON.stringify(extractChatGptTurnUserRevision(parsed))).toContain("Split the integration commit");
   expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, f.home).resolve(parsed).cwd).toBe(f.cwd);

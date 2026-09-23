@@ -371,6 +371,14 @@ export function createChatGptWebAdapter(
     proAvailable: provider.chatgptWeb?.proAvailable === true,
   };
   const manualInteraction = provider.chatgptWeb?.browserInteractionMode === "manual";
+  const freshConversationPerTurn = provider.chatgptWeb?.experimentalFreshConversationPerTurn === true;
+  if (provider.chatgptWeb?.experimentalFreshConversationPerTurn !== undefined
+    && typeof provider.chatgptWeb.experimentalFreshConversationPerTurn !== "boolean") {
+    throw new Error("ChatGPT fresh conversation preference must be a boolean");
+  }
+  if (freshConversationPerTurn && manualInteraction) {
+    throw new Error("Fresh browser conversations per turn is available only in automatic mode");
+  }
   const executionNamespace = chatGptWebExecutionNamespace(provider);
   const retainedLauncherDescriptor = provider.chatgptWeb?.browserHost === "launcher"
     && provider.chatgptWeb.browserHostDescriptorPath
@@ -426,6 +434,7 @@ export function createChatGptWebAdapter(
       ? lunaCheckpointStore.apply(parsed)
       : { parsed, applied: false };
     const conversationKey = !parsed._compactionRequest
+      && !freshConversationPerTurn
       && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
       && mode.localTools
       && retainedLauncherDescriptor
@@ -690,8 +699,9 @@ export function createChatGptWebAdapter(
         modelId: parsed.modelId,
         reasoning: parsed.options.reasoning,
         ...(parsed._compactionRequest ? {
-          browserEffortOverride: compactionBrowserEffortOverride(parsed.modelId, parsed.options.reasoning, turnCapabilities),
+          browserEffortOverride: parsed._chatgptModelFamily ? undefined : compactionBrowserEffortOverride(parsed.modelId, parsed.options.reasoning, turnCapabilities),
         } : {}),
+        ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
         capabilities: turnCapabilities,
         prepare: async () => ({
           ...compileChatGptWebPrompt(
@@ -763,8 +773,9 @@ export function createChatGptWebAdapter(
       modelId: parsed.modelId,
       reasoning: parsed.options.reasoning,
       ...(parsed._compactionRequest ? {
-        browserEffortOverride: compactionBrowserEffortOverride(parsed.modelId, parsed.options.reasoning, turnCapabilities),
+        browserEffortOverride: parsed._chatgptModelFamily ? undefined : compactionBrowserEffortOverride(parsed.modelId, parsed.options.reasoning, turnCapabilities),
       } : {}),
+      ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
       capabilities: turnCapabilities,
       prepare: () => prepareWith(checkpointInput.parsed),
       ...(resumeInput ? { prepareResume: () => prepareWith(resumeInput) } : {}),
@@ -901,6 +912,7 @@ export function createChatGptWebAdapter(
               .update(compactionExecutionKey)
               .digest("hex")
               .slice(0, 12);
+            const freshCompactionTraceId = `${handoffTraceId}_${freshConversationPerTurn ? "fresh" : "fallback"}`;
             const compactionNativeIdentity = extractChatGptTurnIdentity(parsed);
             let sharedSummary = existingStructuredCompactionRun(compactionExecutionKey);
             if (!sharedSummary) {
@@ -912,7 +924,7 @@ export function createChatGptWebAdapter(
                   traceIds: [
                     compactionTraceId,
                     handoffTraceId,
-                    `${handoffTraceId}_fallback`,
+                    freshCompactionTraceId,
                   ],
                   ...(compactionNativeIdentity.threadId
                     ? { nativeThreadId: compactionNativeIdentity.threadId }
@@ -949,17 +961,18 @@ export function createChatGptWebAdapter(
                   armHandoffDeadline();
                   const operationSignal = AbortSignal.any([operatorSignal, handoffDeadline.signal]);
                   const sourceConversationKey = chatGptConversationKey(parsed, executionNamespace);
-                  const runFreshCompactionFallback = async (reason: string): Promise<string> => {
+                  const runFreshCompaction = async (reason: string): Promise<string> => {
                     operationSignal.throwIfAborted();
-                    console.warn(`[chatgpt-web] retained compaction fallback=${reason}`);
-                    // The fallback is a new bounded phase. Each exact multipart acknowledgement
+                    if (freshConversationPerTurn) console.info("[chatgpt-web] compaction uses configured fresh conversation mode");
+                    else console.warn(`[chatgpt-web] retained compaction fallback=${reason}`);
+                    // Fresh compaction is a bounded phase. Each exact multipart acknowledgement
                     // and the final accepted compact prompt re-arms the configured liveness budget;
                     // transport time cannot consume the model-generation window.
                     armHandoffDeadline();
                     const fallbackRuntime = startRuntime(
                       parsed,
                       manualRequest ? environment : undefined,
-                      `${handoffTraceId}_fallback`,
+                      freshCompactionTraceId,
                       turnCapabilities,
                       { onCompactionProgress: armHandoffDeadline },
                     );
@@ -978,6 +991,18 @@ export function createChatGptWebAdapter(
                   let source: ChatGptTurnSession | undefined;
                   let preserveFinalResponse = false;
                   try {
+                    if (freshConversationPerTurn) {
+                      // Full native history is the compaction input. Release an unfinished
+                      // browser/tool owner before rebuilding it, but keep a committed final
+                      // replayable if it won the native compaction race.
+                      const previous = chatGptTurnSessions.find(compactedSourceExecutionKey);
+                      const settlement = previous?.settledOutcome()?.type === "final"
+                        ? previous.physicalSettlement
+                        : chatGptTurnSessions.retireAndWait(compactedSourceExecutionKey).then(() => {});
+                      retainOwnershipUntil(settlement);
+                      await withAbort(settlement, operationSignal);
+                      return await runFreshCompaction("configured_fresh_conversation");
+                    }
                     // The previous compaction may already have detached the retained head while
                     // its browser/helper is still unwinding. Do not inspect that old epoch or
                     // decide to open a fresh fallback until physical release has completed.
@@ -994,7 +1019,7 @@ export function createChatGptWebAdapter(
                       && source?.settledOutcome()?.type === "final";
                     const retainedKey = source?.conversationKey();
                     if (!source || !retainedKey) {
-                      return await runFreshCompactionFallback("source_unavailable_before_handoff");
+                      return await runFreshCompaction("source_unavailable_before_handoff");
                     }
                     let rawSummary: string;
                     if (manualRequest && source.isActive() && source.runtime.mode === "tools") {
@@ -1006,7 +1031,7 @@ export function createChatGptWebAdapter(
                       );
                       if (zeroRiskSummary === undefined) {
                         preserveFinalResponse = true;
-                        rawSummary = await runFreshCompactionFallback("zero_risk_source_had_no_compaction_boundary");
+                        rawSummary = await runFreshCompaction("zero_risk_source_had_no_compaction_boundary");
                       } else {
                         rawSummary = zeroRiskSummary;
                       }
@@ -1017,7 +1042,7 @@ export function createChatGptWebAdapter(
                         await withAbort(source.physicalSettlement, operationSignal);
                         preserveFinalResponse = true;
                       }
-                      rawSummary = await runFreshCompactionFallback("zero_risk_source_already_completed");
+                      rawSummary = await runFreshCompaction("zero_risk_source_already_completed");
                     } else if (source.isActive() && source.runtime.mode === "tools") {
                       const retiredAtBoundary = await retireActiveCompactionBoundary(
                         parsed,
@@ -1026,7 +1051,7 @@ export function createChatGptWebAdapter(
                         operationSignal,
                       );
                       if (retiredAtBoundary) {
-                        rawSummary = await runFreshCompactionFallback("active_tool_boundary");
+                        rawSummary = await runFreshCompaction("active_tool_boundary");
                       } else {
                         // A final answer can win the race before the exclusive boundary is held.
                         if (source.isActive()) {
@@ -1101,12 +1126,12 @@ export function createChatGptWebAdapter(
                     }
                     if (handoffError instanceof ChatGptWebAdapterError
                       && handoffError.code === "compaction_source_unavailable") {
-                      return await runFreshCompactionFallback("source_disappeared_before_handoff");
+                      return await runFreshCompaction("source_disappeared_before_handoff");
                     }
                     if (canRebuildFailedThinking && handoffError === error) {
                       // One summary-only rebuild after a proven ChatGPT failure. This is inside
                       // the shared exact-request owner; failure of this fresh summary is terminal.
-                      return await runFreshCompactionFallback("failed_thinking_with_verified_history");
+                      return await runFreshCompaction("failed_thinking_with_verified_history");
                     }
                     throw handoffError;
                   } finally {

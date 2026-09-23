@@ -2,12 +2,11 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { CHATGPT_WEB_MODEL_ROUTES } from "../src/chatgpt-web-models";
+import { CHATGPT_WEB_MODEL_ROUTES, availableChatGptWebModelRoutes, chatGptWebRouteEfforts } from "../src/chatgpt-web-models";
 import { defaultConfig } from "../src/config";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
 import {
-  COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS,
-  hasCompleteCompatibilityV1PreferredRoster,
+  resolveCompatibilityV1PreferredRoster,
 } from "../src/subagent-model-roster";
 
 const codex = resolve(process.argv[2] ?? "/Applications/ChatGPT.app/Contents/Resources/codex");
@@ -17,6 +16,8 @@ function runCodex(args: string[], env = process.env): { stdout: string; stderr: 
     stdio: ["ignore", "pipe", "pipe"],
     env,
     timeout: 15_000,
+    // Hidden task identities also carry the native harness metadata in this JSON response.
+    maxBuffer: 16 * 1024 * 1024,
   });
   if (result.status !== 0) {
     throw new Error(`Codex ${args.join(" ")} failed: ${result.error?.message || result.stderr || result.signal || `exit ${result.status}`}`);
@@ -61,15 +62,18 @@ try {
     }>;
   };
   const web = catalog.models?.filter(model => model.slug?.startsWith("chatgpt-web/")) ?? [];
-  const expected = CHATGPT_WEB_MODEL_ROUTES.map(route => ({ slug: route.slug, effort: route.codexEffort }));
+  const expected = availableChatGptWebModelRoutes(config, true).map(route => ({
+    slug: route.slug, visibility: route.legacy ? "hide" : "list", effort: chatGptWebRouteEfforts(route, config).join(","),
+  }));
   const actual = web.map(model => ({
     slug: model.slug,
+    visibility: model.visibility,
     effort: Array.isArray(model.supported_reasoning_levels)
       ? (model.supported_reasoning_levels as Array<{ effort?: string }>).map(level => level.effort).join(",")
       : "",
   }));
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
-    throw new Error(`Codex did not preserve the fixed ChatGPT Web model contract: ${JSON.stringify(actual)}`);
+    throw new Error(`Codex did not preserve the grouped and legacy ChatGPT Web model contract: ${JSON.stringify(actual)}`);
   }
   const nativeModel = catalog.models?.find(model => !model.slug?.startsWith("chatgpt-web/")
     && model.visibility === "list" && model.supported_in_api === true);
@@ -89,11 +93,13 @@ try {
     .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))
     .slice(0, 5)
     .map(model => model.slug);
-  const preferredAvailable = hasCompleteCompatibilityV1PreferredRoster(catalog.models ?? []);
-  const expectedSpawnOverrides = preferredAvailable ? [...COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS] : [
-    (catalog.models ?? []).find(model => !model.slug?.startsWith("chatgpt-web/")
-      && model.supported_in_api === true && model.visibility === "list")?.slug,
-    "chatgpt-web/light", "chatgpt-web/high", "chatgpt-web/extra-high", "chatgpt-web/pro",
+  const preferred = resolveCompatibilityV1PreferredRoster(catalog.models ?? []);
+  const expectedSpawnOverrides = preferred ?? [
+    (sourceCatalog.models as Array<{ slug: string; visibility: string; supported_in_api: boolean; priority?: number }>)
+      .filter(model => model.supported_in_api && model.visibility === "list")
+      .toSorted((left, right) => (left.priority ?? Number.MAX_SAFE_INTEGER) - (right.priority ?? Number.MAX_SAFE_INTEGER))[0]?.slug,
+    ...CHATGPT_WEB_MODEL_ROUTES.slice(1).map(route => route.slug),
+    "chatgpt-web/gpt-5.6-sol-instant",
   ];
   if (JSON.stringify(spawnOverrides) !== JSON.stringify(expectedSpawnOverrides)) {
     throw new Error(`Codex did not preserve the bounded V1 subagent roster: ${JSON.stringify(spawnOverrides)}`);

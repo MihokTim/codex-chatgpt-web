@@ -8,14 +8,16 @@ or endorsed by OpenAI or the upstream project.
 | --- | --- |
 | Distribution | `MihokTim/codex-chatgpt-web` |
 | Build identifier | `buildId` in [fork-metadata.json](../fork-metadata.json) |
-| Compatible application version | `5.0.8` |
+| Compatible application version | `6.0.0` |
 | Upstream base | `upstream.commit` in [fork-metadata.json](../fork-metadata.json) |
 | Upstream repository | `https://github.com/miuuyy/codex-chatgpt-web` |
 | Fork support | `https://github.com/MihokTim/codex-chatgpt-web/issues` |
 
-The upstream-compatible version remains `5.0.8`. Release artifacts also carry
+The upstream-compatible version remains `6.0.0`. Release artifacts also carry
 `fork-metadata.json`, and its distinct build identifier prevents a fork candidate from being
-mistaken for the upstream v5.0.8 release.
+mistaken for the upstream v6.0.0 release.
+
+6.0.0での修正ごとの判断・今回の導入エラー・検証範囲は [更新レビュー](v6-upgrade-review-2026-09-23.md) を参照。forkから公式installerへの直接上書きは独自機能を失うため、ランチャーは上流更新を案内し、統合版への更新を求める。
 
 ## Maintained extensions
 
@@ -30,9 +32,9 @@ mistaken for the upstream v5.0.8 release.
 | Compaction continuity | V1 and V2 compaction continuations authenticate the current/source native turn, tolerate omitted or duplicate matching environment identifiers, preserve goal/grouped preamble instructions, and reject changed permissions or workspaces. | `tests/environment.test.ts`, `tests/compaction-v1.test.ts`, `tests/retained-compaction.test.ts`, `tests/server-compaction.test.ts` |
 | Operational bounds | Full-mode handoff allows long-running work, encoded and decoded HTTP bodies retain explicit upper bounds, DEV defaults remain conservative, and diagnostics record family/effort without prompt or response content. | `tests/http-body.test.ts`, `tests/http-turn-diagnostics.test.ts`, `tests/incident-collector.test.ts` |
 | Optional external helpers | The bounded Desktop history guard and Windows incident recorder remain explicit, version-checked utilities. Building or starting the bridge never installs either helper automatically. | `tests/bounded-thread-history.test.ts`, `tests/incident-collector.test.ts` |
-| Delegation catalog | Sol is available to parent-selected subagents while Astra Pro remains a separate candidate. Synthetic parent/child/grandchild result collection stays covered without claiming a live five-way model acceptance. | `tests/model-catalog.test.ts`, `scripts/smoke-codex-subagents.ts` |
+| Delegation catalog | Web GPT-6 Pro、Web GPT-5.6 Pro、native GPT-6 Astra／Sol／Lunaの5枠を優先する。旧nativeには5.6 fallbackを使用する。 | `tests/model-catalog.test.ts`, `scripts/smoke-codex-subagents.ts` |
 | Multipart helper compatibility | Two-part prompts remain compatible with the previous helper capability, while six-part prompts require an explicit `multipart-2-6` negotiation before any prepared payload is sent. | `tests/launcher-helper-client.test.ts` |
-| Compaction effort | Pro work uses Extra High only for its summary when that capability is confirmed. Family and normal-work effort are preserved. | `tests/chatgpt-web-models.test.ts`, `tests/retained-compaction.test.ts` |
+| Compaction effort | 非固定のlegacy ProだけでExtra High要約を維持。新しい系列固定Proは圧縮時も選択した系列とeffortを保持する。 | `tests/chatgpt-web-models.test.ts`, `tests/retained-compaction.test.ts` |
 | Authenticated app deliveries | App task deliveries and ordinary instructions share canonical environment resolution, including date refreshes that omit cwd. | `tests/codex-app-delegation.test.ts`, `tests/environment.test.ts` |
 | Compaction tool boundary | Completed tool results are verified before retiring the source response and generating a tool-free summary. A retained-source failed-thinking state may rebuild the summary once. | `tests/compaction-source-boundary.test.ts`, `tests/retained-compaction.test.ts` |
 | Browser observation recovery | DOM and viewport failures share the same two-connection budget for the owned page. Only successful DOM observation resets it. | `tests/browser-observation-recovery.test.ts`, `tests/browser-response-ownership.test.ts` |
@@ -42,9 +44,7 @@ mistaken for the upstream v5.0.8 release.
 The machine-readable mapping is in [fork-patch-inventory.json](fork-patch-inventory.json).
 
 The browser's non-Sol family control is named `Latest` / `最新`; it is not a fixed Astra model
-identifier. The DEV Medium default applies to automatic Sol-capable accounts; Luna and manual
-Zero Risk keep their separate paths. The parent catalog prioritizes Sol Pro within its five-entry
-limit, so Medium is lower priority when all candidates are available.
+identifier. DEVは上流のInstantを既定とし、Medium代替は廃止した。新規モデル名は上流6.0の系列固定経路を使用し、旧lightなどは保存済みタスクの互換用としてのみ維持する。
 
 The native liveness probe `scripts/smoke-codex-stream-liveness.ts` covers comments-only responses,
 disconnects, and long heartbeats. It is an explicit probe outside the default `verify` command;
@@ -96,8 +96,8 @@ is not used for this fork integration gate.
 
 ## Release identity
 
-This integration keeps the upstream-compatible application and launcher version `5.0.8`, product
-name, application identifier, updater target, and default data locations. The distinct fork build
+This integration keeps the upstream-compatible application and launcher version `6.0.0`, product
+name, application identifier and default data locations. The distinct fork build
 identifier and bundled metadata identify source and runtime candidates, but they do not turn this
 checkout into a separately installable public launcher release. The local Windows candidate is for
 review without installation or execution. A future public installer must first adopt a fork-owned

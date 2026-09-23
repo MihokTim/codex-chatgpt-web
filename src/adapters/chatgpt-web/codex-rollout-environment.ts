@@ -50,6 +50,9 @@ export function resolveChatGptRequestEnvironment(parsed: CodexParsedRequest, opt
     ...(plan.historicalEnvironmentMessages ? { historicalEnvironmentMessages: plan.historicalEnvironmentMessages } : {}),
   }) : undefined;
   if (environment) {
+    if (plan.calendarDelta && environment.sandboxPolicy.type !== "dangerFullAccess") {
+      throw new Error("Calendar environment delta conflicts with its current Codex rollout");
+    }
     if (plan.claims.some(claim => !sameChatGptEnvironmentAuthority(claim, environment))) {
       throw new Error(options.nativeDelegations
         ? "Codex app delegation environment conflicts with its native destination"

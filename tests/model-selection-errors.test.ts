@@ -42,7 +42,7 @@ test.each(["stuck-slider", "effort-unavailable", "rate-limit", "family-missing"]
         <div data-testid="composer-model-picker-slider-advanced-view">
           <button role="menuitemradio" aria-checked="true">GPT-5.6 Sol</button>
         </div>
-        <div data-model-reasoning-effort-slider><div role="menuitem" tabindex="0">
+        <div data-model-reasoning-effort-slider>${Array.from({ length: scenario === "effort-unavailable" ? 4 : 5 }, () => '<span data-locked="false" data-selected="false"></span>').join("")}<div role="menuitem" tabindex="0">
           <span role="slider" aria-valuemin="0" aria-valuemax="${scenario === "effort-unavailable" ? 3 : 4}" aria-valuenow="0">Effort</span>
         </div></div>
       </div></div>${scenario === "rate-limit" ? '<div role="dialog">Too many requests. You are making requests too quickly.</div>' : ""}`);

@@ -7,11 +7,11 @@ export type ModelCatalogRow = Record<string, unknown>;
  * Keep this policy separate from catalog construction so future roster changes remain localized.
  */
 export const COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS = [
-  "chatgpt-web/pro",
-  "chatgpt-web/light",
+  "chatgpt-web/gpt-6-pro",
+  "chatgpt-web/gpt-5.6-pro",
   "gpt-6-astra",
-  "gpt-5.6-sol",
-  "gpt-5.6-luna",
+  "gpt-6-sol",
+  "gpt-6-luna",
 ] as const;
 
 function modelSlug(value: unknown): string | undefined {
@@ -36,8 +36,19 @@ function modelPriority(model: ModelCatalogRow): number | undefined {
 }
 
 export function hasCompleteCompatibilityV1PreferredRoster(models: readonly unknown[]): boolean {
+  return resolveCompatibilityV1PreferredRoster(models) !== undefined;
+}
+
+/** Prefer current native models; accept each older generation only when the new row is absent. */
+export function resolveCompatibilityV1PreferredRoster(models: readonly unknown[]): string[] | undefined {
   const eligibleSlugs = new Set(models.filter(delegationModel).map(modelSlug));
-  return COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS.every(slug => eligibleSlugs.has(slug));
+  const roster: Array<string | undefined> = COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS.map(slug => {
+    if (eligibleSlugs.has(slug)) return slug;
+    if (slug === "gpt-6-sol" && eligibleSlugs.has("gpt-5.6-sol")) return "gpt-5.6-sol";
+    if (slug === "gpt-6-luna" && eligibleSlugs.has("gpt-5.6-luna")) return "gpt-5.6-luna";
+    return undefined;
+  });
+  return roster.every((slug): slug is string => slug !== undefined) ? roster : undefined;
 }
 
 /**
@@ -49,12 +60,13 @@ export function prioritizeCompatibilityV1Models(
   models: readonly ModelCatalogRow[],
   protocol: SubagentProtocol,
 ): ModelCatalogRow[] {
-  if (protocol !== "compatibility-v1" || !hasCompleteCompatibilityV1PreferredRoster(models)) {
+  const preferred = resolveCompatibilityV1PreferredRoster(models);
+  if (protocol !== "compatibility-v1" || !preferred) {
     return [...models];
   }
 
   const ranks = new Map<string, number>(
-    COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS.map((slug, rank) => [slug, rank]),
+    preferred.map((slug, rank) => [slug, rank]),
   );
   const fallbackPriority = COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS.length;
 

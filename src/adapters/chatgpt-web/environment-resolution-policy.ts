@@ -8,6 +8,7 @@ import {
   extractChatGptTurnEnvironment,
   extractChatGptTurnIdentity,
   hasCurrentChatGptEnvironmentContext,
+  hasChatGptCalendarEnvironmentDelta,
   isChatGptCompactionContinuation,
   MissingTrustedCodexEnvironmentError,
   unattributedChatGptEnvironmentMessages,
@@ -18,6 +19,7 @@ import {
 type EnvironmentResolutionPlan = {
   claims: ChatGptTurnEnvironment[];
   conflictLabel: string;
+  calendarDelta?: boolean;
   historicalEnvironmentMessages?: ChatGptUnattributedEnvironmentMessage[];
 } & (
   | { kind: "trusted"; environment: ChatGptTurnEnvironment }
@@ -41,9 +43,11 @@ export function planChatGptEnvironmentResolution(parsed: CodexParsedRequest): En
       ? extractChatGptSteeringEnvironmentClaim(parsed) : undefined;
     const refreshClaims = hasCurrentContext && !currentCompaction
       ? extractChatGptEnvironmentRefreshClaims(parsed) : undefined;
-    if (hasCurrentContext && !currentCompaction && !historicalEnvironmentMessages && !steeringClaim && !refreshClaims) throw error;
+    const calendarDelta = hasCurrentContext && !currentCompaction && hasChatGptCalendarEnvironmentDelta(parsed);
+    if (hasCurrentContext && !currentCompaction && !historicalEnvironmentMessages && !steeringClaim && !refreshClaims && !calendarDelta) throw error;
     return {
       kind: "rollout", missingError: error,
+      calendarDelta,
       claims: currentCompaction ? [extractChatGptContinuationEnvironmentClaim(parsed)]
         : refreshClaims ?? (steeringClaim ? [steeringClaim] : []),
       conflictLabel: currentCompaction ? "Compaction continuation" : refreshClaims ? "Native refresh" : "Steering",

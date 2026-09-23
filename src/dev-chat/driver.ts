@@ -357,12 +357,11 @@ function usageOf(response: ResponsesEnvelope): DevChatUsage {
 
 export function defaultDevChatModel(config: AppConfig): DevChatModel {
   if (config.browserInteractionMode === "manual") return "chatgpt-web/zero-risk";
-  // The local light route now selects Sol Pro; Medium remains the inexpensive automatic default.
-  return config.solAvailable ? "chatgpt-web/medium" : "chatgpt-web/luna";
+  return config.solAvailable ? "chatgpt-web/gpt-5.6-sol-instant" : "chatgpt-web/gpt-5.6-luna";
 }
 
 function isLunaDevChatModel(model: DevChatModel): boolean {
-  return model === "chatgpt-web/luna" || model === "chatgpt-web/think";
+  return model === "chatgpt-web/gpt-5.6-luna" || model === "chatgpt-web/luna" || model === "chatgpt-web/think";
 }
 
 export function prepareWorkingTreeBrowserHelper(): string | undefined {
@@ -401,6 +400,8 @@ export function createLauncherDevAdapter(
       lunaCheckpointStatePath: join(runtimeStateRoot, "luna-checkpoints.json"),
       turnTimeoutMs: 60 * 60_000,
       experimentalSkillAttachments: config.experimentalSkillAttachments,
+      experimentalFreshConversationPerTurn: config.experimentalFreshConversationPerTurn,
+      useSavedChats: config.useSavedChats,
       ...(config.experimentalBiggerContext
         ? { experimentalBiggerContext: true }
         : {}),

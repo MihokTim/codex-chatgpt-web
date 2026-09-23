@@ -1,3 +1,5 @@
+> これは更新前のCLIを対象とした調査記録です。更新後のGPT-6を含む判断と実装は [6.0.0更新レビュー](v6-upgrade-review-2026-09-23.md) を参照してください。
+
 # Codexネイティブ Sol / Luna追加の影響調査
 
 調査日: 2026-09-23 JST。対象: codex-chatgpt-web 5.0.8、Codex Desktop同梱CLI `0.155.0-alpha.16`。

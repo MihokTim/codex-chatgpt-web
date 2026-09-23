@@ -20,12 +20,14 @@ interface RunMessage {
     browserDiagnosticsPath?: string;
     turnTimeoutMs: number;
     autoApproveToolCalls: boolean;
+    useSavedChats?: boolean;
   };
   turn: {
     traceId: string;
     modelId: string;
     reasoning?: string;
     browserEffortOverride?: BrowserTurn["browserEffortOverride"];
+    modelFamily?: "5.6" | "6";
     capabilities: ChatGptWebCapabilities;
     nativeConnector?: boolean;
     resumeAvailable?: boolean;
@@ -60,7 +62,13 @@ interface SmokeMessage {
   config: VerifyMessage["config"];
 }
 
-type MaintenanceMessage = VerifyMessage | InspectMessage | SmokeMessage;
+interface LimitsMessage {
+  type: "limits";
+  id: string;
+  config: VerifyMessage["config"];
+}
+
+type MaintenanceMessage = VerifyMessage | InspectMessage | SmokeMessage | LimitsMessage;
 type InputMessage = RunMessage
   | MaintenanceMessage
   | { type: "prepared_selected_ack"; id: string; prepared: CompiledChatGptWebPrompt }
@@ -168,8 +176,8 @@ async function run(message: RunMessage): Promise<void> {
     && message.turn.capabilities.browserModelFamily !== "latest") {
     throw new Error("Browser helper model family is invalid");
   }
-  if (message.turn.browserEffortOverride !== undefined && message.turn.browserEffortOverride !== "xhigh") {
-    throw new Error("Browser helper effort override is invalid");
+  if (message.turn.modelFamily !== undefined && !["5.6", "6"].includes(message.turn.modelFamily)) {
+    throw new Error("Browser helper pinned model family is invalid");
   }
   if (message.turn.retainConversation !== undefined && typeof message.turn.retainConversation !== "boolean") {
     throw new Error("Browser helper conversation retention flag is invalid");
@@ -200,6 +208,7 @@ async function run(message: RunMessage): Promise<void> {
       browserDiagnosticsPath: message.config.browserDiagnosticsPath,
       turnTimeoutMs: message.config.turnTimeoutMs,
       autoApproveToolCalls: message.config.autoApproveToolCalls,
+      useSavedChats: message.config.useSavedChats === true,
     },
   };
   const abortController = new AbortController();
@@ -224,6 +233,7 @@ async function run(message: RunMessage): Promise<void> {
     modelId: message.turn.modelId,
     reasoning: message.turn.reasoning,
     ...(message.turn.browserEffortOverride ? { browserEffortOverride: message.turn.browserEffortOverride } : {}),
+    ...(message.turn.modelFamily ? { modelFamily: message.turn.modelFamily } : {}),
     capabilities: message.turn.capabilities,
     ...(message.turn.nativeConnector ? { nativeConnector: true } : {}),
     prepare: prepareSelected,
@@ -375,7 +385,7 @@ function maintenanceWorker(message: MaintenanceMessage): ChatGptBrowserWorker {
   return ChatGptBrowserWorker.forProvider(provider);
 }
 
-async function maintain(message: InspectMessage | SmokeMessage): Promise<void> {
+async function maintain(message: InspectMessage | SmokeMessage | LimitsMessage): Promise<void> {
   if (abortControllers.has(message.id)) throw new Error(`Browser helper maintenance operation already exists: ${message.id}`);
   const abortController = new AbortController();
   abortControllers.set(message.id, abortController);
@@ -383,6 +393,7 @@ async function maintain(message: InspectMessage | SmokeMessage): Promise<void> {
     const worker = maintenanceWorker(message);
     const value = message.type === "inspect"
       ? await worker.inspectSession(message.detectCapabilities)
+      : message.type === "limits" ? await worker.inspectLimitsPlan()
       : await worker.smokeTest(abortController.signal);
     writeProtocol({ type: "result", id: message.id, value });
   } catch (error) {
@@ -505,7 +516,7 @@ input.on("line", line => {
       id: message.id,
       message: error instanceof Error ? error.message : String(error),
     }));
-  } else if (message.type === "inspect" || message.type === "smoke") {
+  } else if (message.type === "inspect" || message.type === "smoke" || message.type === "limits") {
     void maintain(message).catch(error => writeProtocol({
       type: "error",
       id: message.id,
@@ -548,5 +559,6 @@ writeProtocol({
     "skill-attachments",
     "browser-effort-override",
     "explicit-browser-family",
+    "pinned-model-family",
   ],
 });

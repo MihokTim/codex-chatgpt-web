@@ -9,6 +9,7 @@ import { parseRequest } from "../src/responses/parser";
 import {
   COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS,
   hasCompleteCompatibilityV1PreferredRoster,
+  resolveCompatibilityV1PreferredRoster,
 } from "../src/subagent-model-roster";
 import type { AdapterEvent, CodexParsedRequest } from "../src/types";
 import { routeChatGptWebRequest } from "../src/server";
@@ -59,7 +60,7 @@ const defaultNativeModel = modelRows
 if (typeof defaultNativeModel !== "string") throw new Error("Catalog has no native model for the lifecycle smoke");
 const explicitChildModel = childModelArgument?.slice("--child-model=".length)
   ?? (solChild ? "chatgpt-web/light" : webDefaults ? "chatgpt-web/pro" : defaultNativeModel);
-const explicitChildReasoningEffort = explicitChildModel.startsWith("chatgpt-web/") ? "ultra" : "max";
+const explicitChildReasoningEffort = explicitChildModel === "chatgpt-web/pro" || explicitChildModel === "chatgpt-web/light" ? "ultra" : "max";
 const discoverSpawnDeclaration = webDefaults || solChild || childModelArgument !== undefined
   || (protocol === "v1" && preferredRosterAvailable);
 
@@ -286,7 +287,7 @@ const server = Bun.serve({
       // Capture the real native tool declaration, not a reimplementation of its roster filter.
       const parsedTools = parseRequest(body).context.tools ?? [];
       const toolsText = JSON.stringify(parsedTools);
-      for (const match of toolsText.matchAll(/chatgpt-web\/[a-z-]+|gpt-[a-z0-9.-]+/g)) advertisedModels.add(match[0]);
+      for (const match of toolsText.matchAll(/chatgpt-web\/[a-z0-9.-]+|gpt-[a-z0-9.-]+/g)) advertisedModels.add(match[0]);
       const role = roleOf(body);
       const step = steps.get(role) ?? 0;
       steps.set(role, step + 1);
@@ -473,7 +474,7 @@ try {
   }
   if (solChild && !advertisedModels.has(explicitChildModel)) throw new Error("Native tool declarations did not advertise Sol Pro");
   if (protocol === "v1" && preferredRosterAvailable) {
-    for (const slug of COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS) {
+    for (const slug of resolveCompatibilityV1PreferredRoster(modelRows)!) {
       if (!advertisedModels.has(slug)) throw new Error(`Native tool declarations did not advertise ${slug}`);
     }
   }

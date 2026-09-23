@@ -230,6 +230,9 @@ export class LauncherBrowserHelperClient {
     if (turn.capabilities.browserModelFamily && !this.helperFeatures.has("explicit-browser-family")) {
       throw new Error("Launcher browser helper does not support explicit model family; restart the launcher");
     }
+    if (turn.modelFamily && !this.helperFeatures.has("pinned-model-family")) {
+      throw new Error("Launcher browser helper does not support pinned model family; restart the launcher");
+    }
     if (turn.externalProgress && !this.helperFeatures.has("completion-fence")) {
       throw new Error(
         "Launcher browser helper does not support the MCP completion fence; update or restart the launcher",
@@ -285,12 +288,14 @@ export class LauncherBrowserHelperClient {
             browserDiagnosticsPath: this.config.browserDiagnosticsPath,
             turnTimeoutMs: this.config.turnTimeoutMs,
             autoApproveToolCalls: this.config.autoApproveToolCalls,
+            useSavedChats: this.config.useSavedChats,
           },
           turn: {
             traceId: turn.traceId,
             modelId: turn.modelId,
             reasoning: turn.reasoning,
             ...(turn.browserEffortOverride ? { browserEffortOverride: turn.browserEffortOverride } : {}),
+            ...(turn.modelFamily ? { modelFamily: turn.modelFamily } : {}),
             capabilities: turn.capabilities,
             ...(turn.nativeConnector ? { nativeConnector: true } : {}),
             ...(turn.prepareResume ? { resumeAvailable: true } : {}),

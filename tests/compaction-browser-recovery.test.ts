@@ -37,8 +37,11 @@ test.each([
       if (name === "send" || name.endsWith("_send")) sendBudgets.push(timeout);
       return action(new AbortController().signal);
     },
-    prepareTemporaryChatSurface: async () => {},
-    selectModelAndEffort: async (_page: unknown, model: string, effort: string) => {
+    prepareChatSurface: async () => {},
+    selectModelAndEffort: async (_page: unknown, model: string, effort: string, _capabilities: unknown,
+      _diagnostic: unknown, trackUsage: boolean, family: string) => {
+      expect(trackUsage).toBe(false);
+      expect(family).toBe("5.6");
       actions.push(`effort:${effort}`);
       return resolveChatGptWebModelMode(model, effort, capabilities);
     },
@@ -84,6 +87,7 @@ test.each([
     await expect(worker.runBrowserTurn({
       traceId: "compaction_recovery_fixture",
       modelId: "gpt-5.6-sol",
+      modelFamily: "5.6",
       reasoning,
       ...(browserEffortOverride ? { browserEffortOverride } : {}),
       onSendActivated: () => { activated += 1; },
@@ -102,7 +106,9 @@ test.each([
     expect(actions).toEqual([
       ...(multipart ? [
         "effort:low",
-        ...Array.from({ length: 5 }, () => ["attach:plain", "send", "observe", "ack"]).flat(),
+        ...Array.from({ length: 5 }, (_, index) => [
+          ...(index > 0 ? ["effort:low"] : []), "attach:plain", "send", "observe", "ack",
+        ]).flat(),
       ] : []),
       `effort:${browserEffortOverride ?? reasoning}`,
       tools ? "attach:tools" : "attach:plain", "files", "send", "observe",

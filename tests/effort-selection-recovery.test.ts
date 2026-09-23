@@ -36,7 +36,7 @@ async function fixture(page: Page, scenario: Scenario) {
       <div data-testid="composer-model-picker-slider-advanced-view">
         <button id="sol" role="menuitemradio" aria-checked="true">GPT-5.6 Sol</button>
       </div>
-      <div data-model-reasoning-effort-slider><div id="owner" role="menuitem" tabindex="0">
+      <div data-model-reasoning-effort-slider>${Array.from({ length: 5 }, () => '<span data-locked="false" data-selected="false"></span>').join("")}<div id="owner" role="menuitem" tabindex="0">
         <span role="slider" aria-hidden="true" style="display:inline-block;width:0" aria-valuemin="0" aria-valuemax="4" aria-valuenow="0"></span>Effort
       </div></div>
     </div></div>

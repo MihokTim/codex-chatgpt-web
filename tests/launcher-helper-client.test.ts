@@ -21,7 +21,9 @@ test.each(["success", "selection-failure"] as const)("daemon preserves browser l
     import { ChatGptBrowserWorker } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/browser-worker.ts", import.meta.url).href)};
     import { chatGptModelSelectionError } from ${JSON.stringify(new URL("../src/adapters/chatgpt-web/adapter-error.ts", import.meta.url).href)};
     // Substitute only the browser. Both sides of the production IPC protocol run unchanged.
-    ChatGptBrowserWorker.prototype.run = async turn => {
+    ChatGptBrowserWorker.prototype.run = async function(turn) {
+      if (this.config.useSavedChats !== true) throw new Error("Saved chat preference lost in helper IPC");
+      if (turn.modelFamily !== "5.6") throw new Error("Pinned model family lost in helper IPC");
       if (turn.reasoning !== "max" || turn.browserEffortOverride !== "xhigh"
         || turn.capabilities.browserModelFamily !== "sol") throw new Error("Local model choices were lost across helper IPC");
       if (${JSON.stringify(outcome)} === "selection-failure") throw chatGptModelSelectionError(
@@ -84,6 +86,7 @@ test.each(["success", "selection-failure"] as const)("daemon preserves browser l
     turnTimeoutMs: 60_000,
     headed: true,
     autoApproveToolCalls: false,
+    useSavedChats: true,
   };
   const reasoning: Array<{ text: string; continuation: boolean }> = [];
   const deltas: string[] = [];
@@ -100,6 +103,7 @@ test.each(["success", "selection-failure"] as const)("daemon preserves browser l
       reasoning: "max",
       browserEffortOverride: "xhigh",
       capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true, browserModelFamily: "sol" },
+      modelFamily: "5.6",
       prepare: async () => ({
         text: "inspect", images: [],
         skillFiles: [selectedSkillFile({ role: "user", origin: "codex_skill", timestamp: 0,
@@ -202,7 +206,7 @@ test("accepted compaction retires through the helper as completed without hiding
     appName: "Codex Native2", browserHost: "launcher", browserHostDescriptorPath: descriptorPath,
     browserHelperScriptPath: helper, browserDiagnosticsPath: join(root, "diagnostics"),
     storageStatePath: join(root, "unused-state.json"), chromeExecutablePath: join(root, "unused-chrome"),
-    turnTimeoutMs: 60_000, headed: true, autoApproveToolCalls: false,
+    turnTimeoutMs: 60_000, headed: true, autoApproveToolCalls: false, useSavedChats: false,
   });
   const logs: string[] = [];
   const logger = spyOn(console, "info").mockImplementation((...args) => { logs.push(args.join(" ")); });
@@ -255,6 +259,7 @@ test("launcher helper protocol preserves multipart context and the compaction fl
     turnTimeoutMs: 60_000,
     headed: true,
     autoApproveToolCalls: false,
+    useSavedChats: false,
   });
   const internal = client as unknown as {
     pending: Map<string, { resolve(value: string): void }>;
@@ -271,6 +276,7 @@ test("launcher helper protocol preserves multipart context and the compaction fl
     "multipart-2-6",
     "browser-effort-override",
     "explicit-browser-family",
+    "pinned-model-family",
   ]);
   internal.ensureChild = async () => {};
   internal.send = async message => {
@@ -333,7 +339,7 @@ test("launcher helper protocol preserves multipart context and the compaction fl
   });
 });
 
-test("launcher helper fails closed when the browser effort override is unsupported", async () => {
+test.each(["effort", "family"] as const)("launcher helper fails closed before preparing a turn when %s is unsupported", async feature => {
   const client = new LauncherBrowserHelperClient({
     appName: "Codex Native2 DEV",
     browserHost: "launcher",
@@ -343,6 +349,7 @@ test("launcher helper fails closed when the browser effort override is unsupport
     turnTimeoutMs: 60_000,
     headed: true,
     autoApproveToolCalls: false,
+    useSavedChats: false,
   });
   const internal = client as unknown as {
     helperFeatures: Set<string>;
@@ -351,16 +358,18 @@ test("launcher helper fails closed when the browser effort override is unsupport
   internal.helperFeatures = new Set();
   internal.ensureChild = async () => {};
 
+  let prepared = false;
   await expect(client.run({
     traceId: "override-old-helper",
     modelId: "gpt-5.6-sol",
     reasoning: "max",
-    browserEffortOverride: "xhigh",
+    ...(feature === "effort" ? { browserEffortOverride: "xhigh" as const } : { modelFamily: "6" as const }),
     capabilities: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
     compaction: true,
-    prepare: async () => ({ text: "compact", images: [], release() {} }),
+    prepare: async () => { prepared = true; return { text: "compact", images: [], release() {} }; },
     onTextDelta() {},
-  })).rejects.toThrow("does not support the ChatGPT browser effort override");
+  })).rejects.toThrow(feature === "effort" ? "does not support the ChatGPT browser effort override" : "does not support pinned model family");
+  expect(prepared).toBe(false);
 });
 
 test("a six-part prompt rejects an older helper before sending the prepared payload", async () => {
@@ -375,6 +384,7 @@ test("a six-part prompt rejects an older helper before sending the prepared payl
     turnTimeoutMs: 60_000,
     headed: true,
     autoApproveToolCalls: false,
+    useSavedChats: false,
   });
   const internal = client as unknown as {
     child?: unknown;
@@ -436,6 +446,7 @@ test("a two-part prompt remains compatible with an older multipart helper", asyn
     turnTimeoutMs: 60_000,
     headed: true,
     autoApproveToolCalls: false,
+    useSavedChats: false,
   });
   const internal = client as unknown as {
     child?: unknown;
@@ -500,6 +511,7 @@ test("an abort dispatched during run submission cannot overtake the run frame", 
     turnTimeoutMs: 60_000,
     headed: true,
     autoApproveToolCalls: false,
+    useSavedChats: false,
   });
   const internal = client as unknown as {
     ensureChild(): Promise<void>;
@@ -546,6 +558,7 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
     turnTimeoutMs: 60_000,
     headed: true,
     autoApproveToolCalls: false,
+    useSavedChats: false,
   });
   const internal = client as unknown as {
     child?: unknown;
@@ -596,7 +609,7 @@ test("structured helper errors preserve the ChatGPT adapter failure contract", a
 test("an older helper cannot silently drop selected skill files and releases the prepared turn", async () => {
   const client = new LauncherBrowserHelperClient({
     appName: "Codex Native2", browserHost: "launcher", browserHostDescriptorPath: "/durable/launcher.json",
-    storageStatePath: "/durable/unused.json", chromeExecutablePath: "/durable/chrome", headed: true, autoApproveToolCalls: false,
+    storageStatePath: "/durable/unused.json", chromeExecutablePath: "/durable/chrome", headed: true, autoApproveToolCalls: false, useSavedChats: false,
   });
   const internal = client as unknown as {
     child: unknown;

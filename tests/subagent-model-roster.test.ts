@@ -3,6 +3,7 @@ import {
   COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS,
   hasCompleteCompatibilityV1PreferredRoster,
   prioritizeCompatibilityV1Models,
+  resolveCompatibilityV1PreferredRoster,
   type ModelCatalogRow,
 } from "../src/subagent-model-roster";
 
@@ -20,15 +21,15 @@ function row(slug: string, priority: number, overrides: ModelCatalogRow = {}): M
 function completeRoster(): ModelCatalogRow[] {
   return [
     row("gpt-6-astra", 1),
-    row("gpt-5.6-sol", 2),
-    row("gpt-5.6-luna", 3),
+    row("gpt-6-sol", 2),
+    row("gpt-6-luna", 3),
     row("gpt-reserve", 0, { visibility: "hide" }),
     row("gpt-5.5", 4),
-    row("chatgpt-web/light", 1),
+    row("chatgpt-web/gpt-5.6-pro", 1),
     row("chatgpt-web/medium", 2),
     row("chatgpt-web/high", 1),
     row("chatgpt-web/extra-high", 1),
-    row("chatgpt-web/pro", 1),
+    row("chatgpt-web/gpt-6-pro", 1),
   ];
 }
 
@@ -41,6 +42,17 @@ function delegationRoster(models: readonly ModelCatalogRow[]): unknown[] {
 }
 
 describe("Compatibility V1 subagent model roster", () => {
+  test("prefers GPT-6 while accepting older native catalogs without rewriting model capabilities", () => {
+    const current = completeRoster();
+    const older = current.map(model => ({ ...model, slug: model.slug === "gpt-6-sol" ? "gpt-5.6-sol"
+      : model.slug === "gpt-6-luna" ? "gpt-5.6-luna" : model.slug }));
+    expect(resolveCompatibilityV1PreferredRoster(older)).toEqual([
+      "chatgpt-web/gpt-6-pro", "chatgpt-web/gpt-5.6-pro", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna",
+    ]);
+    const mixed = [...current, row("gpt-5.6-sol", 0), row("gpt-5.6-luna", 0)];
+    expect(delegationRoster(prioritizeCompatibilityV1Models(mixed, "compatibility-v1")))
+      .toEqual([...COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS]);
+  });
   test("reserves the five explicit override slots and leaves all rows selectable", () => {
     const source = completeRoster();
     const snapshot = structuredClone(source);
@@ -73,7 +85,7 @@ describe("Compatibility V1 subagent model roster", () => {
     "keeps the existing policy when a preferred model is %s",
     condition => {
       const source = completeRoster();
-      const luna = source.find(model => model.slug === "gpt-5.6-luna")!;
+      const luna = source.find(model => model.slug === "gpt-6-luna")!;
       const changed = condition === "missing" ? source.filter(model => model !== luna) : source;
       if (condition === "hidden") luna.visibility = "hide";
       if (condition === "unsupported") luna.supported_in_api = false;

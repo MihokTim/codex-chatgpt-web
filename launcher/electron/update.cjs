@@ -48,8 +48,8 @@ function releaseAssetName(version, platform = process.platform, arch = process.a
   if (platform === "win32" && arch === "x64") {
     return `codex-web-gpt-${version}-win-x64.exe`;
   }
-  if (platform === "linux" && arch === "x64") {
-    return `codex-web-gpt-${version}-linux-x64.AppImage`;
+  if (platform === "linux" && ["x64", "arm64"].includes(arch)) {
+    return `codex-web-gpt-${version}-linux-${arch}.AppImage`;
   }
   return null;
 }
@@ -251,12 +251,15 @@ function createUpdateController({
   packaged,
   executablePath,
   runtimeExecutable,
+  forkMetadataPath,
   logsDirectory,
   publish,
   logger,
   dependencies = {},
 }) {
   const deps = { ...defaultDependencies(), ...dependencies };
+  const forkInstalled = Boolean(forkMetadataPath && fs.existsSync(forkMetadataPath));
+  const forkUpdateMessage = "この環境は独自修正版です。公式版への上書きでは設定分離や復旧機能を引き継げません。更新は MihokTim/codex-chatgpt-web に上流変更を統合した版を使用してください。";
   const supportedAsset = releaseAssetName(currentVersion, platform, arch);
   let state = packaged && supportedAsset ? { status: "idle" } : { status: "disabled" };
   let checked = false;
@@ -275,10 +278,18 @@ function createUpdateController({
     transition({ status: "checking" });
     try {
       const release = await deps.fetchRelease();
+      // GitHub's /releases/latest already excludes these, including for older launchers.
+      if (release?.draft === true || release?.prerelease === true) {
+        candidate = null;
+        return transition({ status: "up-to-date" });
+      }
       const version = releaseVersion(release?.tag_name);
       if (compareVersions(version, currentVersion) <= 0) {
         candidate = null;
         return transition({ status: "up-to-date" });
+      }
+      if (forkInstalled) {
+        return transition({ status: "error", message: `上流 v${version} が公開されています。${forkUpdateMessage}` });
       }
       const assetName = releaseAssetName(version, platform, arch);
       if (!assetName) return transition({ status: "disabled" });
@@ -304,6 +315,7 @@ function createUpdateController({
   }
 
   async function beginInstall() {
+    if (forkInstalled) throw new Error(forkUpdateMessage);
     if (pending) throw new Error("An update is already being prepared");
     if (state.status !== "available" || !candidate) throw new Error("No launcher update is available");
     const available = candidate;
