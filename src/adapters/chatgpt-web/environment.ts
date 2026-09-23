@@ -1,4 +1,4 @@
-import { homedir } from "node:os";
+import { getCodexHome } from "../../codex-integration-shared";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isReadableCompactionSummaryText, OPAQUE_COMPACTION_NOTE } from "../../responses/compaction";
 import type { CodexContentPart, CodexParsedRequest, CodexTool } from "../../types";
@@ -326,8 +326,9 @@ export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRe
   const body = record(parsed._rawBody);
   const updates = (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
     const item = record(value);
-    if (item?.type !== "message" || item.role !== "user" || itemTurnId(item) !== turnId
-      || typeof item.id !== "string" || !item.id) return [];
+    // Compaction can rebuild an envelope without an item id. Its current-turn provenance and
+    // the caller's exact native rollout comparison authenticate the claim, not a message id.
+    if (!turnId || item?.type !== "message" || item.role !== "user" || itemTurnId(item) !== turnId) return [];
     // Native compaction groups plugins, instructions and environment into sibling content parts.
     // Read the environment part without treating the surrounding preamble as part of its XML.
     const parts = typeof item.content === "string" ? [item.content]
@@ -338,8 +339,13 @@ export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRe
       return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text) ? [text] : [];
     });
   });
-  if (updates.length !== 1) throw new Error("Compaction continuation requires one current native environment claim");
-  return parseChatGptEnvironmentText(parsed, updates[0]!);
+  // Replaying the same envelope does not create a second authority. Distinct claims remain
+  // ambiguous and must not be resolved by arbitrarily trusting the first or last message.
+  const claims = [...new Set(updates)];
+  if (claims.length !== 1) {
+    throw new Error(`Compaction continuation requires one current native environment claim (found ${claims.length} distinct claims in ${updates.length} envelopes)`);
+  }
+  return parseChatGptEnvironmentText(parsed, claims[0]!);
 }
 
 /**
@@ -379,6 +385,57 @@ export function extractChatGptSteeringEnvironmentClaim(parsed: CodexParsedReques
     if (text) return parseChatGptEnvironmentText(parsed, text);
   }
   return undefined;
+}
+
+/**
+ * At local midnight Codex emits a current-date/filesystem refresh without cwd. Treat it as
+ * a partial claim only: the store must verify every resulting authority against this turn's
+ * native rollout. No cache or Git workspace list may supply the missing cwd.
+ */
+export function extractChatGptEnvironmentRefreshClaims(parsed: CodexParsedRequest): ChatGptTurnEnvironment[] | undefined {
+  const turnId = extractChatGptTurnIdentity(parsed).turnId;
+  if (!turnId) return undefined;
+  const body = record(parsed._rawBody);
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const metadata = clientTurnMetadata(parsed);
+  const activeIndex = input.findLastIndex(value => isNativeInstruction(record(value), metadata));
+  const active = record(input[activeIndex]);
+  if (itemTurnId(active) !== turnId || typeof active?.id !== "string" || !active.id) return undefined;
+  const claims = input.flatMap((value, index) => {
+    const item = record(value);
+    if (item?.type !== "message" || !/<\/?environment_context\b/i.test(rawMessageText(item))) return [];
+    const owner = itemTurnId(item);
+    return owner === undefined || owner === turnId ? [{ item, index }] : [];
+  });
+  if (claims.length < 2) return undefined;
+  const texts: string[] = [];
+  for (const [index, claim] of claims.entries()) {
+    if (claim.item.role !== "user" || itemTurnId(claim.item) !== turnId
+      || typeof claim.item.id !== "string" || !claim.item.id) return undefined;
+    const parts = Array.isArray(claim.item.content) ? claim.item.content : [];
+    const candidates = parts.map(part => record(part)?.text)
+      .filter((text): text is string => typeof text === "string" && /<\/?environment_context\b/i.test(text));
+    if (candidates.length !== 1 || !/^<environment_context>[\s\S]*<\/environment_context>$/.test(candidates[0]!.trim())) return undefined;
+    const text = candidates[0]!.trim();
+    if (index > 0) {
+      const kinds = record(claim.item.internal_chat_message_metadata_passthrough)?.content_item_kinds;
+      if (!Array.isArray(kinds) || kinds.length !== 1 || kinds[0] !== "environments.environment_context"
+        || parts.length !== 1 || /<\/?cwd\b|<\/?environments\b/i.test(text)
+        || !/<current_date>\d{4}-\d{2}-\d{2}<\/current_date>/.test(text)
+        || !/<timezone>[^<]+<\/timezone>/.test(text)
+        || !/<workspace_roots>/.test(text)) return undefined;
+    }
+    texts.push(text);
+  }
+  // The full starting claim must belong to the actual native environment/instruction pair.
+  const initial = claims[0]!;
+  const paired = input.some((_value, index) => index > initial.index && index <= activeIndex
+    && environmentBeforeUser(input, index, turnId, metadata) === texts[0]);
+  if (!paired) return undefined;
+  const starting = parseChatGptEnvironmentText(parsed, texts[0]!);
+  const escapedCwd = starting.cwd.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return [starting, ...texts.slice(1).map(text => parseChatGptEnvironmentText(parsed,
+    text.replace("<environment_context>", `<environment_context><cwd>${escapedCwd}</cwd>`)))];
 }
 
 /**
@@ -554,8 +611,7 @@ function isCurrentOrParentThreadVisualizationRoot(path: string, metadata: Record
   // Codex advertises its task-scoped visualization output directory in workspace_roots but omits
   // it from Git-oriented turn metadata. Authenticate that one auxiliary shape by both its private
   // Codex home and current or parent thread id; arbitrary roots and unrelated output remain untrusted.
-  const configuredCodexHome = process.env.CODEX_HOME?.trim();
-  const codexHome = resolve(configuredCodexHome || join(homedir(), ".codex"));
+  const codexHome = getCodexHome();
   const visualizationBase = pathIdentity(join(codexHome, "visualizations"));
   const rel = relative(visualizationBase, pathIdentity(path));
   if (!rel || rel.startsWith("..") || isAbsolute(rel)) return false;
@@ -638,6 +694,10 @@ function hasAssistantOutputBetween(input: unknown[], startIndex: number, endInde
 }
 
 function rawEnvironmentText(parsed: CodexParsedRequest): string | undefined {
+  // Rebuilt grouped preambles can look like adjacent user instructions, especially when
+  // replayed. A checkpoint continuation must use the store's current-rollout verification
+  // even if that shape happens to satisfy the ordinary environment/prompt adjacency checks.
+  if (isChatGptCompactionContinuation(parsed)) return undefined;
   const body = record(parsed._rawBody);
   const input = Array.isArray(body?.input) ? body.input : [];
   const metadata = clientTurnMetadata(parsed);

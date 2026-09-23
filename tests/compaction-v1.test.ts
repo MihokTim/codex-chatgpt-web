@@ -12,6 +12,25 @@ test("recognizes both Codex v1 and transparent v2 readable compaction summaries"
   expect(isReadableCompactionSummaryText(`${SUMMARY_PREFIX}not a summary boundary`)).toBe(false);
 });
 
+test("compaction retains human instructions, not native grouped runtime preambles", () => {
+  const message = (id: string, kinds: string[], texts: string[]) => ({
+    type: "message", role: "user", id,
+    content: texts.map(text => ({ type: "input_text", text })),
+    internal_chat_message_metadata_passthrough: { turn_id: "turn_context", content_item_kinds: kinds },
+  });
+  const human = message("human", ["user.text"], ["Continue the task"]);
+  const grouped = message("runtime", ["agents_md.instructions", "environments.environment_context"],
+    ["# AGENTS.md instructions\nFollow the repository rules", "<environment_context><cwd>/project</cwd></environment_context>"]);
+  const mixed = message("mixed", ["user.text", "agents_md.instructions"], ["A real human instruction", "Repository rules"]);
+  const unknown = message("unknown", ["future.kind"], ["Preserve unknown input"]);
+  const context = { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>cwd</environment_context>" }] };
+  const notification = { type: "message", role: "user", content: [{ type: "input_text", text: "<subagent_notification>Done</subagent_notification>" }] };
+  const input = [human, grouped, context, notification, mixed, unknown];
+  const saved = structuredClone(input);
+  expect(extractCompactUserMessages(input)).toEqual([human, mixed, unknown]);
+  expect(input).toEqual(saved);
+});
+
 test("v1 compaction keeps only the newest ten structured images without copying them into text", () => {
   const input = Array.from({ length: 12 }, (_, index) => ({
     type: "message",

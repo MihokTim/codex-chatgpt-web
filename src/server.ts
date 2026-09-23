@@ -14,6 +14,7 @@ import {
   extractChatGptTurnIdentity,
   extractCodexTurnIdentityFromBody,
   extractChatGptCompactionSourceRevision,
+  chatGptTurnUserRevisionHistory,
 } from "./adapters/chatgpt-web/environment";
 import { rememberCompactionContinuation } from "./adapters/chatgpt-web/compaction-continuation";
 import { bridgeToResponsesSSE, buildResponseJSON, formatErrorResponse } from "./bridge";
@@ -44,6 +45,7 @@ import {
   extractCompactUserMessages,
 } from "./responses/compaction";
 import { parseRequest } from "./responses/parser";
+import { normalizeCodexAppDelegations } from "./adapters/chatgpt-web/codex-app-delegation";
 import { TerminalFailureReplays } from "./responses/terminal-failure-replay";
 import { expandPreviousResponseInput, flushResponseState, rememberResponseState } from "./responses/state";
 import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "./types";
@@ -510,7 +512,7 @@ export async function responseRequest(
   let parsed: CodexParsedRequest;
   let route: ChatGptWebModelRoute;
   try {
-    parsed = parseRequest(expanded);
+    parsed = normalizeCodexAppDelegations(parseRequest(expanded));
     route = routeChatGptWebRequest(parsed, config);
     const identity = extractChatGptTurnIdentity(parsed);
     if (identity.threadId && identity.turnId) {
@@ -557,13 +559,21 @@ export async function responseRequest(
     if (!summary) return;
     const source = extractChatGptCompactionSourceRevision(parsed);
     const body = parsed._rawBody as { input?: unknown[] };
-    // v1 installs the bounded user-message output, whereas v2 retains the original source.
-    // Authenticate both exact producer-defined representations, never arbitrary rewrites.
-    const v1Source = extractChatGptCompactionSourceRevision({
+    // Both native formats discard runtime-only user-role messages (goal continuation,
+    // grouped AGENTS/environment preamble, notifications). V2 keeps the original human
+    // instruction; V1 installs our bounded representation. Bind both exact forms to the
+    // completed checkpoint, alongside the original current-turn source.
+    const retainedUsers = extractCompactUserMessages(body.input);
+    const retainedSource = chatGptTurnUserRevisionHistory({
       ...parsed,
-      _rawBody: { ...body, input: buildCompactV1Output(extractCompactUserMessages(body.input), summary) },
-    });
-    rememberCompactionContinuation(parsed, identity, [source, v1Source], summary);
+      _rawBody: { ...body, input: retainedUsers },
+    }).at(-1);
+    const v1Source = chatGptTurnUserRevisionHistory({
+      ...parsed,
+      _rawBody: { ...body, input: buildCompactV1Output(retainedUsers, summary) },
+    }).at(-1);
+    rememberCompactionContinuation(parsed, identity,
+      [source, ...(retainedSource ? [retainedSource] : []), ...(v1Source ? [v1Source] : [])], summary);
   };
   if (compaction && route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
     return formatErrorResponse(
