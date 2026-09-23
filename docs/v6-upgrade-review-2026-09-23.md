@@ -56,7 +56,7 @@ journalのpathだけの書き換え、journal削除、ログインプロファ�
 | 6分割Bigger Context | 上流採用を継続 | 1/2/6部の通信。総contextは従来の3倍のまま。利用者の有効設定を保持 |
 | HTTP符号化前後の受入上限 | 維持 | 128/256 MiBの独自境界と実byte試験。最大メモリの保証とは異なる |
 | 障害記録・512件復旧容量表示 | 維持 | 作者のbroker診断と補完関係。外部recorderを今回自動導入しない |
-| optional Desktop history guard | ソースのみ維持 | 対応する外部MCP版・hashを限定。Desktop更新だけを根拠に未知版へ再適用しない |
+| optional Desktop history guard | 対応版を限定して維持、再適用不要 | 導入済み0.1.4のserver/helperのhash照合とsourceAligned確認が成功。Desktop更新だけを根拠に未知版へ再適用しない |
 | build input hash・fork identity・rollback | 維持 | 同じversion表示でも公式版／独自版を識別し、入力変更を検出する |
 | 旧DEPLOY_REAL_ENV.ps1のnode PATH・tray終了対策 | 導入作業用、製品runtimeには不採用 | 一回限りの配布物は記録として保存。今回の更新でも実行環境を固定し、正式なランチャーAPIで終了する |
 
@@ -76,12 +76,47 @@ journalのpathだけの書き換え、journal削除、ログインプロファ�
 ## 検証と残る範囲
 
 現行同梱CLIからのカタログsmokeで上記5枠を実測。5モデルそれぞれの親・子・孫・follow-upを
-実Codex CLIとloopbackの模擬Responsesで確認した。既存Web defaultsのsmokeも確認する。
+実Codex CLIとloopbackの模擬Responsesで確認した。既存Web defaultsのsmokeも成功した。
 これはモデルサービスへの実生成、料金、速度、実アカウントでの5並列の証明ではない。
 
-core/launcher型検査、version同期、依存audit、renderer build、モデル・権限・復旧・移行回帰、
-配布runtimeとランチャー候補を検証する。Windows symlink fixtureのEPERMはOSの権限制約として別記し、
-未実行を合格に数えない。最終実行件数と導入結果は導入記録に記載する。
+ソース `23d4e053822c000476802e22bd731f9617a075e8` をclean状態でビルドした。
+core/launcher型検査、version同期、依存audit、renderer build、配布runtimeのrelocation／home移行、
+隔離したWindows packaged launcherの起動・runtime配置は成功した。
+
+| 試験 | 最終結果 |
+| --- | --- |
+| core全79ファイル | 1,081成功、2skip、2失敗（計1,085） |
+| launcher全試験 | 335成功、4skip、1失敗（計340） |
+| 残る失敗3件 | すべてWindows symlink fixture作成時のEPERM。製品処理に到達できず、合格には数えない |
+| Codexカタログ | 同梱CLI 0.155.0-alpha.16.3で優先5枠を確認 |
+| 子・孫タスク | 5モデルのCompatibility V1起動・結果回収・follow-up、旧Web defaultsが成功（模擬Responses） |
+| runtime/launcher配布smoke | 成功。バージョン6.0.0、packaged/runtimeVerifiedともtrue |
+
+全体の `verify` はsymlink権限により完全成功とはいえない。skipは外部MCP fixture・外部サービス・OS固有項目。
+実アカウントでの生成や長期圧縮の再現は今回の自動試験の範囲外。導入済みhistory guardのcheckは成功し、
+再適用はしていない。incident recorderの既存停止状態（running=false）も維持した。
 
 画面のクリックは復旧に必須ではなく、設定照会・ビルド・導入・setup・doctorをAPI/CLIで行う。
 nativeアプリ終了、ログインのやり直し、OS権限変更を復旧の前提にしない。
+
+## このPCへの導入結果
+
+2026-09-23 20:58 JSTまでに、統合版6.0.0のNSIS installerで更新し、既存設定の自動upgradeが成功した。
+通常のNativeアプリは終了させず、ブリッジだけを正式なランチャーAPIで正常終了・再起動した。
+
+- 配布ソース: `23d4e053822c000476802e22bd731f9617a075e8`（clean build）。
+- fork build: `mihoktim-6.0.0-upstream-212ceef-20260923`。
+- runtime bundle: `45921e6b8a3f4a89a5d7ea7e23a1512ffe81607e71ce40cb5e81ecd60c2ab725`。
+- installer SHA-256: `d32831436a40b2a004d0d5d2ca2868d51dd6cb2e4c9a8bc10766e747aabee02f`。
+- `/healthz`: 6.0.0、full、accepting_turns=true、HTTP/browserのactive turn=0。
+- 実Codex CLIからブリッジ経由でモデル一覧取得がHTTP 200。上記5モデルの優先順も一致。
+- ランチャー: coreSetupComplete、codexCatalogVerified、mcpSetupCompleteすべてtrue。codexRestartRequired=false。
+- 既存ChatGPT認証を保持し、ブラウザー状態ready。MCP確認APIで`Codex Native2`の利用可能性を確認、全10項目ok。
+- journalのconfigPathは引き続きWeb専用home。通常の`~/.codex/config.toml`は導入前後でSHA-256一致。
+- Bigger Context=true、fresh conversation=false、saved chats=false、Compatibility V1を保持。
+- 復旧のための実モデル生成やPro推論は実施していない。上記MCP確認はモデルへの依頼送信ではない。
+
+ローカル配布物と実行記録は `C:\Users\MihokTim\dev\codex-chatgpt-web-deploy\23d4e05-v6-20260923`。
+同ディレクトリの`rollback-20260923-205205`に更新前のアプリ、core home、browser認証を含むuser data、
+native config/cache/authを退避した。バックアップには秘密情報が含まれるためGitへ追加しない。
+Windows installerはローカルで作成・導入したものであり、GitHub Releaseへの公開はしていない。
