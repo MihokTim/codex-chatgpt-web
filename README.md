@@ -1,203 +1,72 @@
-<p align="center">
-  <img src="assets/readme/hero.svg" width="960" alt="Switch to web models. Stay in Codex. Your ChatGPT plan. Your workflow. Maximum capabilities.">
-</p>
+# Codex ChatGPT Web — maintained V6 fork
 
-<p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.0.0/codex-web-gpt-6.0.0-win-x64.exe"><img src="assets/readme/download-windows.svg" width="224" height="64" alt="Windows · x64"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.0.0/codex-web-gpt-6.0.0-mac-arm64.dmg"><img src="assets/readme/download-macos.svg" width="224" height="64" alt="macOS · Apple silicon"></a>&nbsp;
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.0.0/codex-web-gpt-6.0.0-linux-x64.AppImage"><img src="assets/readme/download-linux.svg" width="224" height="64" alt="Linux · x64"></a>
-</p>
+This is an unofficial fork of [miuuyy/codex-chatgpt-web](https://github.com/miuuyy/codex-chatgpt-web), based directly on the official **v6.0.0** tag (`212ceef2acac9d6ee0f3c9037abfaf4ad8ff9827`). It adds a reviewed set of model-catalog and browser-continuation fixes. It is not an OpenAI product or an official upstream distribution.
 
-<p align="center">
-  <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/download/v6.0.0/codex-web-gpt-6.0.0-mac-x64.dmg">macOS Intel</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases/latest">All releases</a>
-</p>
+**Native and Web models use the same Codex application and configuration home.** Setup adds Web routes to the native catalog; native requests retain upstream's native passthrough. Production uses `CODEX_HOME`, or `~/.codex` when unset. The bridge keeps its own settings and browser profile in `~/.codex-chatgpt-web`. Only the upstream development profile uses a separate test home.
 
-<p align="center">
-  <a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a>
-</p>
+The current fork identity is **6.0.0-fork.1**. The application version remains **6.0.0** for upstream compatibility. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build.
 
-<p align="center">
-  <img src="assets/demo.gif" width="960" alt="A live ChatGPT Web turn using the native Codex harness">
-</p>
+## Changes in this fork
 
-<p align="center">
-  <a href="#get-started">Get started</a> · <a href="https://github.com/miuuyy/codex-chatgpt-web/releases">What’s new</a> · <a href="docs/architecture.md">Architecture</a> · <a href="TROUBLESHOOTING.md">Troubleshooting</a>
-</p>
+| Area | Behavior |
+| --- | --- |
+| Subagent catalog | Compatibility V1 prioritizes GPT-6 Pro (Web), GPT-5.6 Pro (Web), native GPT-6 Astra, Sol and Luna within its five explicit model overrides. Older native Sol/Luna rows are fallback candidates only when their current equivalents are unavailable. |
+| Model identity | Execution replay and compaction continuations are separated by named model family. |
+| Browser responses | Answers remain anchored to the submitted user turn even when older assistant messages are remounted. |
+| Model controls | Selection verifies the live effort state, recovers bounded focus/menu hydration failures, and preserves typed terminal errors. |
+| Continuation | Refreshed environments, grouped compaction preambles and native app deliveries are checked against the current native rollout. |
+| Failure recovery | A recognized failed-thinking response can continue once from verified completed tool history. Cancellation, partial answers and incomplete history prevent automatic recovery. |
+| Compaction | A completed native tool boundary can retire the source before summarizing in a fresh context. Failed summary replay is bounded. |
+| Helper compatibility | Older helpers cannot silently ignore pinned model families or six-part context. |
+| Distribution | Build provenance is recorded, and upstream automatic installation cannot overwrite the fork's patches. |
 
-Use the ChatGPT Web models available on your account, including Pro, from Codex’s native model picker—with ChatGPT Web’s separate usage limits, without spending your Work or Codex quota. Keep the same interface, tasks, images, and streaming.
+See the [V6 review and per-commit disposition](docs/v6-fork-review.md) for evidence, removed workarounds and limits. The fork preserves V6's named models and original legacy aliases. In particular, `chatgpt-web/light` is **not** repurposed as GPT-5.6 Pro; choose `chatgpt-web/gpt-5.6-pro` explicitly.
 
-Full harness mode connects ChatGPT to the current task’s files, terminal, tools, and approvals through MCP. Conversations stay tied to your Codex task, so you can keep working as the context grows.
+## Build and install
 
-<div id="get-started"><a id="quick-start"></a></div>
+Prebuilt packages from the **upstream** repository do not contain these patches. Until this fork publishes a release, build from this repository. Do not use upstream's automatic or terminal installer when intending to install the fork.
 
-## Get started
+Prerequisites: Git; this project requires Bun 1.4.0. The exact version is pinned in `package.json`. Packaging uses the dependencies pinned in both lockfiles.
 
-**Available models:** Free/Go → **Luna / Think**. Accounts with reasoning controls → **Instant–High**, plus **Extra High** and **Pro** when available. The launcher detects what your account can use.
-
-1. **Install the launcher** using the download for your system above.
-2. **Sign in to ChatGPT** in the embedded browser and run the browser smoke test.
-3. **Install models** and restart Codex once. In automatic mode, choose a model ending in **(Web)**. Pro versions have separate entries; Sol reasoning is selected through Effort. Zero Risk keeps its dedicated entry.
-4. **For coding with tools**, open **MCP** in the launcher and complete the Full harness setup below.
-
-The app includes its browser and runtime. No separate Chrome, Node, or Bun installation is needed.
-
-<details>
-<summary><strong>Terminal install, updates & repair</strong></summary>
-
-Quit the launcher before updating. These installers select the platform and architecture, verify the published checksums, and preserve your ChatGPT profile and launcher settings.
-
-**macOS / Linux**
-
-```bash
-curl -fsSL https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.sh | sh
-```
-
-**Windows PowerShell**
-
-```powershell
-irm https://github.com/miuuyy/codex-chatgpt-web/releases/latest/download/install-launcher.ps1 | iex
-```
-
-</details>
-
-<details>
-<summary><strong>Models, modes & MCP setup</strong></summary>
-
-<a id="modes"></a>
-
-Automatic modes offer Luna/Think when the account has no reasoning selector; otherwise Instant–High, with Extra High and Pro available independently when exposed by the account.
-
-| Mode | Sending messages | Local Codex tools |
-| --- | --- | --- |
-| **Browser-only** | Automatic | No |
-| **Full harness (With Automation)** | Automatic | Yes, through MCP |
-| **Zero Risk** | Paste and send manually | Yes, through a separate MCP connector |
-
-Zero Risk does not read or operate the ChatGPT page. Choose the model and `Codex Zero Risk` connector yourself, paste and send the prepared prompt, then confirm **Sent** in the launcher. Automatic models ending in **(Web)** expose their supported Effort choices in Codex. Instant and each Pro version have separate entries to preserve their context budgets; older saved model entries keep their original fixed mode.
-
-<a id="full-harness"></a>
-
-### Full harness
-
-Full mode connects ChatGPT's tool calls back to the current Codex task through the official
-[OpenAI tunnel-client](https://github.com/openai/tunnel-client). The tunnel is outbound: it does
-not expose a public IP, open an inbound port, or require router forwarding.
-
-The launcher's **MCP** page guides the complete setup. For the exact clicks, see the
-[video walkthroughs](TROUBLESHOOTING.md).
-
-> **Limits**
->
-> See [Limits](https://github.com/miuuyy/codex-chatgpt-web/discussions/309) for the current
-> ChatGPT message allowances for **GPT-5.6 Sol Pro** and **GPT-6 Astra**. Context limits depend on
-> the account type and selected effort. Plus Medium/High uses a measured 90,000-token window, or
-> up to 270,000 tokens with experimental **3× context** enabled, with native Codex compaction
-> supported throughout.
-
-1. Finish the required setup, open **MCP**, create the Tunnel and regular API key, then press
-   **Connect harness**.
-2. Enable ChatGPT **Developer Mode** and create a new Tunnel connector named exactly
-   **Codex Native2**, with **Authentication: None** and **Allow all actions**.
-3. Run **Verify runtime** to confirm that **Codex Native2** is attached and available.
-
-Write/modify actions also require the ChatGPT workspace and its administrator policy to permit
-them. See
-[developer mode and MCP apps](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt).
-Unexpected approval prompts fail closed unless `--auto-approve-tool-calls` is explicitly enabled;
-that option clicks **Allow once**, never a permanent grant.
-
-</details>
-
-<details>
-<summary><strong>Diagnostics & subagents</strong></summary>
-
-<a id="operations"></a>
-
-Use **Activity** for safe local diagnostics and **Settings → Run doctor** for end-to-end health.
-Settings can also cancel a retained browser turn or remove the Codex integration before uninstall.
-**Save chats in ChatGPT** keeps task conversations in ChatGPT history. Off by default; independent of **New browser chat for each turn**.
-Set `CODEX_CHATGPT_WEB_BROWSER_DIAGNOSTICS=1` only when every browser checkpoint needs a screenshot.
-
-New installs use **Compatibility V1** for cross-backend subagents. **Native** preserves Codex's own
-feature settings and enables plaintext Web-to-Web V2 delegation. Restart Codex and start a new task
-after changing the protocol:
-
-```bash
-codex-chatgpt-web subagents status
-codex-chatgpt-web subagents compatibility-v1
-codex-chatgpt-web subagents native
-```
-
-</details>
-
-<details>
-<summary><strong>Requirements & security</strong></summary>
-
-<a id="limitations-and-security"></a>
-
-- This is unofficial browser automation, not an OpenAI API. ChatGPT UI changes can break selectors;
-  drift fails explicitly instead of silently switching model or transport.
-- Browser state is a sensitive login artifact, and the loopback listener is reachable by processes
-  running as the same local user. Never share the launcher profile; use a trusted workstation.
-- Release packages currently target macOS 13+ (arm64/x64), Windows x64, and Linux x64. Runtime,
-  tests, and packaging are gated on all three in CI; account-bound browser and MCP flows use the
-  separate [release validation](docs/release-validation.md).
-- Builds are not yet platform-signed, so Gatekeeper or SmartScreen may warn. The installers verify
-  the published SHA-256 manifest before installation.
-
-Read the complete [architecture](docs/architecture.md) and
-[security model](docs/security-model.md) before enabling full mode. Report vulnerabilities through
-[SECURITY.md](SECURITY.md).
-
-Temporary Chat is a [ChatGPT privacy mode](https://help.openai.com/en/articles/8914046-temporary-chat-faq); prompts are still processed by OpenAI.
-
-Validation coverage: [release validation](docs/release-validation.md).
-
-This is independent software and is not affiliated with or endorsed by OpenAI. Use it only with
-your own account and in accordance with applicable [Terms of Use](https://openai.com/policies/terms-of-use/)
-and workspace policies; it does not bypass authentication or access controls.
-
-</details>
-
-<details>
-<summary><strong>Run from source & develop</strong></summary>
-
-<a id="development"></a>
-
-```bash
-git clone https://github.com/miuuyy/codex-chatgpt-web.git && \
-cd codex-chatgpt-web && \
-bun run app
-```
-
-This source path requires Bun 1.4.0. The command installs locked dependencies and opens the app.
-
-```bash
-bun run app
-bun run dev:launcher
-bun run src/cli.ts dev status
-bun run dev:chat compaction-lab "Reply with exactly: DEV READY"
+```sh
+bun install --frozen-lockfile
+cd launcher
+bun install --frozen-lockfile
+cd ..
 bun run verify
-bun run smoke:subagents
 bun run app:package
 ```
 
-`dev:launcher` uses a separate profile and account under `~/.codex-chatgpt-web-dev`. `dev:chat` exercises the real browser and compaction paths with explicit simulated tool results, without changing your normal Codex route. See the [DEV chat harness](docs/dev-chat.md) for setup and commands.
+The platform package is written to `launcher/artifacts`. On Windows, `bun run --cwd launcher package:win` builds the NSIS installer. For a release build, set `CODEX_CHATGPT_WEB_REQUIRE_CLEAN_SOURCE=1` before packaging; the build rejects an uncommitted or changing source checkout.
 
-</details>
+1. Close the existing bridge normally and install the built package. Preserve the launcher's private data and ChatGPT profile.
+2. Open the bridge, sign in to ChatGPT if needed, and run the browser smoke test.
+3. Run **Install models / Repair Codex setup**, then restart the same Codex app to reload its route and model catalog.
+4. Choose a model ending in **(Web)**. Use the launcher's **MCP** setup for local coding tools.
 
-## Star History
+Availability depends on the signed-in account. V6's **Limits** panel estimates messages submitted by this launcher; it does not report OpenAI account quota. The optional saved-chat and fresh-conversation settings retain upstream defaults.
 
-<a href="https://www.star-history.com/?repos=miuuyy%2Fcodex-chatgpt-web&type=date&legend=top-left">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&theme=dark&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-    <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=miuuyy/codex-chatgpt-web&type=date&legend=top-left&sealed_token=hBVvg_eOjfMFDrfyeo5FPQkIwcvBEmXc6F7ZoOKnfFE4KPCs67o34w4XwVuM-bHGnKR-SKCAN_TSTWrzuqSBNU-RjNZCLT4f-xNs9qcDhciQtemxHKuuFj0N5YNqZIihdaQfakrh2ANhOrvP0K2LmLXX2zbsYyVaYZknyTnlYeIS_mOGvMcO32ZmPCHK">
-  </picture>
-</a>
+The updater can notify about newer upstream versions but does not install their binaries over a fork build. Review the next official tag, reevaluate each patch, run verification, and install a new fork package manually.
 
----
+## Verification
 
-[Troubleshooting](TROUBLESHOOTING.md) · [Security](SECURITY.md) · [Contributing](CONTRIBUTING.md) · [MIT license](LICENSE) · [CI](https://github.com/miuuyy/codex-chatgpt-web/actions/workflows/ci.yml)
+`bun run verify` runs version checks, dependency audits, TypeScript checks, core and launcher tests, renderer build and relocated-runtime smoke tests. Real DOM tests use a locally installed Chrome discovered through upstream's platform defaults. Some platform-specific tests require their target OS or filesystem capability.
 
-Also by me: <img src="assets/readme/persona-voice.svg" width="20" height="20" alt=""> [ChatGPT Persona Voice](https://github.com/miuuyy/ChatGPT-Persona-Voice) — local, near-real-time custom voices for ChatGPT and Codex.
+Optional native Codex compatibility tests run against a supplied executable with temporary homes and a local mock Responses server:
+
+```sh
+bun run scripts/smoke-codex-subagents.ts /path/to/codex --v1 --child-model=chatgpt-web/gpt-6-pro
+bun run scripts/smoke-codex-subagents.ts /path/to/codex --v1 --child-model=chatgpt-web/gpt-5.6-pro
+bun run scripts/smoke-codex-subagents.ts /path/to/codex --v2
+```
+
+These tests check native catalog and tool-protocol behavior. They do not prove live ChatGPT generation or account access. Local validation results and the distinction between automated checks and live acceptance are documented in the [review](docs/v6-fork-review.md).
+
+## Documentation and support
+
+- [Architecture](docs/architecture.md) and [troubleshooting](TROUBLESHOOTING.md) retain upstream's technical documentation.
+- [Official V6 release notes](https://github.com/miuuyy/codex-chatgpt-web/releases/tag/v6.0.0) describe the upstream release.
+- [Upstream usage guide at the pinned revision](https://github.com/miuuyy/codex-chatgpt-web/blob/212ceef2acac9d6ee0f3c9037abfaf4ad8ff9827/README.md) covers the full interface. Its download links install upstream binaries.
+- Report fork-specific issues in [this repository](https://github.com/MihokTim/codex-chatgpt-web/issues), including the fork identity and source commit. Remove prompts, credentials and personal paths from reports.
+
+The translated READMEs are retained upstream documentation. This English README is authoritative for the fork's installation and behavior. Credits and the [MIT license](LICENSE) remain with the original project and its contributors; dependency notices are included in packages.

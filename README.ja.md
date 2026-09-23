@@ -1,3 +1,5 @@
+> **Fork notice:** This is retained upstream documentation. See the [English fork README](README.md) for this fork's installation, changes and support. Upstream download links install binaries without the fork patches.
+
 <p align="center">
   <img src="assets/readme/hero.svg" width="960" alt="Web モデルに切り替えても、Codex はそのまま。ChatGPT のプラン。いつものワークフロー。モデルの力を最大限に。">
 </p>

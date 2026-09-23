@@ -39,4 +39,3 @@ export async function focusChatGptEffortControl(control: Locator): Promise<boole
   }
   return false;
 }
-

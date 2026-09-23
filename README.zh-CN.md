@@ -1,3 +1,5 @@
+> **Fork notice:** This is retained upstream documentation. See the [English fork README](README.md) for this fork's installation, changes and support. Upstream download links install binaries without the fork patches.
+
 <p align="center">
   <img src="assets/readme/hero.svg" width="960" alt="切换到网页版模型，继续使用 Codex。你的 ChatGPT 订阅。你的工作流。充分发挥模型能力。">
 </p>

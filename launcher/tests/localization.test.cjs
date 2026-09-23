@@ -39,11 +39,14 @@ function linkTargets(source) {
   return [...new Set([...markdown, ...html])].sort();
 }
 
-test("localized READMEs preserve every command block and link target from English", () => {
+test("retained upstream translations agree and direct fork users to the English README", () => {
   for (const source of [chineseReadme, japaneseReadme, koreanReadme]) {
-    assert.deepEqual(commandFences(source), commandFences(englishReadme));
-    assert.deepEqual(linkTargets(source), linkTargets(englishReadme));
+    assert.deepEqual(commandFences(source), commandFences(chineseReadme));
+    assert.deepEqual(linkTargets(source), linkTargets(chineseReadme));
+    assert.match(source, /^> \*\*Fork notice:\*\*/);
+    assert.match(source, /\[English fork README\]\(README\.md\)/);
   }
+  assert.match(englishReadme, /translated READMEs are retained upstream documentation/);
 });
 
 
