@@ -254,7 +254,14 @@ function reasoningPicker(options: { max?: string; delay?: number; missing?: bool
     innerText: async () => opened ? "Thinking effort" : ["Instant", "Medium", "High", "Extra High", "Pro"][value]!,
     getAttribute: async (name: string) => name === "aria-expanded" ? String(opened) : null,
   };
-  const composer = { filter() { return this; }, last() { return this; }, isEditable: async () => true, locator: () => ({ locator: () => control }) };
+  const focusDocument: { activeElement: unknown } = { activeElement: null };
+  const composerElement = { isConnected: true, ownerDocument: focusDocument, contains: () => false };
+  const composer = {
+    filter() { return this; }, last() { return this; }, isEditable: async () => true,
+    locator: () => ({ locator: () => control }),
+    focus: async () => { focusDocument.activeElement = composerElement; },
+    evaluate: async (fn: (element: typeof composerElement) => unknown) => fn(composerElement),
+  };
   const modelRows = { count: async () => 3, first() { return this; }, waitFor: async () => {}, nth: () => { throw new Error("Model rows are not effort choices"); } };
   const menu = { filter() { return this; }, last() { return this; }, isVisible: async () => true, locator: () => modelRows };
   const page = {
@@ -270,7 +277,7 @@ function reasoningPicker(options: { max?: string; delay?: number; missing?: bool
       if (options.loseSelectionOnClose) value = 0;
     } },
   };
-  return { page, composer, keys, value: () => value };
+  return { page, composer, keys, value: () => value, composerFocused: () => focusDocument.activeElement === composerElement };
 }
 
 test.each([0, 50])("capabilities wait for the visible container and read its hidden semantic input (delay=%s)", async delay => {
@@ -306,5 +313,6 @@ test("Pro selection verifies the persisted hidden slider through its visible own
     else expect((await selection).selection.label).toBe("Pro");
     expect(fixture.keys).toEqual(["ArrowRight", "ArrowRight", "ArrowRight", "ArrowRight"]);
     expect(fixture.value()).toBe(loseSelectionOnClose ? 0 : 4);
+    expect(fixture.composerFocused()).toBeTrue();
   }
 });

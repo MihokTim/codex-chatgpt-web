@@ -2,11 +2,12 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID, type ChatGptWebCapabilities } from "../src/adapters/chatgpt-web/model";
+import { defaultChromeExecutable } from "../src/config";
 
 let browser: Browser;
 beforeAll(async () => {
   browser = await chromium.launch({
-    executablePath: process.env.LOCAL_REVIEW_CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe",
+    executablePath: process.env.LOCAL_REVIEW_CHROME || defaultChromeExecutable(),
     headless: true,
   });
 });
@@ -326,6 +327,8 @@ test.each(["family-panel", "focus-race", "replace-on-focus", "reopen", "delayed"
       });
       expect(state.familyClicks).toBe(0);
       expect(state.submits).toBe(0);
+      // One initial menu plus one persistence check; only recovery/family-panel exit needs an extra open.
+      expect(state.opens).toBe(scenario === "reopen" || scenario === "family-panel" ? 3 : 2);
       expect(state.keys.length).toBe(scenario === "reopen" ? 5 : 4);
       expect(checkpoints.filter(x => x === "effort-controls-reopening").length).toBe(scenario === "reopen" ? 1 : 0);
     } finally { await page.close(); }

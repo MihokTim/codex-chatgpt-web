@@ -1,6 +1,26 @@
 import type { Locator, Page } from "playwright-core";
-import { chatGptModelSelectionError } from "./adapter-error";
+import { ChatGptWebAdapterError, chatGptModelSelectionError } from "./adapter-error";
 import { CHATGPT_WEB_MODEL_ID, type ChatGptWebCapabilities } from "./model";
+
+export interface ChatGptModelSelectionContext {
+  stage: string;
+  family?: string;
+  effort?: string;
+}
+
+/** One policy for raw UI failures; never replace typed ownership/auth/rate-limit or abort errors. */
+export function normalizeChatGptModelSelectionError(
+  cause: unknown,
+  context: ChatGptModelSelectionContext,
+): unknown {
+  if (cause instanceof ChatGptWebAdapterError || (cause instanceof Error && cause.name === "AbortError")) return cause;
+  const failure = chatGptModelSelectionError(
+    `stage=${context.stage}; requested_family=${context.family ?? "default"}; requested_effort=${context.effort ?? "unspecified"}; ChatGPT model controls could not be verified`,
+  );
+  // Keep the original exception locally, without putting page text/Playwright logs into IPC diagnostics.
+  failure.cause = cause;
+  return failure;
+}
 
 /** Use Extra High for compaction only when refreshed account detection confirms it. */
 export function compactionBrowserEffortOverride(
@@ -15,9 +35,23 @@ export function compactionBrowserEffortOverride(
 
 /** Verify the visible model family instead of inheriting a previous browser selection. */
 export async function selectExplicitWebFamily(
+  page: Page,
+  activation: { menu: Locator; sliderContainer: Locator },
+  family: "sol" | "latest",
+): Promise<string> {
+  const context = { stage: "family-control", family };
+  try {
+    return await selectWebFamily(page, activation, family, context);
+  } catch (error) {
+    throw normalizeChatGptModelSelectionError(error, context);
+  }
+}
+
+async function selectWebFamily(
   _page: Page,
   activation: { menu: Locator; sliderContainer: Locator },
   family: "sol" | "latest",
+  context: ChatGptModelSelectionContext,
 ): Promise<string> {
   if (family !== "sol" && family !== "latest") throw new Error("Invalid explicit ChatGPT family");
   const picker = activation.menu.locator('[data-testid="composer-intelligence-picker-content"]');
@@ -32,6 +66,7 @@ export async function selectExplicitWebFamily(
     return (await choice.textContent() ?? "").trim();
   }
   if (await toggle.getAttribute("aria-expanded") !== "true") await toggle.click({ timeout: 5_000 });
+  context.stage = "family-choice";
   await choice.waitFor({ state: "visible", timeout: 5_000 });
   if (await choice.count() !== 1) throw chatGptModelSelectionError(`stage=family-choice; family=${family}; ChatGPT requested family is ambiguous`);
   const observed = (await choice.innerText()).trim();
@@ -39,10 +74,12 @@ export async function selectExplicitWebFamily(
   // focus to the menu while the next keyboard operation is being dispatched.
   if (await choice.getAttribute("aria-checked") !== "true") await choice.click({ timeout: 5_000 });
   const deadline = Date.now() + 5_000;
+  context.stage = "family-confirmation";
   while (await choice.getAttribute("aria-checked") !== "true") {
     if (Date.now() >= deadline) throw chatGptModelSelectionError(`stage=family-confirmation; family=${family}; ChatGPT did not confirm the requested model family`);
     await new Promise(resolve => setTimeout(resolve, 50));
   }
+  context.stage = "family-effort-panel";
   await activation.sliderContainer.waitFor({ state: "visible", timeout: 5_000 });
   return observed;
 }

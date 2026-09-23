@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { validateForkMetadata } from "./fork-metadata";
 
 const root = resolve(import.meta.dir, "..");
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")) as {
@@ -10,29 +11,9 @@ const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8
 };
 const packageVersion = packageJson.version;
 if (!packageVersion) throw new Error("package.json has no version");
-const forkMetadata = JSON.parse(readFileSync(resolve(root, "fork-metadata.json"), "utf8")) as {
-  schemaVersion?: number;
-  distribution?: string;
-  buildId?: string;
-  baseVersion?: string;
-  upstream?: { repository?: string; commit?: string };
-  support?: string;
-};
-if (forkMetadata.schemaVersion !== 1) throw new Error("fork-metadata.json has an unsupported schema");
-if (forkMetadata.baseVersion !== packageVersion) {
-  throw new Error(`fork-metadata.json is not synchronized to ${packageVersion}`);
-}
-const upstreamCommit = forkMetadata.upstream?.commit;
-if (forkMetadata.distribution !== "MihokTim/codex-chatgpt-web"
-  || forkMetadata.upstream?.repository !== "https://github.com/miuuyy/codex-chatgpt-web"
-  || !/^[a-f0-9]{40}$/.test(upstreamCommit ?? "")
-  || forkMetadata.support !== "https://github.com/MihokTim/codex-chatgpt-web/issues") {
-  throw new Error("fork-metadata.json does not identify the public fork and upstream source");
-}
-const upstreamShort = upstreamCommit!.slice(0, 7);
-if (forkMetadata.buildId !== `mihoktim-${packageVersion}-upstream-${upstreamShort}-20260922`) {
-  throw new Error("fork-metadata.json has an unexpected build identifier");
-}
+const forkMetadata = validateForkMetadata(
+  JSON.parse(readFileSync(resolve(root, "fork-metadata.json"), "utf8")), packageVersion,
+);
 const packageManagerMatch = /^bun@(\d+\.\d+\.\d+)$/.exec(packageJson.packageManager ?? "");
 if (!packageManagerMatch) throw new Error("package.json must pin an exact Bun packageManager version");
 const bunVersion = packageManagerMatch[1];

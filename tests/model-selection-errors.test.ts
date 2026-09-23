@@ -2,11 +2,14 @@ import { expect, test } from "bun:test";
 import { chromium, type Page } from "playwright-core";
 import { ChatGptWebAdapterError, chatGptModelSelectionError } from "../src/adapters/chatgpt-web/adapter-error";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
-import { selectExplicitWebFamily } from "../src/adapters/chatgpt-web/browser-customizations";
+import { normalizeChatGptModelSelectionError, selectExplicitWebFamily } from "../src/adapters/chatgpt-web/browser-customizations";
 import { CHATGPT_WEB_MODEL_ID, type ChatGptWebCapabilities } from "../src/adapters/chatgpt-web/model";
 import { bridgeToResponsesSSE, buildResponseJSON } from "../src/bridge";
 import type { AdapterEvent } from "../src/types";
 import { httpStatusFromTerminalError } from "../src/lib/errors";
+import { defaultChromeExecutable, defaultConfig, providerConfig } from "../src/config";
+import { chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
+import { responseRequest } from "../src/server";
 
 const capabilities: ChatGptWebCapabilities = {
   localToolsEnabled: false, solAvailable: true, extraHighAvailable: true,
@@ -25,7 +28,7 @@ test("terminal HTTP classification does not reinterpret model-selection diagnost
 test.each(["stuck-slider", "effort-unavailable", "rate-limit", "family-missing"] as const)(
   "real DOM selection failure remains distinct: %s", async scenario => {
   const browser = await chromium.launch({
-    executablePath: process.env.LOCAL_REVIEW_CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe",
+    executablePath: process.env.LOCAL_REVIEW_CHROME || defaultChromeExecutable(),
     headless: true,
   });
   try {
@@ -93,3 +96,80 @@ test.each(["stuck-slider", "effort-unavailable", "rate-limit", "family-missing"]
     await browser.close();
   }
 }, 30_000);
+
+test("missing requested radio becomes a terminal selection error and HTTP reconnect never restarts the worker", async () => {
+  const browser = await chromium.launch({
+    executablePath: process.env.LOCAL_REVIEW_CHROME || defaultChromeExecutable(), headless: true,
+  });
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<div id="menu"><div data-testid="composer-intelligence-picker-content">
+      <div data-model-selection-view><button role="menuitem" aria-expanded="true">Family</button></div>
+      <div data-testid="composer-model-picker-slider-advanced-view"></div>
+      <div id="slider">Effort</div></div></div>`);
+    const failure = await selectExplicitWebFamily(page, {
+      menu: page.locator("#menu"), sliderContainer: page.locator("#slider"),
+    }, "sol").then(() => { throw new Error("Unexpected selection success"); }, error => error);
+    expect(failure).toBeInstanceOf(ChatGptWebAdapterError);
+    expect(failure).toMatchObject({ status: 502, code: "chatgpt_model_selection_failed", retryable: false });
+    expect(failure.message).toContain("stage=family-choice");
+    expect(failure.cause.name).toBe("TimeoutError");
+    expect(failure.message).not.toContain("locator.waitFor");
+    const config = defaultConfig("browser-only");
+    config.proAvailable = true;
+    const worker = ChatGptBrowserWorker.forProvider(providerConfig(config));
+    const original = worker.run;
+    let starts = 0;
+    worker.run = async () => { starts++; throw failure; };
+    const id = crypto.randomUUID();
+    const body = { model: "chatgpt-web/light", stream: true,
+      client_metadata: { "x-codex-turn-metadata": { thread_id: id, turn_id: id } },
+      input: [{ type: "message", role: "user", content: "Synthetic model selection test",
+        internal_chat_message_metadata_passthrough: { turn_id: id } }] };
+    try {
+      const responses: Response[] = [];
+      const texts: string[] = [];
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const response = await responseRequest(new Request("http://127.0.0.1/v1/responses", {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+        }), config);
+        responses.push(response);
+        texts.push(await response.text());
+      }
+      expect(starts).toBe(1);
+      expect(texts[0]).toContain('"code":"chatgpt_model_selection_failed"');
+      expect(texts[0]).toContain("response.failed");
+      expect(responses[1]!.status).toBe(400);
+      expect(texts[1]).toContain("chatgpt_model_selection_failed");
+    } finally { worker.run = original; chatGptTurnSessions.clear(); }
+  } finally { await browser.close(); }
+}, 20_000);
+
+test("selection normalization preserves typed rate-limit, auth, ownership, and cancellation errors", () => {
+  const context = { stage: "effort-focus", family: "sol", effort: "max" };
+  for (const [status, code] of [[429, "rate_limit_exceeded"], [401, "chatgpt_session_expired"],
+    [409, "chatgpt_turn_identity_conflict"], [499, "client_cancelled"]] as const) {
+    const failure = new ChatGptWebAdapterError("typed failure", { status, code, errorType: "server_error", retryable: false });
+    expect(normalizeChatGptModelSelectionError(failure, context)).toBe(failure);
+  }
+  const abort = new DOMException("operator cancelled", "AbortError");
+  expect(normalizeChatGptModelSelectionError(abort, context)).toBe(abort);
+});
+
+test.each(["selection", "preflight"] as const)("%s covers raw initial composer failures at the operation boundary", async operation => {
+  const cause = new Error("raw browser text must stay in the local cause");
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
+    activeComposer: async () => { throw cause; },
+  }) as {
+    selectModelAndEffort(page: Page, model: string, effort: string, capabilities: ChatGptWebCapabilities): Promise<unknown>;
+    assertSelectedEffort(page: Page, mode: unknown): Promise<void>;
+  };
+  const page = {} as Page;
+  const pending = operation === "selection"
+    ? worker.selectModelAndEffort(page, CHATGPT_WEB_MODEL_ID, "max", capabilities)
+    : worker.assertSelectedEffort(page, { effort: "max", selection: { browserFamily: "sol", url: "about:blank", label: "Pro" } });
+  const failure = await pending.then(() => null, error => error);
+  expect(failure).toMatchObject({ code: "chatgpt_model_selection_failed", retryable: false, cause });
+  expect(failure.message).toContain(`stage=${operation === "selection" ? "composer" : "preflight-surface"}`);
+  expect(failure.message).not.toContain(cause.message);
+});

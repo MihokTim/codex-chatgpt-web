@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { augmentNativeModelCatalog } from "../src/model-catalog";
+import { summarizeSolToolRoundtrip } from "./sol-tool-roundtrip-result";
 
 // Explicit live acceptance: only Sol Pro, an isolated CODEX_HOME, and a synthetic file.
 const codex = resolve(process.argv[2] ?? "");
@@ -53,12 +54,8 @@ try {
   }
   const [exitCode, stdout, stderr] = await Promise.all([child.exited, record(child.stdout, join(root, "stdout.jsonl")), record(child.stderr, join(root, "stderr.log"))]);
   const events = stdout.split("\n").flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
-  const answers = events.filter(e => e.type === "item.completed" && e.item?.type === "agent_message").map(e => e.item.text);
-  const commands = events.filter(e => e.type === "item.completed" && e.item?.type === "command_execution");
-  const result = { exitCode, durationMs: Date.now() - started, sandbox, discoverFirst, answers, commands,
-    errors: events.filter(e => e.type === "error" || e.type === "turn.failed"),
-    success: exitCode === 0 && answers.at(-1)?.trim() === token && commands.some(e => e.item.aggregated_output?.includes(token)) && events.some(e => e.type === "turn.completed"),
-  };
+  const result = { exitCode, durationMs: Date.now() - started, sandbox, discoverFirst,
+    ...summarizeSolToolRoundtrip(exitCode, events, token) };
   writeFileSync(join(root, "result.json"), JSON.stringify(result, null, 2)); console.log(JSON.stringify(result));
   if (!result.success) process.exitCode = 1;
 } finally { clearInterval(progress); }

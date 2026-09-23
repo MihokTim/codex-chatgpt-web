@@ -6,7 +6,8 @@ import { join } from "node:path";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptFailedThinkingError, chatGptStoppedThinkingError, chatGptTurnSupersededError } from "../src/adapters/chatgpt-web/adapter-error";
 import { cancelStructuredCompactionNativeTurn, runStructuredCompactionOnce } from "../src/adapters/chatgpt-web/compaction-handoff";
-import { createChatGptWebAdapter, chatGptWebExecutionNamespace } from "../src/adapters/chatgpt-web/index";
+import { createChatGptWebAdapter, chatGptWebExecutionNamespace, chatGptWebTraceId } from "../src/adapters/chatgpt-web/index";
+import { failedThinkingRecoveryPolicy } from "../src/adapters/chatgpt-web/failed-thinking-recovery";
 import { chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import { callTurnBroker, TurnBroker, type BrokerToolResult } from "../src/adapters/chatgpt-web/turn-broker";
 import { defaultBrokerEndpoint } from "../src/config";
@@ -223,3 +224,32 @@ test("HTTP disconnect does not automatically start a recovery behind the detache
     expect(s.turns).toHaveLength(2);
   } finally { await s.close(); }
 });
+
+for (const reconnectDuringCleanup of [false, true]) {
+  test(`HTTP disconnect during recovery cleanup preserves the shared continuation (concurrent=${reconnectDuringCleanup})`, async () => {
+    const s = await scenario();
+    const releasing = deferred(); const released = deferred();
+    const disconnect = new AbortController();
+    s.session.runtime.releaseRetainedConversation = async () => { releasing.resolve(); await released.promise; };
+    try {
+      const observed = s.run(s.next, disconnect.signal).then(() => undefined, error => error);
+      await s.oldResult.promise; s.allowFailure.resolve(); await releasing.promise;
+      const reconnect = reconnectDuringCleanup ? s.run(s.next) : undefined;
+      disconnect.abort();
+      expect(await observed).toMatchObject({ name: "AbortError" });
+      expect(s.turns).toHaveLength(1);
+      released.resolve();
+      if (!reconnect) {
+        const key = `${chatGptWebExecutionNamespace(s.provider)}:${chatGptWebTraceId(s.provider, s.next)}`;
+        await failedThinkingRecoveryPolicy.entry(key)!.ready;
+        // Finishing cleanup alone must not launch a model with no observer attached.
+        expect(s.turns).toHaveLength(1);
+      }
+      const events = await (reconnect ?? s.run(s.next));
+      expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+      expect(toolCalls(events)).toHaveLength(0);
+      expect(s.turns).toHaveLength(2);
+      expect(s.prompts[1]).toContain("saved change once");
+    } finally { released.resolve(); await s.close(); }
+  });
+}

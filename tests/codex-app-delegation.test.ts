@@ -57,6 +57,90 @@ function fixture(name = "create_thread") {
   return { home, cwd, turn, thread, delivery, environment, records, rollout, save, body, context, normalize, metadata };
 }
 
+function refreshFixture(name = "send_message_to_thread") {
+  const f = fixture(name);
+  f.metadata.workspaces = {};
+  const refresh = {
+    type: "message", role: "user", id: "msg_midnight_refresh",
+    internal_chat_message_metadata_passthrough: {
+      turn_id: f.turn, content_item_kinds: ["environments.environment_context"],
+    },
+    content: [{ type: "input_text", text: f.environment.content[1]!.text
+      .replace(/<cwd>[^<]+<\/cwd>/, "")
+      .replace("<environment_context>", "<environment_context><current_date>2026-09-23</current_date><timezone>Asia/Tokyo</timezone>") }],
+  };
+  f.body.input.push({ type: "message", role: "assistant", content: "Working." }, refresh,
+    { type: "message", role: "assistant", content: "Continuing." },
+    { type: "message", role: "user", id: "msg_next", content: "Continue the review",
+      internal_chat_message_metadata_passthrough: { turn_id: f.turn } });
+  for (const item of f.body.input.slice(2)) f.records.push({ type: "response_item", payload: item });
+  f.save();
+  return { ...f, refresh };
+}
+
+test.each(["create_thread", "send_message_to_thread"])("%s survives cwd-less refresh and same-turn steering with empty Git metadata", name => {
+  const f = refreshFixture(name);
+  const before = readFileSync(f.rollout, "utf8");
+  const parsed = f.normalize();
+  const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, f.home);
+  expect(store.resolve(parsed).cwd).toBe(f.cwd);
+  expect(store.resolve(parsed).writableRoots).toEqual([f.cwd]);
+  expect(JSON.stringify(extractChatGptTurnUserRevision(parsed))).toContain("Continue the review");
+  expect(parsed.context.messages.some(message => message.role === "toolResult")).toBe(false);
+  expect(chatGptTurnExecutionKey(f.normalize())).toBe(chatGptTurnExecutionKey(parsed));
+  expect(readFileSync(f.rollout, "utf8")).toBe(before);
+  expect(f.body.input[1].type).toBe("function_call_output");
+});
+
+test("refresh cannot enable network access beyond the recipient's read-only rollout", () => {
+  const f = refreshFixture();
+  f.metadata.sandbox_mode = "read-only";
+  const context: Record<string, unknown> = f.context.payload;
+  context.sandbox_policy = { type: "read-only", network_access: false };
+  context.permission_profile = { type: "managed", network: "restricted", file_system: {
+    type: "restricted", entries: [{ path: { type: "special", value: { kind: "root" } }, access: "read" }],
+  } };
+  const readOnly = (text: string) => text.replace(
+    '<permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile>',
+    '<sandbox_mode>read-only</sandbox_mode><network_access>restricted</network_access>');
+  f.environment.content[1]!.text = readOnly(f.environment.content[1]!.text);
+  f.refresh.content[0]!.text = readOnly(f.refresh.content[0]!.text);
+  f.save();
+  const store = new ChatGptThreadEnvironmentStore(undefined, Date.now, f.home);
+  const environment = store.resolve(f.normalize());
+  expect(environment.writableRoots).toEqual([]);
+  expect(environment.sandboxPolicy).toEqual({ type: "readOnly", networkAccess: false });
+  f.body.input = structuredClone(f.body.input);
+  f.body.input[3].content[0].text = f.body.input[3].content[0].text.replace(
+    '<network_access>restricted</network_access>', '<network_access>enabled</network_access>');
+  expect(f.normalize).toThrow("environment conflicts");
+});
+
+for (const mutation of ["roots", "permissions", "missing-id", "untagged", "human-kind", "malformed-cwd",
+  "delivery-output", "delivery-owner", "delivery-absent", "destination", "latest-turn", "aborted", "missing-rollout"]) {
+  test(`refresh with a native delivery still rejects invalid authority: ${mutation}`, () => {
+    const f = refreshFixture();
+    f.body.input = structuredClone(f.body.input);
+    const refresh = f.body.input[3];
+    const delivery = f.body.input[1];
+    if (mutation === "roots") refresh.content[0].text = refresh.content[0].text.replaceAll(f.cwd, f.home);
+    if (mutation === "permissions") refresh.content[0].text = refresh.content[0].text
+      .replace('<permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile>', '<sandbox_mode>read-only</sandbox_mode>');
+    if (mutation === "missing-id") delete refresh.id;
+    if (mutation === "untagged") delete refresh.internal_chat_message_metadata_passthrough;
+    if (mutation === "human-kind") refresh.internal_chat_message_metadata_passthrough.content_item_kinds = ["user"];
+    if (mutation === "malformed-cwd") refresh.content[0].text = refresh.content[0].text.replace("<environment_context>", "<environment_context><cwd></cwd>");
+    if (mutation === "delivery-output") delivery.output = delivery.output.replace("Split", "Erase");
+    if (mutation === "delivery-owner") delivery.internal_chat_message_metadata_passthrough.turn_id = randomUUID();
+    if (mutation === "delivery-absent") { f.records.splice(3, 1); f.save(); }
+    if (mutation === "destination") f.metadata.thread_id = randomUUID();
+    if (mutation === "latest-turn") { f.context.payload.turn_id = randomUUID(); f.save(); }
+    if (mutation === "aborted") { f.records.push({ type: "event_msg", payload: { type: "turn_aborted", turn_id: f.turn } }); f.save(); }
+    if (mutation === "missing-rollout") rmSync(f.rollout);
+    expect(f.normalize).toThrow();
+  });
+}
+
 for (const name of ["create_thread", "send_message_to_thread"]) test(`${name} becomes an instruction with the recipient's environment and preserves the native history`, () => {
   const f = fixture(name);
   const before = readFileSync(f.rollout, "utf8");
@@ -150,8 +234,8 @@ test("a valid delivery cannot import the sender's cwd or expand recipient permis
   expect(f.normalize).toThrow("environment conflicts");
 });
 
-test("HTTP handler delivers authenticated instructions to the adapter and rejects modified envelopes before it", async () => {
-  const f = fixture();
+test.each([false, true])("HTTP handler authenticates delivery before the adapter (cwd-less refresh=%s)", async refresh => {
+  const f = refresh ? refreshFixture() : fixture();
   const originalHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = f.home;
   let calls = 0;
@@ -162,14 +246,14 @@ test("HTTP handler delivers authenticated instructions to the adapter and reject
     }), config, () => ({ async runTurn(parsed: any, _info: any, emit: any) {
       calls++;
       expect(new ChatGptThreadEnvironmentStore(undefined, Date.now, f.home).resolve(parsed).cwd).toBe(f.cwd);
-      expect(JSON.stringify(extractChatGptTurnUserRevision(parsed))).toContain("Split the integration commit");
+      expect(JSON.stringify(extractChatGptTurnUserRevision(parsed))).toContain(refresh ? "Continue the review" : "Split the integration commit");
       emit({ type: "text_delta", text: "offline success" }); emit({ type: "done" });
     } }) as any);
     const response = await send();
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("offline success");
     f.body.input = structuredClone(f.body.input);
-    f.body.input.at(-1).output = f.delivery.output.replace("Split", "Erase");
+    f.body.input.find((item: any) => item.id === f.delivery.id).output = f.delivery.output.replace("Split", "Erase");
     const invalid = await send();
     expect(invalid.status).toBe(400);
     expect(await invalid.text()).toContain("conflicts");

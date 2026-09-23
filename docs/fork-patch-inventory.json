@@ -1,13 +1,12 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "distribution": "MihokTim/codex-chatgpt-web",
-  "buildId": "mihoktim-5.0.8-upstream-eaf4f09-20260922",
-  "upstreamBase": "eaf4f09ae92d4dc4429fa597b0861663138f08f8",
+  "metadataFile": "../fork-metadata.json",
   "features": [
     {
       "id": "sol-model-routing",
       "status": "retained",
-      "tests": ["tests/chatgpt-web-models.test.ts", "tests/local-customizations.test.ts", "tests/model-catalog.test.ts"]
+      "tests": ["tests/chatgpt-web-models.test.ts", "tests/browser-model-family.test.ts", "tests/model-catalog.test.ts"]
     },
     {
       "id": "model-control-recovery",
@@ -42,12 +41,12 @@
     {
       "id": "bounded-http-and-incident-diagnostics",
       "status": "retained",
-      "tests": ["tests/http-turn-diagnostics.test.ts", "tests/incident-collector.test.ts"]
+      "tests": ["tests/http-turn-diagnostics.test.ts", "tests/incident-collector.test.ts", "tests/incident-recorder-installation.test.ts"]
     },
     {
       "id": "optional-desktop-history-guard",
       "status": "retained-external-helper",
-      "tests": ["tests/bounded-thread-history.test.ts"]
+      "tests": ["tests/bounded-thread-history.test.ts", "tests/history-guard-installation.test.ts"]
     },
     {
       "id": "sol-subagent-catalog",
@@ -63,6 +62,47 @@
       "id": "multipart-helper-capability-negotiation",
       "status": "composed-with-upstream",
       "tests": ["tests/launcher-helper-client.test.ts"]
+    },
+    {
+      "id": "compaction-extra-high-override",
+      "status": "retained",
+      "tests": ["tests/chatgpt-web-models.test.ts", "tests/retained-compaction.test.ts"]
+    },
+    {
+      "id": "authenticated-app-delivery-environment",
+      "status": "retained",
+      "tests": ["tests/codex-app-delegation.test.ts", "tests/environment.test.ts", "tests/subagent-environment-history.test.ts"]
+    },
+    {
+      "id": "compaction-tool-boundary-and-retained-failure-recovery",
+      "status": "retained",
+      "tests": ["tests/compaction-source-boundary.test.ts", "tests/retained-compaction.test.ts"]
+    },
+    {
+      "id": "shared-owned-page-reconnect-budget",
+      "status": "retained",
+      "tests": ["tests/browser-observation-recovery.test.ts", "tests/browser-response-ownership.test.ts"]
+    },
+    {
+      "id": "runtime-input-provenance",
+      "status": "retained",
+      "tests": ["tests/build-provenance.test.ts", "tests/fork-metadata.test.ts"]
+    },
+    {
+      "id": "encoded-and-decoded-body-bounds",
+      "status": "retained",
+      "tests": ["tests/http-body.test.ts"]
+    },
+    {
+      "id": "recovery-capacity-visibility",
+      "status": "retained",
+      "tests": ["tests/failed-thinking-recovery.test.ts", "tests/server-lifecycle.test.ts"]
+    },
+    {
+      "id": "sol-tool-roundtrip-diagnosis",
+      "status": "retained",
+      "tests": ["tests/sol-tool-roundtrip-result.test.ts"],
+      "liveProbe": "scripts/smoke-sol-tool-roundtrip.ts"
     }
   ],
   "upstreamReplacements": [

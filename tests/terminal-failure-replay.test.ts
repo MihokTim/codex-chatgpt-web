@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { TerminalFailureReplays } from "../src/responses/terminal-failure-replay";
 import { defaultConfig, providerConfig } from "../src/config";
 import { responseRequest } from "../src/server";
-import { ChatGptBrowserWorker, chatGptReboundTurnIdentity, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptBrowserWorker, chatGptAssistantIdentityAfterUser, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptWebAdapterError, chatGptModelSelectionError } from "../src/adapters/chatgpt-web/adapter-error";
 import { chatGptTurnSessions } from "../src/adapters/chatgpt-web/turn-execution";
 import type { AdapterEvent } from "../src/types";
@@ -56,7 +56,11 @@ test.each(["submitted", "selection", "identity"])("production adapter stops retr
     if (kind === "selection") throw chatGptModelSelectionError("stage=effort-step; requested_family=sol");
     await turn.onSendActivated?.();
     turn.onSubmitted?.();
-    if (kind === "identity") chatGptReboundTurnIdentity(["old-answer"], "bound-answer", ["remounted-answer", "replacement-answer"]);
+    if (kind === "identity") chatGptAssistantIdentityAfterUser({
+      turnIdentities: ["submitted-user", "remounted-answer", "replacement-answer"],
+      userIdentities: ["submitted-user"],
+      responseIdentities: ["remounted-answer", "replacement-answer"],
+    }, "submitted-user");
     throw new Error("ChatGPT exposed 2 new conversation turns for one submitted message");
   };
   const input = body(`terminal_${kind}`, `turn_${kind}`);

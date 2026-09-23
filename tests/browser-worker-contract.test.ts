@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createContext, runInContext } from "node:vm";
 import type { Page } from "playwright-core";
-import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptReboundTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
+import { CHATGPT_BROWSER_OBSERVATION_PROBE_TIMEOUT_MS, CHATGPT_COMPLETION_SETTLE_MS, CHATGPT_EXTERNAL_PROGRESS_CLOCK_SKEW_MS, CHATGPT_EXTERNAL_PROGRESS_STALL_CEILING_MS, ChatGptCompletionTracker, chatGptExternalProgressSuppressesDomHealth, CHATGPT_RESPONSE_DOM_GRACE_MS, MAX_CHATGPT_INTERNAL_OBSERVATION_FAULTS, CHATGPT_COMPOSER_DOCUMENT_END_KEY, CHATGPT_COMPOSER_SELECT_ALL_KEY, ChatGptBrowserObservationTimeoutError, ChatGptBrowserWorker, ChatGptSubmissionRejectionObserver, ChatGptPromptAttachmentIntegrityError, ChatGptTurnDomHealthTracker, ChatGptVisibleTraceTracker, MAX_CHATGPT_BROWSER_PAGE_REBINDS, MAX_CHATGPT_BROWSER_TABS, MAX_CHATGPT_CONNECTOR_TRIGGER_ATTEMPTS, assertChatGptWebInputWithinLimits, assertChatGptWebMultipartInputWithinLimits, browserDiagnosticCheckpoint, chatGptConnectorAttachmentMode, chatGptNewTurnIdentity, chatGptSubmissionEvidence, connectAfterClosingBrowserConnection, dismissChatGptTemporaryChatOnboarding, isChatGptTraceControl, redactChatGptUiDiagnostic, resolveBrowserConfig, resolveChatGptToolConfirmation, resolveChatGptWebMultipartStagingMode, sanitizeChatGptBrowserDiagnosticState, setChatGptThinkMode, stripChatGptTraceControlSuffix, throwIfChatGptRateLimitDialog, throwIfChatGptSessionFailureAlert, throwIfChatGptTerminalErrorAlert, withChatGptBrowserObservationTimeout, CHATGPT_MULTIPART_RESPONSE_DOM_GRACE_MS, browserStageTimeouts, ChatGptSuspensionClock, remainingStageBudgetMs } from "../src/adapters/chatgpt-web/browser-worker";
 import { ensureChatGptPersonalizedConnectorAccess, chatGptUnavailableProDetail } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptFailedThinkingError, chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
@@ -152,36 +152,17 @@ test("submission DOM tracks logical identities and retains virtualized history i
   await expect(worker.submissionDomState(page, baseline.domCache)).rejects.toThrow("duplicate");
 });
 
-test("assistant tracking rebinds only one proven replacement after React detaches its node", () => {
-  expect(chatGptReboundTurnIdentity(
-    ["conversation-turn-1"],
-    "conversation-turn-2",
-    ["conversation-turn-1", "conversation-turn-2"],
-  )).toBe("conversation-turn-2");
-  expect(chatGptReboundTurnIdentity(
-    ["conversation-turn-1"],
-    "conversation-turn-2",
-    ["conversation-turn-1", "conversation-turn-3"],
-  )).toBe("conversation-turn-3");
-  expect(() => chatGptReboundTurnIdentity(
-    ["conversation-turn-1"],
-    "conversation-turn-2",
-    ["conversation-turn-1", "conversation-turn-3", "conversation-turn-4"],
-  )).toThrow("2 new conversation turns");
-});
-
-test("ambiguous response identities preserve their phase across IPC without exposing raw IDs", () => {
+test("ambiguous new turn identities preserve safe diagnostics across IPC without exposing raw IDs", () => {
   let failure: unknown;
   try {
-    chatGptReboundTurnIdentity(["private-old-user", "private-preparation-answer"],
-      "private-bound-answer", ["private-remounted-preparation", "private-replacement-answer"]);
+    chatGptNewTurnIdentity(["private-old-user", "private-preparation-answer"],
+      ["private-new-user", "private-foreign-user"]);
   } catch (error) { failure = error; }
   expect(failure).toMatchObject({ code: "chatgpt_turn_identity_conflict", status: 502, retryable: false });
   const message = (failure as Error).message;
-  expect(message).toContain('"stage":"assistant_rebind"');
+  expect(message).toContain('"stage":"new_turn"');
   expect(message).toContain('"initialCount":2');
   expect(message).toContain('"currentCount":2');
-  expect(message).toContain('"bound":');
   expect(message).not.toContain("private-");
   expect(message.length).toBeLessThan(1_024);
 });
@@ -594,8 +575,6 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     ): Promise<T>;
     activeComposer(page: Page): Promise<unknown>;
     submissionDomState(page: Page, cache: Record<string, unknown>): Promise<{
-      userTurnCount: number;
-      assistantTurnCount: number;
       visibleStopButtonCount: number;
       turnIdentities: string[];
       userIdentities: string[];
@@ -647,8 +626,6 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     domObservations += 1;
     if (domObservations === 1) throw new ChatGptBrowserObservationTimeoutError(5_000);
     return {
-      userTurnCount: 1,
-      assistantTurnCount: 1,
       visibleStopButtonCount: 1,
       turnIdentities: ["conversation-turn-user", "conversation-turn-assistant"],
       userIdentities: ["conversation-turn-user"],
@@ -781,7 +758,7 @@ test("submission observation recovery resumes with rebound locators and is stric
     chatgptWeb: { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true },
   };
   type Evidence = "user_turn" | "assistant_turn" | "generation_running" | "mcp_tool_call";
-  type Recovery = { page: Page; baseline: unknown };
+  type Recovery = { page: Page; baseline: unknown; lastAttempt: number };
   const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
     waitForSubmissionAcceptedWithRecovery(
       page: Page,
@@ -820,7 +797,7 @@ test("submission observation recovery resumes with rebound locators and is stric
     undefined,
     async (attempt, _cause, baseline) => {
       recoveries.push({ attempt, baseline });
-      return { page: reboundPage, baseline: reboundBaseline };
+      return { page: reboundPage, baseline: reboundBaseline, lastAttempt: attempt };
     },
   );
   expect(evidence).toBe("assistant_turn");
@@ -841,9 +818,9 @@ test("submission observation recovery resumes with rebound locators and is stric
     undefined,
     0,
     undefined,
-    async () => {
+    async (attempt) => {
       boundedRecoveries += 1;
-      return { page: reboundPage, baseline: reboundBaseline };
+      return { page: reboundPage, baseline: reboundBaseline, lastAttempt: attempt };
     },
   )).rejects.toThrow("submission DOM remained unresponsive after 2 same-page rebinds");
   expect(boundedRecoveries).toBe(2);
@@ -859,7 +836,7 @@ test("an accepted turn rebinds the missing assistant observation and acknowledge
     initialTurnIdentities: string[];
     domCache: Record<string, unknown>;
   };
-  type Recovery = { page: Page; baseline: Baseline };
+  type Recovery = { page: Page; baseline: Baseline; lastAttempt: number };
   const worker = ChatGptBrowserWorker.forProvider(provider) as unknown as {
     waitForNewAssistantTurn(
       page: Page,
@@ -929,7 +906,7 @@ test("an accepted turn rebinds the missing assistant observation and acknowledge
       expect(cause).toBeInstanceOf(ChatGptBrowserObservationTimeoutError);
       expect(baseline).toBe(firstBaseline);
       toolBatchRevision = progress.recordToolBatch(1);
-      return { page: reboundPage, baseline: reboundBaseline };
+      return { page: reboundPage, baseline: reboundBaseline, lastAttempt: attempt };
     },
   );
 
@@ -2358,9 +2335,9 @@ test("Luna-only browser turns verify selector absence instead of opening an effo
     ): Promise<{ displayLabel: string; uiEffortIndex: number | null }>;
   }).selectModelAndEffort;
 
-  const mode = await selectModelAndEffort.call({
+  const mode = await selectModelAndEffort.call(Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     activeComposer: async () => composer,
-  }, {
+  }), {
     locator: () => hiddenDialog,
   }, "gpt-5.6-luna", "low", {
     localToolsEnabled: true,
@@ -2833,9 +2810,9 @@ test("effort selection stops as soon as ChatGPT reports an expired session", asy
     ): Promise<unknown>;
   }).selectModelAndEffort;
 
-  const selection = selectModelAndEffort.call({
+  const selection = selectModelAndEffort.call(Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     activeComposer: async () => composer,
-  }, {
+  }), {
     locator: (selector: string) => selector.includes('[role="alert"]') ? sessionAlert : hiddenDialog,
   }, "gpt-5.6-sol", "high", {
     localToolsEnabled: true,
@@ -2899,9 +2876,9 @@ test("effort menu waiting stops when ChatGPT reports an expired session", async 
     ): Promise<unknown>;
   }).selectModelAndEffort;
 
-  const selection = selectModelAndEffort.call({
+  const selection = selectModelAndEffort.call(Object.assign(Object.create(ChatGptBrowserWorker.prototype), {
     activeComposer: async () => composer,
-  }, {
+  }), {
     locator: (selector: string) => {
       if (selector.includes('[role="alert"]')) return sessionAlert;
       if (selector.includes('[role="menu"]') || selector.includes("composer-intelligence-picker-content")) return effortMenu;

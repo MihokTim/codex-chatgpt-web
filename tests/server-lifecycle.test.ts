@@ -1135,6 +1135,8 @@ test("health proves that Codex received a successful augmented model catalog", a
     expect(await (await fetch(`${endpoint}/healthz`)).json()).toMatchObject({
       successful_model_catalog_requests: 0,
       last_successful_model_catalog_request_at: null,
+      recovery_fences: { used: expect.any(Number), limit: 512, remaining: expect.any(Number) },
+      compaction_failure_fences: { used: expect.any(Number), limit: 512, remaining: expect.any(Number) },
     });
 
     const models = await fetch(`${endpoint}/v1/models`, {

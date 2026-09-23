@@ -7,7 +7,9 @@ import {
   cancelAllStructuredCompactions,
   cancelStructuredCompactionNativeTurn,
   cancelStructuredCompactionTrace,
+  structuredCompactionFailureCapacity,
 } from "./adapters/chatgpt-web/compaction-handoff";
+import { failedThinkingRecoveryPolicy } from "./adapters/chatgpt-web/failed-thinking-recovery";
 import { ChatGptWebAdapterError, chatGptBrowserTabClosedError } from "./adapters/chatgpt-web/adapter-error";
 import {
   CHATGPT_TURN_REVISION_CONFLICT_MESSAGE,
@@ -891,6 +893,8 @@ export function startServer(
           last_successful_model_catalog_request_at: lastSuccessfulModelCatalogRequestAt,
           model_catalog_requests: modelCatalogRequests,
           last_model_catalog_result: lastModelCatalogResult,
+          recovery_fences: failedThinkingRecoveryPolicy.capacity(),
+          compaction_failure_fences: structuredCompactionFailureCapacity(),
           ...activity(),
         });
       }

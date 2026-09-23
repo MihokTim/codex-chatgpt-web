@@ -3,11 +3,14 @@ import { chromium, type Browser, type Locator, type Page } from "playwright-core
 import { ChatGptBrowserWorker, ChatGptCompletionTracker } from "../src/adapters/chatgpt-web/browser-worker";
 import { defaultChromeExecutable } from "../src/config";
 
-type Baseline = { initialTurnIdentities: string[]; domCache: Record<string, unknown> };
+type Baseline = { initialTurnIdentities: string[]; submittedUserIdentity?: string; domCache: Record<string, unknown> };
 type Binding = { identity: string; locator: Locator; userIdentity?: string; acceptedTurnIdentities: string[] };
 type Observer = {
   captureSubmissionBaseline(page: Page): Promise<Baseline>;
-  waitForNewAssistantTurn(page: Page, baseline: Baseline, deadline: number): Promise<Binding>;
+  currentSubmissionEvidence(page: Page, baseline: Baseline): Promise<string | undefined>;
+  currentSubmissionAnswerText(page: Page, baseline: Baseline): Promise<string>;
+  waitForNewAssistantTurn(page: Page, baseline: Baseline, deadline: number,
+    signal?: AbortSignal, progress?: undefined, graceMs?: number): Promise<Binding>;
   reconcileAssistantTurnBinding(page: Page, baseline: Baseline, binding: Binding): Promise<Binding>;
   responseDomSnapshot(locator: Locator, cache: unknown): Promise<{
     responsePresent: boolean; visibleText: string; fullHtml: string; completionActionVisible: boolean;
@@ -51,11 +54,11 @@ test("a changed historical ACK cannot be mistaken for a second answer to the sub
   } finally { await page.close(); }
 });
 
-test("a historical assistant remount is not bound before the submitted user appears", async () => {
+test.each([true, false])("a historical assistant remount is not bound before the submitted user appears (initially mounted=%s)", async mounted => {
   const page = await browser.newPage();
   try {
     const worker = observer();
-    await render(page, initial);
+    await render(page, section("prep-user", "user", "Preparation") + section("prep-answer", "assistant", "ACK", mounted));
     const baseline = await worker.captureSubmissionBaseline(page);
     const bindingPromise = worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2_000);
     await render(
@@ -68,10 +71,40 @@ test("a historical assistant remount is not bound before the submitted user appe
       new Promise<"pending">(resolve => setTimeout(() => resolve("pending"), 100)),
     ]);
     expect(early).toBe("pending");
+    expect(await worker.currentSubmissionAnswerText(page, baseline)).toBe("");
     await render(page, current("prep-answer-remounted", "answer-final"));
     const binding = await bindingPromise;
     expect(binding.identity).toBe("answer-final");
     expect(binding.userIdentity).toBe("submitted-user");
+  } finally { await page.close(); }
+});
+
+test("submission acceptance retains the user anchor before its section is virtualized", async () => {
+  const page = await browser.newPage();
+  try {
+    const worker = observer();
+    await render(page, initial);
+    const baseline = await worker.captureSubmissionBaseline(page);
+    await render(page, initial + section("submitted-user", "user", "Actual request"));
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
+    expect(baseline.submittedUserIdentity).toBe("submitted-user");
+    await render(page, current("prep-answer-remounted", "answer-final", false));
+    const binding = await worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2_000);
+    expect(binding).toMatchObject({ identity: "answer-final", userIdentity: "submitted-user" });
+    expect(await worker.currentSubmissionAnswerText(page, baseline)).toBe("Actual final answer");
+  } finally { await page.close(); }
+});
+
+test("an unproven user container cannot give a remounted historical answer ownership", async () => {
+  const page = await browser.newPage();
+  try {
+    const worker = observer();
+    await render(page, section("prep-user", "user", "Preparation") + section("prep-answer", "assistant", "ACK", false));
+    const baseline = await worker.captureSubmissionBaseline(page);
+    await render(page, current("prep-answer-remounted", "answer-final", false));
+    await expect(worker.waitForNewAssistantTurn(page, baseline, Date.now() + 5_000, undefined, undefined, 0))
+      .rejects.toThrow("did not expose its assistant turn");
+    expect(await worker.currentSubmissionAnswerText(page, baseline)).toBe("");
   } finally { await page.close(); }
 });
 

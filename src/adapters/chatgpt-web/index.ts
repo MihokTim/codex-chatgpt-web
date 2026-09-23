@@ -953,7 +953,7 @@ export function createChatGptWebAdapter(
                     operationSignal.throwIfAborted();
                     console.warn(`[chatgpt-web] retained compaction fallback=${reason}`);
                     // The fallback is a new bounded phase. Each exact multipart acknowledgement
-                    // and the final accepted compact prompt re-arms the five-minute liveness budget;
+                    // and the final accepted compact prompt re-arms the configured liveness budget;
                     // transport time cannot consume the model-generation window.
                     armHandoffDeadline();
                     const fallbackRuntime = startRuntime(
@@ -1460,7 +1460,10 @@ export function createChatGptWebAdapter(
               await session.runtime.retireCapability?.();
               await session.runtime.releaseRetainedConversation?.();
               const interrupted = recoveryInterruption();
-              if (incoming.abortSignal?.aborted || session.wasCancelled() || session.supersededError
+              // Cleanup belongs to the logical task, not the HTTP observer that reserved it.
+              // withAbort below detaches a disconnected observer without poisoning the shared
+              // recovery fence. Only a live observer can subsequently start the replacement.
+              if (session.wasCancelled() || session.supersededError
                 || interrupted || hasActiveStructuredCompaction(ownerKey)
                 || chatGptTurnSessions.find(executionKey) !== session) {
                 throw interrupted ?? session.supersededError ?? new ChatGptWebAdapterError(

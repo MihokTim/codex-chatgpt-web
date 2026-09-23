@@ -126,6 +126,14 @@ test("observed Japanese failed-thinking status terminates the bound response wit
   }
 });
 
+test("Japanese stopped-thinking remains distinct from failed-thinking in the production DOM snapshot", async () => {
+  const response = await snapshot('<section id="turn"><div data-message-author-role="assistant"><div data-streaming-response-status><button>思考を停止しました</button></div></div></section>');
+  expect(response.stoppedThinkingVisible).toBeTrue();
+  expect(response.failedThinkingVisible).toBeFalse();
+  expect(response.visibleText).toBe("");
+  expect(response.completionActionVisible).toBeFalse();
+});
+
 test("failed-thinking words in answers, quoted reasoning, hidden UI and another turn are not terminal", async () => {
   const label = "思考に失敗しました";
   for (const content of [
