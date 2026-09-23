@@ -6,6 +6,7 @@ import {
   resolveChatGptWebContextLimits,
   type ChatGptWebModelRoute,
 } from "./chatgpt-web-models";
+import { prioritizeCompatibilityV1Models } from "./subagent-model-roster";
 
 type JsonObject = Record<string, unknown>;
 
@@ -119,9 +120,8 @@ export function buildChatGptWebModel(
     // These slugs are implemented by this local Responses-compatible bridge. Marking them false
     // makes Codex drop them from spawn_agent whenever openai_base_url points at the bridge.
     supported_in_api: true,
-    // Follow the official template's ordering without outranking it. Codex advertises at most five
-    // spawn-agent overrides; forcing every routed row to priority 0 displaced gpt-5.6-sol from that
-    // registry and made an explicit native child model fail validation.
+    // Start from the official template's ordering. Once the full catalog is assembled,
+    // Compatibility V1 can reserve its five delegation slots for the preferred roster.
     ...(priority === undefined ? {} : { priority }),
     // In native mode the routed row follows the official template's protocol surface. Web-origin
     // V2 collaboration calls carry the protocol's explicit plaintext marker; Compatibility V1
@@ -192,8 +192,12 @@ export function augmentNativeModelCatalog(
   }
   const webModels = availableChatGptWebModelRoutes(config)
     .map(route => buildChatGptWebModel(template, route, config));
+  const models = prioritizeCompatibilityV1Models(
+    [...nativeModels, ...webModels],
+    config.subagentProtocol,
+  );
   return {
     ...structuredClone(catalog),
-    models: [...nativeModels, ...webModels],
+    models,
   };
 }
