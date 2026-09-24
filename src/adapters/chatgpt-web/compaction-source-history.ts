@@ -24,7 +24,7 @@ export function hasCompleteCompactionHistory(parsed: CodexParsedRequest, source:
       || !isDeepStrictEqual(call.arguments, pending.freeform ? { input: pending.input ?? "" } : pending.arguments ?? {})) return false;
     proofs.set(pending.callId, nativeToolResultProof(result));
   }
-  return hasCompleteNativeToolHistory(parsed, proofs);
+  return hasCompleteNativeToolHistory(parsed, proofs, source.issuedToolCallProofs());
 }
 
 /**

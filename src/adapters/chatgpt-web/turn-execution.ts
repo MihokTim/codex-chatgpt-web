@@ -9,6 +9,7 @@ import {
   extractChatGptTurnUserRevision,
 } from "./environment";
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
+import { issuedToolCallProof } from "./native-tool-proof";
 import type { ChatGptExternalTurnProgress } from "./turn-progress";
 
 function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -277,6 +278,7 @@ export class ChatGptTurnSession {
   private readonly outstandingById = new Map<string, BrokerToolRequest>();
   private readonly deliveredResultIds = new Set<string>();
   private readonly deliveredResultProofs = new Map<string, string>();
+  private readonly issuedCallProofs = new Map<string, string>();
   private cancellationRequested = false;
   private outstandingReasoning: string[] = [];
   private finalReasoning: string[] = [];
@@ -378,6 +380,7 @@ export class ChatGptTurnSession {
         throw new Error(`duplicate ChatGPT bridge tool call id: ${request.callId}`);
       }
       this.outstandingById.set(request.callId, request);
+      this.issuedCallProofs.set(request.callId, issuedToolCallProof(request));
     }
     this.outstandingReasoning = [...reasoning];
     this.outstandingPrelude = [...prelude];
@@ -404,6 +407,11 @@ export class ChatGptTurnSession {
   completedToolResultProofs(): ReadonlyMap<string, string> | undefined {
     if (this.outstandingById.size || !this.deliveredResultIds.size) return undefined;
     return this.deliveredToolResultProofs();
+  }
+
+  /** Issued arguments remain verifiable after outstanding requests are retired. */
+  issuedToolCallProofs(): ReadonlyMap<string, string> {
+    return new Map(this.issuedCallProofs);
   }
 
   /** Proofs already delivered to this context, including while its next batch is paused. */

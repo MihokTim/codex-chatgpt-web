@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { CodexParsedRequest, CodexToolResultMessage } from "../src/types";
 import { FailedThinkingRecoveryPolicy, hasCompleteRecoveryHistory, nativeToolResultProof } from "../src/adapters/chatgpt-web/failed-thinking-recovery";
 import { ChatGptTextFeed, ChatGptTraceFeed, ChatGptTurnSession } from "../src/adapters/chatgpt-web/turn-execution";
+import { hasCompleteCompactionHistory } from "../src/adapters/chatgpt-web/compaction-source-history";
 
 function fixture() {
   const session = new ChatGptTurnSession({ mode: "read-only", browser: new Promise<string>(() => {}),
@@ -34,6 +35,18 @@ test("recovery requires all completed result proofs and rejects missing, changed
   }
   session.setOutstanding([{ callId: "pending-write", wireName: "exec_command", freeform: false }]);
   expect(hasCompleteRecoveryHistory(parsed, session)).toBeFalse();
+});
+
+test.each(["arguments", "name", "kind", "malformed", "output-kind"])("recovery rejects a changed completed call: %s", change => {
+  const { parsed, session } = fixture();
+  const input = (parsed._rawBody as { input: Array<Record<string, unknown>> }).input;
+  if (change === "arguments") input[0]!.arguments = '{"target":"different"}';
+  if (change === "name") input[0]!.name = "other_tool";
+  if (change === "kind") { input[0]!.type = "custom_tool_call"; input[0]!.input = ""; }
+  if (change === "malformed") input[0]!.arguments = "{invalid";
+  if (change === "output-kind") input[1]!.type = "custom_tool_call_output";
+  expect(hasCompleteRecoveryHistory(parsed, session)).toBeFalse();
+  expect(hasCompleteCompactionHistory(parsed, session)).toBeFalse();
 });
 
 test("recovery preserves the native prefix, shares cleanup, and cannot spend a second recovery", async () => {

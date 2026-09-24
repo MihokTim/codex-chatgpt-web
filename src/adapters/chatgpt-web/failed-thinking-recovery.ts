@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { CodexParsedRequest, CodexToolResultMessage } from "../../types";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import type { ChatGptTurnSession } from "./turn-execution";
+import { nativeToolCallProof, NATIVE_TOOL_OUTPUT_TYPES } from "./native-tool-proof";
 
 const digest = (value: unknown): string => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const MAX_RECOVERY_FENCES = 512;
@@ -19,10 +20,14 @@ function nativeInput(parsed: CodexParsedRequest): unknown[] | undefined {
 /** Fail closed unless every issued tool result is still present in canonical native history. */
 export function hasCompleteRecoveryHistory(parsed: CodexParsedRequest, session: ChatGptTurnSession): boolean {
   const proofs = session.completedToolResultProofs();
-  return proofs !== undefined && hasCompleteNativeToolHistory(parsed, proofs);
+  return proofs !== undefined && hasCompleteNativeToolHistory(parsed, proofs, session.issuedToolCallProofs());
 }
 
-export function hasCompleteNativeToolHistory(parsed: CodexParsedRequest, proofs: ReadonlyMap<string, string>): boolean {
+export function hasCompleteNativeToolHistory(
+  parsed: CodexParsedRequest,
+  proofs: ReadonlyMap<string, string>,
+  issuedCalls: ReadonlyMap<string, string>,
+): boolean {
   const input = nativeInput(parsed);
   if (!input?.length) return false;
   const results = new Map<string, string>();
@@ -32,21 +37,30 @@ export function hasCompleteNativeToolHistory(parsed: CodexParsedRequest, proofs:
     results.set(message.toolCallId, nativeToolResultProof(message));
   }
   if ([...proofs].some(([id, proof]) => results.get(id) !== proof)) return false;
-  const calls = new Set<string>();
+  const calls = new Map<string, string>();
   const outputs = new Set<string>();
   for (const value of input) {
     if (!value || typeof value !== "object") continue;
-    const item = value as { type?: string; call_id?: unknown };
-    const isCall = ["function_call", "custom_tool_call", "tool_search_call"].includes(item.type ?? "");
-    const isOutput = ["function_call_output", "custom_tool_call_output", "tool_search_output"].includes(item.type ?? "");
+    const item = value as Record<string, unknown>;
+    const type = typeof item.type === "string" ? item.type : "";
+    const isCall = Object.hasOwn(NATIVE_TOOL_OUTPUT_TYPES, type);
+    const isOutput = Object.values(NATIVE_TOOL_OUTPUT_TYPES).includes(type);
     if (!isCall && !isOutput) continue;
     if (typeof item.call_id !== "string" || !item.call_id) return false;
-    const set = isCall ? calls : outputs;
-    if (set.has(item.call_id)) return false;
-    set.add(item.call_id);
+    if (isCall) {
+      if (calls.has(item.call_id)) return false;
+      const expected = issuedCalls.get(item.call_id);
+      if (expected !== undefined && nativeToolCallProof(item) !== expected) return false;
+      calls.set(item.call_id, type);
+    } else {
+      const callType = calls.get(item.call_id);
+      if (!callType || NATIVE_TOOL_OUTPUT_TYPES[callType] !== type || outputs.has(item.call_id)) return false;
+      outputs.add(item.call_id);
+    }
   }
-  return [...calls].every(id => outputs.has(id)) && [...outputs].every(id => calls.has(id))
-    && [...proofs.keys()].every(id => calls.has(id) && outputs.has(id));
+  return [...calls.keys()].every(id => outputs.has(id))
+    && [...proofs.keys()].every(id => issuedCalls.has(id) && calls.has(id) && outputs.has(id))
+    && [...issuedCalls.keys()].every(id => proofs.has(id));
 }
 
 interface RecoveryEntry {

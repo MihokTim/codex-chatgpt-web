@@ -120,6 +120,20 @@ async function scenario(options: { accepted?: boolean; afterResult?: () => void;
   };
 }
 
+test("failed-thinking recovery rejects changed arguments for an issued tool", async () => {
+  const s = await scenario();
+  try {
+    const raw = structuredClone(s.next._rawBody) as { input: Array<Record<string, unknown>> };
+    raw.input.at(-2)!.arguments = JSON.stringify({ cmd: "save-once-to-another-target" });
+    const pending = s.run(parseRequest(raw));
+    await s.oldResult.promise;
+    s.allowFailure.resolve();
+    const events = await pending;
+    expect(s.turns).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: "error", retryable: false });
+  } finally { await s.close(); }
+});
+
 test("failed-thinking adapter continues once, keeps completed tools and shares concurrent reconnects", async () => {
   const s = await scenario({ secondTool: true });
   try {
