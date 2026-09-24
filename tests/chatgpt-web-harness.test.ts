@@ -2219,7 +2219,12 @@ describe("ChatGPT outer-native harness v4", () => {
     }, 10_000);
     await broker.nextToolBatch(token);
     broker.revoke(token);
-    await expect(invocation).rejects.toThrow("revoked");
+    const invocationError = await invocation.then(
+      () => new Error("pending invocation unexpectedly resolved"),
+      error => error,
+    );
+    expect(invocationError).toBeInstanceOf(Error);
+    expect((invocationError as Error).message).toContain("revoked");
     await expect(callTurnBroker(socketPath, { method: "resolve", bindingId: claimed.bindingId }))
       .rejects.toThrow("has already finished");
     await broker.close();

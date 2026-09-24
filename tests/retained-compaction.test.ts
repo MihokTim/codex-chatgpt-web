@@ -1318,7 +1318,7 @@ test.each([false, true])("configured fresh compaction waits for cleanup and pres
   }
 });
 
-test.each([false, true])("fresh multipart compaction preserves phase budgets with fresh mode=%s", async freshConversation => {
+test.each([false, true])("fresh multipart compaction preserves phase budgets without capping accepted generation with fresh mode=%s", async freshConversation => {
   const root = mkdtempSync(join(shortSocketTempRoot(), "cgw-phased-fallback-compact-"));
   const provider: CodexProviderConfig = {
     adapter: "chatgpt-web",
@@ -1348,7 +1348,9 @@ test.each([false, true])("fresh multipart compaction preserves phase budgets wit
     mock.timers.tick(25);
     expect(turn.abortSignal?.aborted).toBeFalse();
     turn.onSubmitted!();
-    mock.timers.tick(25);
+    // The final prompt is accepted and visibly running. Model generation follows the ordinary
+    // browser lifecycle and may legitimately exceed the handoff coordination budget.
+    mock.timers.tick(80);
     expect(turn.abortSignal?.aborted).toBeFalse();
     return "Fallback checkpoint after separately bounded phases";
   };

@@ -417,7 +417,11 @@ export function createChatGptWebAdapter(
     environment: ReturnType<typeof extractChatGptTurnEnvironment> | undefined,
     traceId: string,
     turnCapabilities: ChatGptWebCapabilities,
-    hooks: { onCompactionProgress?: () => void; failedThinkingRecovery?: boolean } = {},
+    hooks: {
+      onCompactionProgress?: () => void;
+      onCompactionSubmitted?: () => void;
+      failedThinkingRecovery?: boolean;
+    } = {},
   ): ChatGptTurnRuntime => {
     const manualRequest = isChatGptWebZeroRiskBackendModel(parsed.modelId);
     if (manualRequest !== manualInteraction) {
@@ -526,7 +530,7 @@ export function createChatGptWebAdapter(
       } : {}),
       onSubmitted: () => {
         if (!parsed._compactionRequest) submission.phase = "accepted";
-        hooks.onCompactionProgress?.();
+        (hooks.onCompactionSubmitted ?? hooks.onCompactionProgress)?.();
       },
     };
     const multipartProgressLifecycle = hooks.onCompactionProgress
@@ -945,9 +949,14 @@ export function createChatGptWebAdapter(
                     },
                   );
                   let handoffTimer: ReturnType<typeof setTimeout> | undefined;
+                  const suspendHandoffDeadline = (): void => {
+                    if (!handoffTimer) return;
+                    clearTimeout(handoffTimer);
+                    handoffTimer = undefined;
+                  };
                   const armHandoffDeadline = (): void => {
                     if (handoffDeadline.signal.aborted) return;
-                    if (handoffTimer) clearTimeout(handoffTimer);
+                    suspendHandoffDeadline();
                     handoffTimer = setTimeout(
                       () => handoffDeadline.abort(handoffTimeoutError),
                       handoffTimeoutMs,
@@ -961,20 +970,24 @@ export function createChatGptWebAdapter(
                     operationSignal.throwIfAborted();
                     if (freshConversationPerTurn) console.info("[chatgpt-web] compaction uses configured fresh conversation mode");
                     else console.warn(`[chatgpt-web] retained compaction fallback=${reason}`);
-                    // Fresh compaction is a bounded phase. Each exact multipart acknowledgement
-                    // and the final accepted compact prompt re-arms the configured liveness budget;
-                    // transport time cannot consume the model-generation window.
+                    // Bound preparation, multipart acknowledgements, and cleanup separately. Once
+                    // ChatGPT accepts the final compact prompt, its normal browser observation owns
+                    // model-generation liveness; a fixed handoff timer must not cancel active work.
                     armHandoffDeadline();
                     const fallbackRuntime = startRuntime(
                       parsed,
                       manualRequest ? environment : undefined,
                       freshCompactionTraceId,
                       turnCapabilities,
-                      { onCompactionProgress: armHandoffDeadline },
+                      {
+                        onCompactionProgress: armHandoffDeadline,
+                        onCompactionSubmitted: suspendHandoffDeadline,
+                      },
                     );
                     retainOwnershipUntil(fallbackRuntime.physicalSettlement);
                     try {
                       const rawSummary = await withAbort(fallbackRuntime.browser, operationSignal);
+                      armHandoffDeadline();
                       await withAbort(fallbackRuntime.physicalSettlement, operationSignal);
                       return canonicalizeCompactionHandoff(parsed, rawSummary);
                     } catch (error) {
@@ -1131,7 +1144,7 @@ export function createChatGptWebAdapter(
                     }
                     throw handoffError;
                   } finally {
-                    if (handoffTimer) clearTimeout(handoffTimer);
+                    suspendHandoffDeadline();
                   }
                 },
               );
