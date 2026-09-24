@@ -6,12 +6,12 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { buildResponseJSON } from "../src/bridge";
-import { ChatGptWebAdapterError, chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter-error";
+import { ChatGptWebAdapterError, chatGptStoppedThinkingError, chatGptTurnSupersededError } from "../src/adapters/chatgpt-web/adapter-error";
 import { ChatGptCompletionTracker, chatGptImageFilePayloads, chatGptPromptFilePayloads, chatGptTurnIsComplete } from "../src/adapters/chatgpt-web/browser-worker";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
 import { chatGptConversationKey } from "../src/adapters/chatgpt-web/conversation-key";
 import { CHATGPT_TURN_REVISION_CONFLICT_MESSAGE, extractChatGptTurnEnvironment, extractChatGptTurnIdentity, extractChatGptTurnUserRevision, priorChatGptAbortedTurnIds } from "../src/adapters/chatgpt-web/environment";
-import { CHATGPT_WEB_ADAPTER_HEARTBEAT_MS, chatGptWebExecutionNamespace, chatGptWebTraceId, createChatGptWebAdapter } from "../src/adapters/chatgpt-web/index";
+import { CHATGPT_WEB_ADAPTER_HEARTBEAT_MS, chatGptWebExecutionNamespace, chatGptWebTraceId, createChatGptWebAdapter, submittedTurnFailure } from "../src/adapters/chatgpt-web/index";
 import { chatGptHtmlToMarkdown, ChatGptMarkdownBuffer } from "../src/adapters/chatgpt-web/markdown";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import {
@@ -911,6 +911,36 @@ describe("ChatGPT outer-native harness v4", () => {
     expect((await replacement).traceId).toBe("new-trace");
     expect(replacements).toBe(1);
     expect(cancellations).toBe(0);
+    sessions.clear();
+  });
+
+  test("a superseded submitted turn preserves its client cancellation instead of reporting a ChatGPT outage", () => {
+    const sessions = new ChatGptTurnSessions();
+    const session = sessions.getOrCreate("superseded-submitted", () => ({
+      mode: "read-only",
+      browser: Promise.resolve("unused"),
+      physicalSettlement: Promise.resolve(),
+      trace: new ChatGptTraceFeed(),
+      text: new ChatGptTextFeed(),
+      submission: { phase: "accepted" },
+      cancel: () => {},
+    }));
+    session.supersededError = chatGptTurnSupersededError();
+
+    const failure = submittedTurnFailure(
+      session,
+      new Error("Codex Native retired the turn binding before its tool work completed"),
+    );
+
+    expect(failure).toBe(session.supersededError);
+    expect(failure).toMatchObject({
+      status: 499,
+      errorType: "client_closed_request",
+      code: "client_cancelled",
+      retryable: false,
+    });
+    expect(failure.message).toBe("A newer Codex instruction superseded this ChatGPT response.");
+    expect(failure.message).not.toContain("ChatGPT stopped responding");
     sessions.clear();
   });
 

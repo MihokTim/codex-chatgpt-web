@@ -270,7 +270,7 @@ export function chatGptCompactionSourceExecutionKey(parsed: CodexParsedRequest):
 }
 
 export class ChatGptTurnSession {
-  supersededError?: Error;
+  supersededError?: ChatGptWebAdapterError;
   readonly createdAt = Date.now();
   private lastTouchedAt = this.createdAt;
   readonly browserOutcome: Promise<ChatGptBrowserOutcome>;

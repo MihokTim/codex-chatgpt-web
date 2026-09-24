@@ -298,7 +298,12 @@ function replayEvents(events: AdapterEvent[], emit: (event: AdapterEvent) => voi
   for (const event of events) emit(event);
 }
 
-function submittedTurnFailure(session: ChatGptTurnSession, error: unknown): Error {
+export function submittedTurnFailure(session: ChatGptTurnSession, error: unknown): Error {
+  // Native steering can retire the broker/tool wait at the same time as it cancels the browser.
+  // The generic retirement error may win that Promise race even though the session already knows
+  // the causal result: a newer instruction superseded this response. Preserve that client state
+  // instead of misreporting an accepted ChatGPT turn as an upstream outage.
+  if (session.supersededError) return session.supersededError;
   const normalized = error instanceof Error ? error : new Error(String(error));
   if (normalized instanceof ChatGptWebAdapterError) return normalized;
   const phase = session.runtime.submission?.phase;
