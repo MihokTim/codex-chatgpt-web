@@ -11,31 +11,62 @@ export const CHATGPT_COMPOSER_SELECTOR = [
   '[data-testid="prompt-textarea"]',
   "#prompt-textarea",
   '[contenteditable="true"][data-lexical-editor="true"]',
+  'form[data-chatgpt-composer] [data-composer-markdown][contenteditable="true"][role="textbox"]',
+].join(", ");
+/** Resolve these controls only inside the active composer's containing form. */
+export const CHATGPT_SEND_BUTTON_SELECTOR = [
+  '[data-testid="send-button"]',
+  'button[type="submit"]',
+].join(", ");
+export const CHATGPT_FILE_INPUT_SELECTOR = [
+  'input[data-testid="upload-photos-input"]',
+  // The composer has separate image/video pickers; only this input accepts arbitrary files.
+  'input[type="file"][multiple]:not([accept])',
+].join(", ");
+export const CHATGPT_CONNECTOR_MENU_ROW_SELECTOR = [
+  '.__menu-item[tabindex="0"]',
+  '[data-mention-list-scroll-area] button[data-list-navigation-item="true"]',
+].join(", ");
+export const CHATGPT_SELECTED_CONNECTOR_SELECTOR = [
+  '[data-id^="plugin:"][data-keyword]',
+  '[app-mention-path^="app://"][app-mention-display-name][data-prompt-link-href][contenteditable="false"]',
 ].join(", ");
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
   'button[aria-haspopup="menu"][data-tone="neutral"]',
   'button[data-testid="model-switcher-dropdown-button"][aria-haspopup="menu"]',
+  'button[data-composer-navigation-target="reasoning"][aria-haspopup="menu"]',
 ].join(", ");
 export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[data-testid="composer-intelligence-picker-content"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
   '[role="menu"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
   '[role="group"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
+  '[role="menu"]:has([data-reasoning-slider="true"])',
 ].join(", ");
 export const CHATGPT_EFFORT_ITEM_SELECTOR = '[role="menuitemradio"]';
-export const CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR = '[data-model-reasoning-effort-slider]';
-export const CHATGPT_EFFORT_SLIDER_SELECTOR = '[data-model-reasoning-effort-slider] [role="slider"]';
+export const CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR = '[data-model-reasoning-effort-slider], [role="menuitem"][data-reasoning-slider="true"]';
+export const CHATGPT_EFFORT_SLIDER_SELECTOR = '[data-model-reasoning-effort-slider] [role="slider"], [data-reasoning-slider="true"] [role="slider"]';
 export const CHATGPT_EFFORT_SLIDER_MAX_OPTIONS = 5;
-export const CHATGPT_STOP_BUTTON_SELECTOR = '[data-testid="stop-button"]';
-export const CHATGPT_COMPLETION_ACTION_SELECTOR = 'button[data-testid="copy-turn-action-button"]';
+export const CHATGPT_STOP_BUTTON_SELECTOR = [
+  '[data-testid="stop-button"]',
+  'form[data-chatgpt-composer] button[type="button"][aria-label="停止"]',
+  'form[data-chatgpt-composer] button[type="button"][aria-label="Stop"]',
+].join(", ");
+export const CHATGPT_COMPLETION_ACTION_SELECTOR = [
+  'button[data-testid="copy-turn-action-button"]',
+  '[data-turn-key] button[aria-label="コピーする"]',
+  '[data-turn-key] button[aria-label="Copy"]',
+].join(", ");
 export const CHATGPT_ASSISTANT_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="assistant"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
+  '[data-turn-key] [data-chatgpt-search-unit-key$=":assistant"]',
 ].join(", ");
 export const CHATGPT_USER_TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"][data-turn="user"]',
   '[data-testid^="conversation-turn-"][data-message-author-role="user"]',
   '[data-testid^="conversation-turn-"]:has([data-message-author-role="user"])',
+  '[data-turn-key] [data-chatgpt-search-unit-key$=":user"]',
 ].join(", ");
 
 export interface ChatGptEffortSliderState {
@@ -162,10 +193,22 @@ export async function readChatGptEffortAvailability(
 ): Promise<boolean[]> {
   // Plus exposes a fourth ARIA position for a locked Pro upsell. Only the ticks
   // carry both attributes; the slider root also has data-locked and is not a choice.
-  const locks = await sliderContainer.evaluate(container => Array.from(
-    container.querySelectorAll("[data-locked][data-selected]"),
-    tick => tick.getAttribute("data-locked"),
-  ));
+  const locks = await sliderContainer.evaluate(container => {
+    if (container.matches('[role="menuitem"][data-reasoning-slider="true"]')) {
+      const power = container.querySelector('[data-model-picker-power-slider]');
+      const track = power?.querySelector('[data-orientation="horizontal"][aria-disabled]');
+      if (!track || track.getAttribute('aria-disabled') !== 'false') return [];
+      // Current controls omit false boolean lock attributes. Restrict that contract to
+      // their marked power track; legacy controls still require explicit lock values.
+      return Array.from(track.querySelectorAll('[data-selected]'), tick => {
+        const locked = tick.getAttribute('data-locked');
+        if (locked !== null && locked !== 'true' && locked !== 'false') return null;
+        if (!['true', 'false'].includes(tick.getAttribute('data-selected') ?? '')) return null;
+        return locked === 'true' || tick.getAttribute('aria-disabled') === 'true' || tick.hasAttribute('data-disabled') ? 'true' : 'false';
+      });
+    }
+    return Array.from(container.querySelectorAll('[data-locked][data-selected]'), tick => tick.getAttribute('data-locked'));
+  });
   if (locks.length !== state.max - state.min + 1
     || locks.some(lock => lock !== "true" && lock !== "false")) {
     throw new Error("ChatGPT effort availability could not be verified from its slider ticks");

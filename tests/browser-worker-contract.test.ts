@@ -11,7 +11,7 @@ import { chatGptStoppedThinkingError } from "../src/adapters/chatgpt-web/adapter
 import { CHATGPT_STOPPED_THINKING_LABELS } from "../src/adapters/chatgpt-web/ui-labels";
 import { CHATGPT_WEB_MODEL_ID } from "../src/adapters/chatgpt-web/model";
 import { CHATGPT_CONNECTOR_NAME, DEV_CHATGPT_CONNECTOR_NAME, defaultChromeExecutable, legacyChatGptConnectorMigrationMessage } from "../src/config";
-import { parseChatGptEffortSliderState } from "../src/chatgpt-session";
+import { CHATGPT_FILE_INPUT_SELECTOR, CHATGPT_SEND_BUTTON_SELECTOR, parseChatGptEffortSliderState } from "../src/chatgpt-session";
 import { ChatGptExternalTurnProgress, chatGptExternalToolCallsAreInFlight } from "../src/adapters/chatgpt-web/turn-progress";
 import type { CodexProviderConfig } from "../src/types";
 import { compileChatGptWebPrompt, formatChatGptWebMultipartCommit, formatChatGptWebMultipartStage } from "../src/adapters/chatgpt-web/prompt";
@@ -608,7 +608,7 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
     press: async () => { sendPresses += 1; },
   };
   const composer = {
-    locator: () => ({ getByTestId: () => sendButton }),
+    locator: () => ({ locator: () => sendButton }),
   };
   worker.activeComposer = async () => composer;
 
@@ -730,7 +730,7 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     },
   };
   worker.activeComposer = async () => ({
-    locator: () => ({ getByTestId: () => sendButton }),
+    locator: () => ({ locator: () => sendButton }),
   });
   worker.waitForSubmissionAcceptedWithRecovery = async () => "user_turn";
 
@@ -1358,7 +1358,7 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   ]);
 });
 
-test("connector selection moves highlight to the exact hidden-viewport row before Enter", async () => {
+test.each([false, true])("connector selection moves highlight to the exact hidden-viewport row before Enter (current=%s)", async current => {
   const keys: string[] = [];
   let arrowCount = 0;
   let selected = false;
@@ -1366,7 +1366,9 @@ test("connector selection moves highlight to the exact hidden-viewport row befor
   const appResult = {
     waitFor: async () => {},
     count: async () => 1,
-    getAttribute: async () => arrowCount >= 2 ? "" : null,
+    getAttribute: async (name: string) => current
+      ? name === "data-list-navigation-item" ? "true" : name === "aria-current" ? String(arrowCount >= 2) : null
+      : name === "data-highlighted" && arrowCount >= 2 ? "" : null,
   };
   const menuRows = {
     evaluateAll: async () => [],
@@ -2263,14 +2265,23 @@ test("image attachment readiness uses exact file tiles and not localized remove-
       expect(role).toBe("group");
       expect(options).toEqual({ name: "codex-input-image-1.png", exact: true });
       return {
+        or() { return this; },
         waitFor: async (state: { state: string; timeout: number }) => {
           expect(state).toEqual({ state: "visible", timeout: 60_000 });
           calls.push(["fileTile", options.name]);
         },
       };
     },
-    getByTestId: (testId: string) => {
-      expect(testId).toBe("send-button");
+    locator: (selector: string) => {
+      if (selector === CHATGPT_FILE_INPUT_SELECTOR) return input;
+      if (selector === '[data-composer-attachments]') return {
+        getByRole: (role: string, options: { name: string; exact: boolean }) => {
+          expect(role).toBe("button");
+          expect(options).toEqual({ name: "codex-input-image-1.png", exact: true });
+          return {};
+        },
+      };
+      expect(selector).toBe(CHATGPT_SEND_BUTTON_SELECTOR);
       return send;
     },
   };

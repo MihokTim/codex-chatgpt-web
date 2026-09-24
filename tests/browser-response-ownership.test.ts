@@ -14,6 +14,7 @@ type Observer = {
   reconcileAssistantTurnBinding(page: Page, baseline: Baseline, binding: Binding): Promise<Binding>;
   responseDomSnapshot(locator: Locator, cache: unknown): Promise<{
     responsePresent: boolean; visibleText: string; fullHtml: string; completionActionVisible: boolean;
+    stoppedThinkingVisible: boolean; failedThinkingVisible: boolean;
   }>;
 };
 let browser: Browser;
@@ -28,6 +29,52 @@ const current = (ack: string, answer: string, mountUser = true) => section("prep
   + section(answer, "assistant", "Actual final answer");
 const render = (page: Page, html: string) => page.evaluate(value => { document.body.innerHTML = value; }, html);
 const observer = () => Object.create(ChatGptBrowserWorker.prototype) as Observer;
+
+const timeline = (key: string, message: string, answer: string, mounted = true) => `<div data-turn-key="${key}">
+  ${mounted ? `<div data-chatgpt-search-unit-key="fallback:0:user" data-chatgpt-search-message-ids="${key}"><div data-user-message-bubble>${message}</div></div>` : ""}
+  <span hidden data-chatgpt-agent-turn-start></span>
+  <div data-chatgpt-search-unit-key="fallback:2:assistant" data-chatgpt-search-message-ids="changing-assistant-id">
+    <div data-markdown-text-style="assistant-message"><p>${answer}</p></div>
+  </div><button aria-label="コピーする"></button></div>`;
+
+test("timeline ownership follows a new outer user key across remounts and virtualization", async () => {
+  const page = await browser.newPage();
+  try {
+    const worker = observer();
+    await render(page, timeline('old', 'Preparation', 'ACK'));
+    const baseline = await worker.captureSubmissionBaseline(page);
+    await render(page, timeline('old', 'Preparation', 'Changed historical answer'));
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBeUndefined();
+    await render(page, timeline('old', 'Preparation', 'ACK') + timeline('new', '<div class="markdown">思考に失敗しました</div>', 'Final answer'));
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBe('user_turn');
+    const binding = await worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2_000);
+    expect(binding.userIdentity).toBe('timeline-user:new');
+    expect(binding.identity).toBe('timeline-assistant:new');
+    const initialSnapshot = await worker.responseDomSnapshot(binding.locator, {});
+    expect(initialSnapshot.visibleText).toBe('Final answer');
+    expect(initialSnapshot.failedThinkingVisible).toBeFalse();
+    await render(page, timeline('old', 'Preparation', 'Remounted ACK') + timeline('new', '', 'Final answer', false));
+    expect(await worker.currentSubmissionAnswerText(page, baseline)).toBe('Final answer');
+    const snapshot = await worker.responseDomSnapshot(binding.locator, {});
+    expect(snapshot.completionActionVisible).toBeTrue();
+    expect(snapshot.visibleText).toBe('Final answer');
+    await page.locator('[data-turn-key="new"] button').evaluate(e => e.removeAttribute('aria-label'));
+    expect((await worker.responseDomSnapshot(binding.locator, {})).completionActionVisible).toBeFalse();
+    await render(page, timeline('old', 'Preparation', 'ACK') + timeline('new', 'Actual request', 'Final answer') + timeline('foreign', 'Another request', 'Wrong answer'));
+    await expect(worker.currentSubmissionAnswerText(page, baseline)).rejects.toThrow('another user turn');
+  } finally { await page.close(); }
+});
+
+test("timeline rejects duplicate keys and a user message that does not own its container", async () => {
+  const page = await browser.newPage();
+  try {
+    const worker = observer();
+    await render(page, timeline('same','one','A') + timeline('same','two','B'));
+    await expect(worker.captureSubmissionBaseline(page)).rejects.toThrow('duplicate');
+    await render(page, timeline('owner','one','A').replace('data-chatgpt-search-message-ids="owner"','data-chatgpt-search-message-ids="foreign"'));
+    await expect(worker.captureSubmissionBaseline(page)).rejects.toThrow('matching message identity');
+  } finally { await page.close(); }
+});
 
 test.each([false, true])("remounted historical users cannot prove a submission (extra exchange=%s)", async extra => {
   const page = await browser.newPage();

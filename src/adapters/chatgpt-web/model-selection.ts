@@ -34,9 +34,15 @@ export async function selectChatGptModelFamily(
     if (await option.count() > 1) throw familyError(family);
     if (await option.count() === 1 && await option.getAttribute("aria-checked") === "true") return menu;
     // The attached radio rows are inert while this composer-owned advanced view is collapsed.
-    const trigger = menu.menu.locator('[role="menuitem"][aria-expanded][aria-hidden="false"]');
+    const trigger = menu.menu.locator('[role="menuitem"][aria-expanded][aria-hidden="false"], [role="menuitem"][data-model-picker-view-toggle="true"][aria-hidden="false"]');
     if (await trigger.count() !== 1) throw familyError(family);
-    if (await trigger.getAttribute("aria-expanded") === "false") await trigger.click({ timeout: 5_000 });
+    const expanded = await trigger.getAttribute("aria-expanded");
+    if (expanded === "false") await trigger.click({ timeout: 5_000 });
+    else if (expanded === null) {
+      const view = menu.menu.locator('[data-model-picker-view]');
+      if (await view.count() !== 1 || await view.getAttribute('data-model-picker-view') !== 'simple') throw familyError(family);
+      await trigger.click({ timeout: 5_000 });
+    }
     await option.waitFor({ state: "visible", timeout: 5_000 });
     await option.click({ timeout: 5_000 });
     await page.keyboard.press("Escape");

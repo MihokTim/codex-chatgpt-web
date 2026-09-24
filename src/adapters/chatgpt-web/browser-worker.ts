@@ -56,6 +56,10 @@ import {
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COMPLETION_ACTION_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
+  CHATGPT_SEND_BUTTON_SELECTOR,
+  CHATGPT_FILE_INPUT_SELECTOR,
+  CHATGPT_CONNECTOR_MENU_ROW_SELECTOR,
+  CHATGPT_SELECTED_CONNECTOR_SELECTOR,
   CHATGPT_EFFORT_CONTROL_SELECTOR,
   CHATGPT_EFFORT_ITEM_SELECTOR,
   CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR,
@@ -163,6 +167,10 @@ const CHATGPT_DOM_REVISION_ATTRIBUTES = [
   "data-turn",
   "data-turn-id",
   "data-turn-id-container",
+  "data-turn-key",
+  "data-chatgpt-search-unit-key",
+  "data-chatgpt-search-message-ids",
+  "data-markdown-text-style",
   "disabled",
   "hidden",
   "inert",
@@ -1390,15 +1398,16 @@ export async function setChatGptThinkMode(
   const target = enabled ? "true" : "false";
   if (pressed !== target) {
     const composer = composerForm.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true }).first();
-    const composerState = () => composer.evaluate(element => {
+    const composerState = () => composer.evaluate((element, connectorSelector) => {
       const copy = element.cloneNode(true) as HTMLElement;
-      const pills = [...copy.querySelectorAll('[data-id^="plugin:"][data-keyword]')];
-      const connectors = pills.map(pill => pill.getAttribute("data-keyword")).sort();
+      const pills = [...copy.querySelectorAll(connectorSelector)];
+      const connectors = pills.map(pill => pill.getAttribute("data-keyword")
+        ?? pill.getAttribute("app-mention-display-name")).sort();
       for (const pill of pills) pill.remove();
       const text = element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement
         ? element.value : copy.textContent ?? "";
       return { text: text.trim(), connectors };
-    }, undefined, actionOptions);
+    }, CHATGPT_SELECTED_CONNECTOR_SELECTOR, actionOptions);
     const before = await composerState();
     if (before.text) throw new Error("ChatGPT Think selection requires an empty prompt draft");
     await composer.focus(actionOptions);
@@ -1910,6 +1919,8 @@ class ChatGptBrowserDiagnostics {
           userTurnSelector,
           stopButtonSelector,
           completionActionSelector,
+          connectorSelector,
+          connectorRowSelector,
           appName,
         }) => {
           const rendered = (element: Element): boolean => {
@@ -1946,10 +1957,10 @@ class ChatGptBrowserDiagnostics {
           const composers = [...document.querySelectorAll(composerSelector)].filter(rendered);
           const assistantTurns = [...document.querySelectorAll(assistantTurnSelector)].filter(rendered);
           const selectedConnectors = composers.flatMap(composer => (
-            [...composer.querySelectorAll('[data-id^="plugin:"][data-keyword]')]
+            [...composer.querySelectorAll(connectorSelector)]
           ))
             .filter(rendered);
-          const exactConnectorRows = [...document.querySelectorAll('.__menu-item[tabindex="0"]')]
+          const exactConnectorRows = [...document.querySelectorAll(connectorRowSelector)]
             .filter(element => rendered(element) && exactText(element, appName));
           const currentUrl = new URL(location.href);
           const integerAttribute = (element: Element, name: string): number | null => {
@@ -1982,7 +1993,8 @@ class ChatGptBrowserDiagnostics {
               })),
               selectedConnectorCount: selectedConnectors.length,
               exactSelectedConnectorCount: selectedConnectors.filter(
-                element => element.getAttribute("data-keyword") === appName,
+                element => (element.getAttribute("data-keyword")
+                  ?? element.getAttribute("app-mention-display-name")) === appName,
               ).length,
             },
             focus: {
@@ -2036,6 +2048,8 @@ class ChatGptBrowserDiagnostics {
           userTurnSelector: CHATGPT_USER_TURN_SELECTOR,
           stopButtonSelector: CHATGPT_STOP_BUTTON_SELECTOR,
           completionActionSelector: CHATGPT_COMPLETION_ACTION_SELECTOR,
+          connectorSelector: CHATGPT_SELECTED_CONNECTOR_SELECTOR,
+          connectorRowSelector: CHATGPT_CONNECTOR_MENU_ROW_SELECTOR,
           appName: this.appName,
         })),
       ]);
@@ -2218,6 +2232,13 @@ export function insertPlainTextIntoComposer(element: HTMLElement, value: string)
     return false;
   }
   return document.execCommand("insertText", false, value);
+}
+
+function chatGptResponseTurnSelector(identity: string): string {
+  const prefix = "timeline-assistant:";
+  return identity.startsWith(prefix)
+    ? `[data-turn-key=${JSON.stringify(identity.slice(prefix.length))}]`
+    : `[data-turn-id=${JSON.stringify(identity)}]`;
 }
 
 export class ChatGptBrowserWorker {
@@ -3069,9 +3090,40 @@ export class ChatGptBrowserWorker {
       const containers = [...document.querySelectorAll("[data-turn-id-container]")].filter(element =>
         element.parentElement?.closest("[data-turn-id-container]")?.getAttribute("data-turn-id-container")
           !== element.getAttribute("data-turn-id-container"));
-      const turnIdentities = identities(containers, "data-turn-id-container");
-      const userIdentities = identities([...document.querySelectorAll(options.userTurnSelector)], "data-turn-id");
-      const responseIdentities = identities([...document.querySelectorAll(options.assistantTurnSelector)], "data-turn-id");
+      let turnIdentities: string[];
+      let userIdentities: string[];
+      let responseIdentities: string[];
+      const timeline = [...document.querySelectorAll('[data-turn-key]')];
+      if (timeline.length > 0) {
+        if (containers.length > 0) throw new Error("ChatGPT exposed mixed conversation identity formats");
+        const keys = identities(timeline, "data-turn-key");
+        turnIdentities = [];
+        userIdentities = [];
+        responseIdentities = [];
+        timeline.forEach((container, index) => {
+          // The new timeline keeps one outer key for the user and all of its response
+          // content. Reserve both logical anchors even when the inner content virtualizes.
+          // Display-index search keys and changing assistant message IDs are not ownership.
+          const key = keys[index]!;
+          const user = `timeline-user:${key}`;
+          const assistant = `timeline-assistant:${key}`;
+          turnIdentities.push(user, assistant);
+          const users = [...container.querySelectorAll('[data-chatgpt-search-unit-key$=":user"]')];
+          if (users.length > 1 || (users.length === 1
+            && !users[0]!.getAttribute('data-chatgpt-search-message-ids')?.split(/\s+/).includes(key))) {
+            throw new Error("ChatGPT timeline user has no unique matching message identity");
+          }
+          if (users.length === 1) userIdentities.push(user);
+          if (container.querySelector('[data-chatgpt-agent-turn-start]')
+            && container.querySelector('[data-chatgpt-search-unit-key$=":assistant"]')) {
+            responseIdentities.push(assistant);
+          }
+        });
+      } else {
+        turnIdentities = identities(containers, "data-turn-id-container");
+        userIdentities = identities([...document.querySelectorAll(options.userTurnSelector)], "data-turn-id");
+        responseIdentities = identities([...document.querySelectorAll(options.assistantTurnSelector)], "data-turn-id");
+      }
       const knownTurns = new Set(turnIdentities);
       if ([...userIdentities, ...responseIdentities].some(identity => !knownTurns.has(identity))) {
         throw new Error("ChatGPT conversation turn has no matching identity container");
@@ -3124,7 +3176,7 @@ export class ChatGptBrowserWorker {
     const userIdentity = submittedUserIdentity(baseline, state);
     const identity = userIdentity ? chatGptAssistantIdentityAfterUser(state, userIdentity) : undefined;
     if (!identity) return "";
-    const locator = page.locator(`[data-turn-id=${JSON.stringify(identity)}]`);
+    const locator = page.locator(chatGptResponseTurnSelector(identity));
     return (await this.responseDomSnapshot(locator, {})).visibleText;
   }
 
@@ -3225,7 +3277,7 @@ export class ChatGptBrowserWorker {
         && completionTracker?.needsToolBatchObservation(progress.lastToolBatchRevision)) {
         const boundaryText = identity
           ? (await this.responseDomSnapshot(
-            observationPage.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
+            observationPage.locator(chatGptResponseTurnSelector(identity)),
             {},
           )).visibleText
           : "";
@@ -3234,7 +3286,7 @@ export class ChatGptBrowserWorker {
       }
       if (identity && userIdentity) return {
         identity,
-        locator: observationPage.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
+        locator: observationPage.locator(chatGptResponseTurnSelector(identity)),
         acceptedTurnIdentities: state.turnIdentities,
         userIdentity,
       };
@@ -3275,7 +3327,7 @@ export class ChatGptBrowserWorker {
     if (!identity || identity === binding.identity) return binding;
     return {
       identity,
-      locator: page.locator(`[data-turn-id=${JSON.stringify(identity)}]`),
+      locator: page.locator(chatGptResponseTurnSelector(identity)),
       acceptedTurnIdentities: state.turnIdentities,
       userIdentity: binding.userIdentity,
     };
@@ -3283,17 +3335,17 @@ export class ChatGptBrowserWorker {
 
   private async attachedPromptText(page: Page, abortSignal?: AbortSignal): Promise<string> {
     const composer = await this.activeComposer(page, 30_000, abortSignal);
-    return composer.evaluate(element => {
+    return composer.evaluate((element, connectorSelector) => {
       const clone = element.cloneNode(true) as HTMLElement;
       clone.querySelectorAll(
-        '[data-id^="plugin:"][data-keyword], [data-inline-selection-pill-cursor-target]',
+        `${connectorSelector}, [data-inline-selection-pill-cursor-target]`,
       )
         .forEach(part => part.remove());
       return [...clone.childNodes]
         .map(child => child.textContent ?? "")
         .join("\n")
         .trimStart();
-    }, undefined, { timeout: 20_000, signal: abortSignal });
+    }, CHATGPT_SELECTED_CONNECTOR_SELECTOR, { timeout: 20_000, signal: abortSignal });
   }
 
   private async assertPromptAttached(
@@ -3321,16 +3373,20 @@ export class ChatGptBrowserWorker {
   }
 
   private selectedConnectorControl(composer: Locator): Locator {
+    const name = JSON.stringify(this.config.appName);
     return composer
-      .locator('[data-id^="plugin:"][data-keyword]')
-      .filter({ hasText: this.config.appName, visible: true });
+      .locator(`[data-id^="plugin:"][data-keyword=${name}], `
+        + `[app-mention-path^="app://"][app-mention-display-name=${name}][data-prompt-link-href][contenteditable="false"]`)
+      .filter({ visible: true });
   }
 
   private async connectorIsSelected(composer: Locator, abortSignal?: AbortSignal): Promise<boolean> {
     const selected = this.selectedConnectorControl(composer);
     const keywords = await withBrowserTurnAbort(
       withChatGptBrowserObservationTimeout(selected.evaluateAll(elements => (
-        elements.map(element => element.getAttribute("data-keyword"))
+        elements.map(element => element.getAttribute("data-keyword")
+          ?? (element.getAttribute("app-mention-path") === element.getAttribute("data-prompt-link-href")
+            ? element.getAttribute("app-mention-display-name") : null))
       ))),
       abortSignal,
     );
@@ -3431,7 +3487,7 @@ export class ChatGptBrowserWorker {
       throwIfPromptAttachmentAborted(abortSignal);
     };
     let composer: Locator;
-    const menuRows = page.locator('.__menu-item[tabindex="0"]');
+    const menuRows = page.locator(CHATGPT_CONNECTOR_MENU_ROW_SELECTOR);
     const appResult = menuRows.filter({
       has: page.getByText(this.config.appName, { exact: true }),
     });
@@ -3573,10 +3629,13 @@ export class ChatGptBrowserWorker {
       // otherwise move the menu highlight until it does. Keep
       // focus on the composer, activate through the menu's real keyboard owner, then prove the exact
       // selected connector pill below.
-      const rowHighlighted = async () => await appResult.getAttribute("data-highlighted", {
-        signal: abortSignal,
-        timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS,
-      }) !== null;
+      const rowHighlighted = async () => {
+        const options = { signal: abortSignal, timeout: CHATGPT_CONNECTOR_ACTION_TIMEOUT_MS };
+        if (await appResult.getAttribute("data-list-navigation-item", options) === "true") {
+          return await appResult.getAttribute("aria-current", options) === "true";
+        }
+        return await appResult.getAttribute("data-highlighted", options) !== null;
+      };
       if (!await rowHighlighted()) {
         const visibleRowCount = await withBrowserTurnAbort(
           withChatGptBrowserObservationTimeout(menuRows.filter({ visible: true }).count()),
@@ -3749,7 +3808,7 @@ export class ChatGptBrowserWorker {
     const composer = await this.activeComposer(page);
     const sendButton = composer
       .locator("xpath=ancestor::form[1]")
-      .getByTestId("send-button");
+      .locator(CHATGPT_SEND_BUTTON_SELECTOR);
     await sendButton.waitFor({ state: "visible", timeout: browserStageTimeouts.send });
     await settleChatGptUi();
     const sendEnableDeadline = Date.now() + CHATGPT_SEND_ENABLE_GRACE_MS;
@@ -4076,12 +4135,13 @@ export class ChatGptBrowserWorker {
     if (files.length === 0) return;
     const composer = await this.activeComposer(page);
     const composerForm = composer.locator("xpath=ancestor::form[1]");
-    const input = page.locator('input[data-testid="upload-photos-input"]');
+    const input = composerForm.locator(CHATGPT_FILE_INPUT_SELECTOR);
     await input.waitFor({ state: "attached", timeout: 20_000 });
-    await input.setInputFiles(files);
+    await input.setInputFiles(files, { timeout: 20_000 });
     try {
       await Promise.all(files.map(file => (
         composerForm.getByRole("group", { name: file.name, exact: true })
+          .or(composerForm.locator('[data-composer-attachments]').getByRole("button", { name: file.name, exact: true }))
           .waitFor({ state: "visible", timeout: 60_000 })
       )));
     } catch {
@@ -4093,7 +4153,7 @@ export class ChatGptBrowserWorker {
         + (alerts.length > 0 ? `: ${alerts.join(" | ")}` : ""),
       );
     }
-    const send = composerForm.getByTestId("send-button");
+    const send = composerForm.locator(CHATGPT_SEND_BUTTON_SELECTOR);
     const deadline = Date.now() + 60_000;
     while (Date.now() < deadline) {
       if (await send.isEnabled().catch(() => false)) return;
@@ -4175,7 +4235,7 @@ export class ChatGptBrowserWorker {
       // ChatGPT's DIL renderer has no .markdown class (#538). Read its response root within the
       // assistant-owned PUIK container; the CSS module hash is build-specific. Both renderers
       // feed the same content serializer and completion checks below, without reading UI text.
-      const answerRootSelector = '.markdown, [data-message-author-role="assistant"] .puik-root.not-markdown > [class*="_DilResponseRoot"]';
+      const answerRootSelector = '.markdown, [data-message-author-role="assistant"] .puik-root.not-markdown > [class*="_DilResponseRoot"], [data-chatgpt-search-unit-key$=":assistant"] [data-markdown-text-style="assistant-message"]';
       // ChatGPT uses the same content renderer for intermediate commentary and for the final
       // answer. Older responses nested commentary in the streaming-status container. Pro can also
       // render a completed commentary Markdown root immediately before that live status container.
@@ -4183,6 +4243,7 @@ export class ChatGptBrowserWorker {
       // boundary without relying on localized labels such as "Pro thinking".
       const allMarkdownRoots = [...root.querySelectorAll<HTMLElement>(answerRootSelector)]
         .filter(candidate => !candidate.parentElement?.closest(answerRootSelector))
+        .filter(candidate => !candidate.closest('[data-user-message-bubble], [data-chatgpt-search-unit-key$=":user"]'))
         .filter(renderedInDom);
       const streamingStatusContainers = [...root.querySelectorAll<HTMLElement>("[data-streaming-response-status]")]
         .filter(renderedInDom);
@@ -4529,6 +4590,7 @@ export class ChatGptBrowserWorker {
         const isStoppedLabel = (value: string | null): boolean => labels.has(value?.replace(/\s+/g, " ").trim() ?? "");
         const isStatus = (candidate: HTMLElement): boolean => {
           if (overlapsRenderedAnswer(candidate) || overlapsCommentary(candidate)
+            || candidate.closest('[data-user-message-bubble], [data-chatgpt-search-unit-key$=":user"]')
             || candidate.closest("pre, code, blockquote")) return false;
           for (let element: HTMLElement | null = candidate; element; element = element.parentElement) {
             if (!renderedInDom(element)) return false;
@@ -5383,7 +5445,7 @@ export class ChatGptBrowserWorker {
             };
             responseTurn = {
               ...responseTurn,
-              locator: page.locator(`[data-turn-id=${JSON.stringify(responseTurn.identity)}]`),
+              locator: page.locator(chatGptResponseTurnSelector(responseTurn.identity)),
             };
             responseDomCache.key = undefined;
             responseDomCache.snapshot = undefined;
