@@ -15,3 +15,11 @@ Hidden launcher maintenance also restores a usable renderer viewport when Electr
 Validation includes real Chromium fixtures for both layouts, model selection, app identity, exact prompt readback, attachment scoping, and timeline ownership under remounts and virtualization. Live checks confirmed both named Pro selections without submitting Pro generations, app selection, multiline Japanese prompt integrity, text and image uploads, and one short GPT-5.6 High response through send, extraction, and completion. These checks do not establish every tool workflow or long-context compaction behavior.
 
 Upstream `7579422` independently removes the localized display-text requirement for legacy selected connectors; this patch uses the same metadata-based direction and adds the new app-mention format. The other upstream hook changes are outside this compatibility patch.
+
+## Fork.5 follow-up: post-send root sentinel
+
+The earlier smoke checks were insufficient to establish production readiness. A subsequent real task executed several native tools, but the browser worker never bound the response and eventually failed with a missing-assistant error. A new live reproduction exposed the cause in the legacy layout: the empty `client-created-root` container appears after Send, before the first actual user container. Counting it as a message moved the user away from the expected submission boundary. Tool traffic extended the observation grace, masking the broken binding until the next gap in activity.
+
+Exclude only that exact empty, non-message sentinel from legacy logical anchors. Preserve real message content and virtualized anchors, including a real turn using the same identifier. When an additional empty response placeholder temporarily mounts, wait for the normal unambiguous boundary within the existing grace instead of treating it as a second answer. Multiple actual answers and later unrelated users still fail closed. This changes neither tool permissions nor timeout budgets.
+
+Regression fixtures cover a sentinel inserted after an empty baseline, assistant remounts, a transient response placeholder, and a real message using the reserved identifier. Both legacy and newer timeline ownership tests remain required; a simple response in one layout is not sufficient acceptance evidence.
