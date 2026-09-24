@@ -130,7 +130,7 @@ test("submission DOM tracks logical identities and retains virtualized history i
     locator: () => ({}),
   } as unknown as Page;
   const worker = Object.create(ChatGptBrowserWorker.prototype) as {
-    captureSubmissionBaseline(page: Page): Promise<{ initialTurnIdentities: string[]; domCache: { fullScans: number } }>;
+    captureSubmissionBaseline(page: Page): Promise<{ initialTurnIdentities: string[]; initialUserAnchors: { identity: string; index: number }[]; domCache: { fullScans: number } }>;
     currentSubmissionEvidence(page: Page, baseline: unknown): Promise<string | undefined>;
     submissionDomState(page: Page, cache: unknown): Promise<{ responseIdentities: string[] }>;
   };
@@ -143,8 +143,12 @@ test("submission DOM tracks logical identities and retains virtualized history i
   expect([...(await worker.submissionDomState(page, baseline.domCache)).responseIdentities])
     .toEqual(["old-answer", "current-answer"]);
   expect(baseline.domCache.fullScans).toBe(2);
-  // Changing a logical ID invalidates the cached snapshot; its display index is not authority.
-  turns[2] = { ...turns[2]!, id: "new-user" };
+  // Renaming an existing user invalidates the cache but does not establish a new send.
+  turns[2] = { ...turns[2]!, id: "renamed-user" };
+  observers.forEach(notify => notify());
+  expect(await worker.currentSubmissionEvidence(page, baseline)).toBeUndefined();
+  turns[2] = { ...turns[2]!, id: "current-user" };
+  turns.push({ id: "new-user", index: 9, role: "user", mounted: true });
   observers.forEach(notify => notify());
   expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
   turns.push({ ...turns[3]!, index: 20 });
@@ -450,7 +454,7 @@ test("compaction retry submission evidence cannot make prompt-stage settlement u
   } as any;
   const baseline = {
     domCache: {},
-    initialTurnIdentities: [],
+    initialTurnIdentities: [], initialUserAnchors: [],
   } as any;
   const prototype = ChatGptBrowserWorker.prototype as unknown as {
     runStage<T>(
@@ -547,7 +551,7 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
   };
   type Baseline = {
     responseTurns: { last(): unknown };
-    initialTurnIdentities: string[];
+    initialTurnIdentities: string[]; initialUserAnchors: { identity: string; index: number }[];
     domCache: Record<string, unknown>;
   };
   type Recovery = { page: Page; baseline: Baseline };
@@ -625,7 +629,7 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
 
   const baseline: Baseline = {
     responseTurns: { last: () => hiddenLocator },
-    initialTurnIdentities: [],
+    initialTurnIdentities: [], initialUserAnchors: [],
     domCache: {},
   };
   const reboundBaseline: Baseline = { ...baseline, domCache: {} };
@@ -877,7 +881,7 @@ test("an accepted turn rebinds the missing assistant observation and acknowledge
     chatgptWeb: { localToolsEnabled: true, solAvailable: true, extraHighAvailable: true, proAvailable: true },
   };
   type Baseline = {
-    initialTurnIdentities: string[];
+    initialTurnIdentities: string[]; initialUserAnchors: { identity: string; index: number }[];
     domCache: Record<string, unknown>;
   };
   type Recovery = { page: Page; baseline: Baseline; lastAttempt: number };
@@ -920,8 +924,8 @@ test("an accepted turn rebinds the missing assistant observation and acknowledge
   }) as unknown as Page;
   const firstPage = makePage("first");
   const reboundPage = makePage("rebound");
-  const firstBaseline: Baseline = { initialTurnIdentities: [], domCache: {} };
-  const reboundBaseline: Baseline = { initialTurnIdentities: [], domCache: {} };
+  const firstBaseline: Baseline = { initialTurnIdentities: [], initialUserAnchors: [], domCache: {} };
+  const reboundBaseline: Baseline = { initialTurnIdentities: [], initialUserAnchors: [], domCache: {} };
   const progress = new ChatGptExternalTurnProgress();
   const completionTracker = new ChatGptCompletionTracker();
   const observedPages: Page[] = [];
@@ -970,7 +974,7 @@ test("an accepted turn rebinds the missing assistant observation and acknowledge
 });
 
 test("missing-assistant expiry checks fresh DOM after a delayed wake while preserving the turn deadline", async () => {
-  type Baseline = { initialTurnIdentities: string[]; domCache: Record<string, unknown> };
+  type Baseline = { initialTurnIdentities: string[]; initialUserAnchors: { identity: string; index: number }[]; domCache: Record<string, unknown> };
   type State = { turnIdentities: string[]; userIdentities: string[]; responseIdentities: string[] };
   const hiddenLocator = {
     filter() { return this; },
@@ -1015,7 +1019,7 @@ test("missing-assistant expiry checks fresh DOM after a delayed wake while prese
       };
       const result = worker.waitForNewAssistantTurn(
         page,
-        { initialTurnIdentities: [], domCache: {} },
+        { initialTurnIdentities: [], initialUserAnchors: [], domCache: {} },
         scenario === "turn-deadline" ? now + CHATGPT_RESPONSE_DOM_GRACE_MS : undefined,
       );
       if (scenario === "appeared") {

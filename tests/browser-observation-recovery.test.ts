@@ -41,7 +41,7 @@ test("operator cancellation and ownership errors never open another attachment",
   }
 });
 
-type Baseline = { initialTurnIdentities: string[]; domCache: Record<string, unknown> };
+type Baseline = { initialTurnIdentities: string[]; initialUserAnchors: { identity: string; index: number }[]; domCache: Record<string, unknown> };
 type State = { turnIdentities: string[]; userIdentities: string[]; responseIdentities: string[] };
 type Recovery = (attempt: number) => Promise<{ page: Page; baseline: Baseline; lastAttempt: number }>;
 type Observer = {
@@ -57,7 +57,7 @@ type Observer = {
 function observationFixture() {
   const hidden = { filter() { return this; }, last() { return this; }, isVisible: async () => false };
   const page = { isClosed: () => false, locator: () => hidden } as unknown as Page;
-  const baseline: Baseline = { initialTurnIdentities: [], domCache: {} };
+  const baseline: Baseline = { initialTurnIdentities: [], initialUserAnchors: [], domCache: {} };
   const worker = Object.create(ChatGptBrowserWorker.prototype) as Observer;
   const timeout = async (): Promise<never> => { throw new ChatGptBrowserObservationTimeoutError(1); };
   worker.submissionDomState = timeout;

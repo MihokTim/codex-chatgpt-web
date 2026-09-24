@@ -1273,6 +1273,7 @@ interface ChatGptSubmissionBaseline {
   userTurns: Locator;
   responseTurns: Locator;
   initialTurnIdentities: readonly string[];
+  initialUserAnchors: readonly { identity: string; index: number }[];
   submittedUserIdentity?: string;
   domCache: ChatGptSubmissionDomCache;
 }
@@ -1499,13 +1500,23 @@ function submittedUserIdentity(
   baseline: ChatGptSubmissionBaseline,
   state: ChatGptSubmissionDomState,
 ): string | undefined {
-  const observed = chatGptNewTurnIdentity(baseline.initialTurnIdentities, state.userIdentities);
+  // A new ID inside the old conversation is a remount, not proof of a send. Logical
+  // outer containers survive virtualization, so the new user must extend that boundary.
+  const candidates = state.userIdentities.filter(identity =>
+    !baseline.initialTurnIdentities.includes(identity)
+    && state.turnIdentities.indexOf(identity) === baseline.initialTurnIdentities.length);
+  const observed = chatGptNewTurnIdentity([], candidates);
   if (baseline.submittedUserIdentity && observed && baseline.submittedUserIdentity !== observed) {
     throw new ChatGptWebAdapterError("ChatGPT changed the submitted user turn identity.", {
       status: 502, errorType: "server_error", code: "chatgpt_turn_identity_conflict", retryable: false,
     });
   }
-  baseline.submittedUserIdentity ??= observed;
+  if (!baseline.submittedUserIdentity && observed) {
+    // Assistant IDs can change while rendering. Previously observed user containers,
+    // however, must still establish the same prefix before a new user is first bound.
+    if (!baseline.initialUserAnchors.every(anchor => state.turnIdentities[anchor.index] === anchor.identity)) return undefined;
+    baseline.submittedUserIdentity = observed;
+  }
   return baseline.submittedUserIdentity;
 }
 
@@ -3099,13 +3110,9 @@ export class ChatGptBrowserWorker {
     signal?: AbortSignal,
   ): Promise<ChatGptSubmissionEvidence | undefined> {
     const state = await this.submissionDomState(page, baseline.domCache, signal);
-    submittedUserIdentity(baseline, state);
-    return chatGptSubmissionEvidence({
-      initialTurnIdentities: baseline.initialTurnIdentities,
-      userIdentities: state.userIdentities,
-      responseIdentities: state.responseIdentities,
-      generationRunning: state.visibleStopButtonCount > 0,
-    });
+    if (submittedUserIdentity(baseline, state)) return "user_turn";
+    // A remounted historical assistant is not independent submission evidence.
+    return state.visibleStopButtonCount > 0 ? "generation_running" : undefined;
   }
 
   private async currentSubmissionAnswerText(
@@ -3130,6 +3137,7 @@ export class ChatGptBrowserWorker {
       userTurns,
       responseTurns,
       initialTurnIdentities: state.turnIdentities,
+      initialUserAnchors: state.userIdentities.map(identity => ({ identity, index: state.turnIdentities.indexOf(identity) })),
       domCache,
     };
   }

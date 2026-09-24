@@ -29,6 +29,34 @@ const current = (ack: string, answer: string, mountUser = true) => section("prep
 const render = (page: Page, html: string) => page.evaluate(value => { document.body.innerHTML = value; }, html);
 const observer = () => Object.create(ChatGptBrowserWorker.prototype) as Observer;
 
+test.each([false, true])("remounted historical users cannot prove a submission (extra exchange=%s)", async extra => {
+  const page = await browser.newPage();
+  try {
+    const worker = observer();
+    await render(page, initial);
+    const baseline = await worker.captureSubmissionBaseline(page);
+    await render(page, section("old-user-remounted", "user", "Preparation")
+      + section("old-answer-remounted", "assistant", "ACK")
+      + (extra ? section("another-user", "user", "Another request") + section("another-answer", "assistant", "Wrong answer") : ""));
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBeUndefined();
+    expect(await worker.currentSubmissionAnswerText(page, baseline)).toBe("");
+    expect(baseline.submittedUserIdentity).toBeUndefined();
+  } finally { await page.close(); }
+});
+
+test("identical user text is safe when it extends the proven conversation boundary", async () => {
+  const page = await browser.newPage();
+  try {
+    const worker = observer();
+    await render(page, initial);
+    const baseline = await worker.captureSubmissionBaseline(page);
+    await render(page, initial + section("repeated-user", "user", "Preparation")
+      + section("new-answer", "assistant", "New response to the repeated request"));
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
+    expect(await worker.currentSubmissionAnswerText(page, baseline)).toBe("New response to the repeated request");
+  } finally { await page.close(); }
+});
+
 test("a changed historical ACK cannot be mistaken for a second answer to the submitted user", async () => {
   const page = await browser.newPage();
   try {
