@@ -46,6 +46,7 @@ import {
 } from "./responses/compaction";
 import { parseRequest } from "./responses/parser";
 import { normalizeCodexAppDelegations } from "./adapters/chatgpt-web/codex-app-delegation";
+import { normalizeCodexRetryInstruction } from "./adapters/chatgpt-web/codex-rollout-environment";
 import { TerminalFailureReplays } from "./responses/terminal-failure-replay";
 import { expandPreviousResponseInput, flushResponseState, rememberResponseState } from "./responses/state";
 import { namespacedToolName, type AdapterEvent, type CodexParsedRequest } from "./types";
@@ -54,6 +55,14 @@ import type { ProviderAdapter } from "./adapters/base";
 import { VERSION } from "./version";
 
 type HttpTrackedEndpoint = "models" | "responses" | "compact" | "search" | "unspecified" | NativeImageEndpoint;
+
+function runtimeDrainingResponse(): Response {
+  // 503 is displayed by Codex as model capacity, even though this is a local lifecycle conflict.
+  return Response.json({ error: {
+    type: "server_error", code: "runtime_draining", retryable: false,
+    message: "The local ChatGPT Web runtime is restarting for maintenance. Resume the task after the runtime is ready.",
+  } }, { status: 409 });
+}
 
 export interface NativeCodexTurnIdentity {
   threadId: string;
@@ -602,13 +611,11 @@ export async function responseRequest(
     // trace tombstone; preserve the adapter's existing strict validation/error path below.
     const message = error instanceof Error ? error.message : String(error);
     if (message === CHATGPT_TURN_REVISION_CONFLICT_MESSAGE) {
-      // Codex can reopen an interrupted task with only refreshed developer/skill context under a
-      // new turn_id. Its last human prompt still belongs to the stopped turn and must not be
-      // replayed as new work. HTTP 400 makes that malformed recovery request terminal instead of
-      // allowing Codex to retry it as an upstream 502.
-      return formatErrorResponse(400, "invalid_request_error", message);
-    }
-    if (!message.includes("requires native Codex turn_id metadata")
+      // Native retries carry the old user item into a new turn. Authenticate its failed-turn
+      // chain from the local rollout; interrupted or unproven prompts still fail closed.
+      if (!normalizeCodexRetryInstruction(parsed)) return formatErrorResponse(400, "invalid_request_error", message);
+      traceId = chatGptWebTraceId(provider, parsed);
+    } else if (!message.includes("requires native Codex turn_id metadata")
       && !message.includes("requires a current-turn user message")) throw error;
   }
   const cancelledError = traceId ? chatGptTurnSessions.cancelledError(traceId) : undefined;
@@ -877,6 +884,13 @@ export function startServer(
       }
       if (req.method === "POST" && (url.pathname === "/admin/drain" || url.pathname === "/admin/resume")) {
         if (!controlAuthorized(req)) return new Response("Unauthorized", { status: 401 });
+        const current = activity();
+        // A browser waits for later HTTP tool-result rounds. Draining while it is alive
+        // would reject its own continuation and manufacture a provider failure/deadlock.
+        if (url.pathname === "/admin/drain"
+          && (current.active_http_turns > 0 || current.active_browser_turns > 0)) {
+          return Response.json({ status: "busy", accepting_turns: !draining, ...current }, { status: 409 });
+        }
         draining = url.pathname === "/admin/drain";
         turnBroker?.setExternalOwnersAccepted(!draining);
         return Response.json({ status: "ok", accepting_turns: !draining, ...activity() });
@@ -1017,11 +1031,7 @@ export function startServer(
       }
       if (req.method === "GET" && url.pathname === "/v1/models") {
         if (draining) {
-          return formatErrorResponse(
-            503,
-            "server_error",
-            "codex-chatgpt-web is draining for a requested service operation",
-          );
+          return runtimeDrainingResponse();
         }
         return httpTurns.track(async signal => {
           const request = ++modelCatalogRequests;
@@ -1072,7 +1082,7 @@ export function startServer(
         });
       }
       if (req.method === "POST" && url.pathname === "/v1/responses") {
-        if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        if (draining) return runtimeDrainingResponse();
         return httpTurns.track(
           (signal, bindIdentity) => responseRequest(
             new Request(req, { signal }),
@@ -1086,7 +1096,7 @@ export function startServer(
         );
       }
       if (req.method === "POST" && url.pathname === "/v1/responses/compact") {
-        if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        if (draining) return runtimeDrainingResponse();
         return httpTurns.track(
           (signal, bindIdentity) => compactRequest(
             new Request(req, { signal }),
@@ -1100,7 +1110,7 @@ export function startServer(
         );
       }
       if (req.method === "POST" && url.pathname === "/v1/alpha/search") {
-        if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        if (draining) return runtimeDrainingResponse();
         return httpTurns.track(
           signal => nativeSearchRequest(new Request(req, { signal }), dependencies.fetchUpstream),
           req.signal,
@@ -1110,7 +1120,7 @@ export function startServer(
       }
       if (req.method === "POST"
         && (url.pathname === "/v1/images/generations" || url.pathname === "/v1/images/edits")) {
-        if (draining) return formatErrorResponse(503, "server_error", "codex-chatgpt-web is draining for a requested service operation");
+        if (draining) return runtimeDrainingResponse();
         const endpoint: NativeImageEndpoint = url.pathname === "/v1/images/generations"
           ? "images/generations"
           : "images/edits";

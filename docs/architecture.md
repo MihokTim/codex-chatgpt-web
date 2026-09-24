@@ -256,11 +256,18 @@ HTTP `426`, which is Codex's native capability-negotiation signal for an immedia
 switch to its HTTP/SSE transport. No model or provider fallback occurs.
 
 Setup never restarts an already loaded daemon implicitly. A requested stop, restart, replacement,
-or uninstall first calls a private authenticated drain endpoint. The daemon rejects new turns and
-reports two independent counters:
+or uninstall first calls a private authenticated drain endpoint. The daemon atomically checks
+two independent counters before rejecting new work:
 
 - active HTTP requests, including native compaction, Search, and Image Gen forwarding;
 - active ChatGPT browser sessions, including time spent waiting for local Codex tool results.
+
+Drain returns HTTP 409 without changing admission when either counter is nonzero. In particular,
+an active browser needs subsequent HTTP tool-result rounds to finish; blocking those rounds is
+not a safe way to wait for idleness. Callers may retry drain after the task finishes, or use the
+explicit cancellation controls when cancellation is intended. Once drained, work endpoints return
+HTTP 409 with `runtime_draining`, preserving the local maintenance reason instead of Codex's
+generic model-capacity interpretation of HTTP 503.
 
 The lifecycle operation proceeds only when both counters are zero. The launcher then stops the
 tunnel through its runtime command and asks the daemon to flush state and exit through an

@@ -1002,6 +1002,13 @@ test.each(["alpha/search", "images/generations"])("authenticated lifecycle contr
     }
     expect(activeHttpTurns).toBe(1);
 
+    const busy = await fetch(`${endpoint}/admin/drain`, {
+      method: "POST", headers: { authorization: `Bearer ${config.controlToken}` },
+    });
+    expect(busy.status).toBe(409);
+    expect(await busy.json()).toMatchObject({ accepting_turns: true, active_http_turns: 1 });
+    expect(upstreamAbortObserved).toBe(false);
+
     const cancelled = await fetch(`${endpoint}/admin/cancel-turns`, {
       method: "POST",
       headers: { authorization: `Bearer ${config.controlToken}` },
@@ -1072,9 +1079,11 @@ test("lifecycle drain and cancellation include browser turns owned by the extern
       error => error instanceof Error ? error.message : String(error),
     );
 
-    const drain = await fetch(`${endpoint}/admin/drain`, { method: "POST", headers: authorization });
-    expect(await drain.json()).toMatchObject({ active_browser_turns: 1, accepting_turns: false });
-    await expect(remote.register(environment, 60_000, "dev-after-drain")).rejects.toThrow("draining");
+    const busyDrain = await fetch(`${endpoint}/admin/drain`, { method: "POST", headers: authorization });
+    expect(busyDrain.status).toBe(409);
+    expect(await busyDrain.json()).toMatchObject({ active_browser_turns: 1, accepting_turns: true });
+    const health = await fetch(`${endpoint}/healthz`);
+    expect(await health.json()).toMatchObject({ accepting_turns: true });
 
     const cancel = await fetch(`${endpoint}/admin/cancel-turns`, { method: "POST", headers: authorization });
     expect(await cancel.json()).toMatchObject({
@@ -1083,6 +1092,9 @@ test("lifecycle drain and cancellation include browser turns owned by the extern
       active_browser_turns: 0,
     });
     expect(await waiting).toContain("revoked");
+    const drain = await fetch(`${endpoint}/admin/drain`, { method: "POST", headers: authorization });
+    expect(await drain.json()).toMatchObject({ active_browser_turns: 0, accepting_turns: false });
+    await expect(remote.register(environment, 60_000, "dev-after-drain")).rejects.toThrow("draining");
   } finally {
     await server.stop(true);
     await closeTurnBrokers();
@@ -1103,13 +1115,22 @@ test("a drained runtime rejects new model-catalog work before shutdown", async (
     expect(drain.status).toBe(200);
 
     const models = await fetch(`${endpoint}/v1/models`);
-    expect(models.status).toBe(503);
+    expect(models.status).toBe(409);
     expect(await models.json()).toMatchObject({
       error: {
         type: "server_error",
-        message: "codex-chatgpt-web is draining for a requested service operation",
+        code: "runtime_draining",
+        retryable: false,
       },
     });
+
+    for (const path of ["responses", "responses/compact", "alpha/search", "images/generations"]) {
+      const blocked = await fetch(`${endpoint}/v1/${path}`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+      });
+      expect(blocked.status).toBe(409);
+      expect(await blocked.json()).toMatchObject({ error: { code: "runtime_draining" } });
+    }
 
     const resume = await fetch(`${endpoint}/admin/resume`, {
       method: "POST",
@@ -1250,7 +1271,7 @@ test("standalone native image generation and edits preserve their upstream proto
     const drained = await fetch(`${endpoint}/v1/images/edits`, {
       method: "POST", headers: { authorization: "Bearer test-codex-session" }, body: "{}",
     });
-    expect(drained.status).toBe(503);
+    expect(drained.status).toBe(409);
     expect(requests).toHaveLength(2);
   } finally {
     await server.stop(true);

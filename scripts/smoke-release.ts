@@ -147,7 +147,8 @@ try {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ model: "chatgpt-web/high", reasoning: { effort: "high" }, input: "test", stream: false }),
   });
-  if (rejectedWhileDraining.status !== 503) {
+  if (rejectedWhileDraining.status !== 409
+    || ((await rejectedWhileDraining.json()) as { error?: { code?: string } }).error?.code !== "runtime_draining") {
     throw new Error(`daemon accepted a new turn while draining: HTTP ${rejectedWhileDraining.status}`);
   }
   const resume = await fetch(`http://127.0.0.1:${port}/admin/resume`, {

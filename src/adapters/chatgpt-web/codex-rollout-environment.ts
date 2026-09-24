@@ -13,9 +13,11 @@ import {
 import { basename, isAbsolute, join, relative, resolve, toNamespacedPath } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { expandUserPath } from "../../config";
+import { getCodexHome } from "../../codex-integration-shared";
 import { findTopLevelAssignment } from "../../codex-integration-document";
 import type { CodexParsedRequest, CodexTool } from "../../types";
 import {
+  chatGptTurnUserRevisionHistory,
   extractChatGptCompactionSourceRevision,
   extractChatGptRootThreadMetadata,
   extractChatGptThreadSpawnLineage,
@@ -30,6 +32,34 @@ import type {
 } from "./environment";
 
 type RolloutIdentity = ChatGptRootThreadMetadata | ChatGptThreadSpawnLineage;
+
+/** Rebind a native retry only after the local rollout proves its exact failed instruction. */
+export function normalizeCodexRetryInstruction(parsed: CodexParsedRequest, codexHome = getCodexHome()): boolean {
+  if (parsed._compactionRequest) return false;
+  const identity = extractChatGptTurnIdentity(parsed);
+  const lineage = extractChatGptThreadSpawnLineage(parsed) ?? extractChatGptRootThreadMetadata(parsed);
+  const source = chatGptTurnUserRevisionHistory(parsed).at(-1);
+  const body = record(parsed._rawBody);
+  if (!lineage || !identity.turnId || !source?.turnId || source.turnId === identity.turnId
+    || !source.itemId || !Array.isArray(body?.input)) return false;
+  const matches = body.input.filter(value => record(value)?.id === source.itemId);
+  const instruction = record(matches[0]);
+  if (matches.length !== 1 || instruction?.type !== "message" || instruction.role !== "user") return false;
+  try {
+    const environment = resolveCurrentCodexRolloutEnvironment({
+      codexHome, lineage, turnId: identity.turnId, retryInstruction: { parsed, instruction },
+    });
+    if (!environment) return false;
+  } catch { return false; }
+  // Keep native item identity and content. Only this proven carry-over belongs to the new
+  // execution; historical environment envelopes retain their original provenance.
+  parsed._rawBody = { ...body, input: body.input.map(value => value === instruction ? {
+    ...instruction, internal_chat_message_metadata_passthrough: {
+      ...record(instruction.internal_chat_message_metadata_passthrough), turn_id: identity.turnId,
+    },
+  } : value) };
+  return true;
+}
 
 /** Shared request resolution; native deliveries always require their canonical destination. */
 export function resolveChatGptRequestEnvironment(parsed: CodexParsedRequest, options: {
@@ -280,6 +310,55 @@ function latestTurnContext(fd: number, size: number): Record<string, unknown> | 
     if (item.type === "turn_context") return record(item.payload);
   }
   return undefined;
+}
+
+function retryableNativeFailure(payload: Record<string, unknown>): boolean {
+  const error = record(payload.error);
+  const code = error?.codex_error_info;
+  if (["server_overloaded", "http_connection_failed", "response_stream_connection_failed",
+    "response_stream_disconnected", "response_too_many_failed_attempts"].includes(String(code))) return true;
+  // An earlier bridge version rejected this same retry before opening a browser. Walk past
+  // that failed attempt only if the chain still reaches the exact original failed instruction.
+  return code === "other" && typeof error?.message === "string"
+    && error.message.includes("ChatGPT web current user message conflicts with native Codex turn_id metadata");
+}
+
+function verifyRetryInstruction(fd: number, size: number, turnId: string, retry: {
+  parsed: CodexParsedRequest; instruction: Record<string, unknown>;
+}): void {
+  let activeTurn: string | undefined = turnId;
+  let failedTurns = 0;
+  let rows = 0;
+  for (const row of reverseRolloutRecords(fd, size)) {
+    if (++rows > 20_000) break;
+    const payload = record(row.payload);
+    if (!payload) continue;
+    if (row.type === "event_msg") {
+      if (payload.type === "turn_aborted") break;
+      if (payload.type === "task_complete") {
+        if (activeTurn !== undefined || !retryableNativeFailure(payload)
+          || typeof payload.turn_id !== "string" || !CODEX_ID.test(payload.turn_id)
+          || ++failedTurns > 16) break;
+        activeTurn = payload.turn_id;
+      } else if (payload.type === "task_started") {
+        if (payload.turn_id !== activeTurn) break;
+        activeTurn = undefined;
+      }
+    } else if (row.type === "turn_context") {
+      if (payload.turn_id !== activeTurn) break;
+    } else if (row.type === "response_item") {
+      const revisions = chatGptTurnUserRevisionHistory({
+        ...retry.parsed, _rawBody: { ...record(retry.parsed._rawBody), input: [payload] },
+      });
+      if (revisions.length === 0) continue;
+      const instruction = retry.instruction;
+      if (failedTurns > 0 && activeTurn === record(instruction.internal_chat_message_metadata_passthrough)?.turn_id
+        && ["type", "role", "id", "content"].every(key => isDeepStrictEqual(payload[key], instruction[key]))
+        && record(payload.internal_chat_message_metadata_passthrough)?.turn_id === activeTurn) return;
+      break; // A newer/different instruction must never be skipped to find a convenient match.
+    }
+  }
+  throw new Error("Codex rollout does not authenticate the failed-turn retry instruction");
 }
 
 /** Verify native app deliveries without loading the complete task history into memory. */
@@ -682,6 +761,7 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
   tools?: readonly CodexTool[];
   historicalEnvironmentMessages?: ChatGptUnattributedEnvironmentMessage[];
   nativeDelegations?: Record<string, unknown>[];
+  retryInstruction?: { parsed: CodexParsedRequest; instruction: Record<string, unknown> };
 }): ChatGptTurnEnvironment | undefined {
   const { codexHome, lineage, turnId, tools, compactionSourceTurnId } = options;
   const nativeThreadId = CODEX_ID.test(lineage.threadId);
@@ -725,6 +805,7 @@ export function resolveCurrentCodexRolloutEnvironment(options: {
       if (options.nativeDelegations) {
         verifyNativeDelegations(fd, size, turnId, options.nativeDelegations);
       }
+      if (options.retryInstruction) verifyRetryInstruction(fd, size, turnId, options.retryInstruction);
       matching.push(environment);
     } finally {
       closeSync(fd);
