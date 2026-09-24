@@ -42,23 +42,36 @@ function delegationRoster(models: readonly ModelCatalogRow[]): unknown[] {
 }
 
 describe("Compatibility V1 subagent model roster", () => {
+  test.each(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])("preserves the original native default %s", slug => {
+    const source = completeRoster();
+    source.find(model => model.slug === slug)!.priority = -1;
+    const result = prioritizeCompatibilityV1Models(source, "compatibility-v1");
+    expect(delegationRoster(result)[0]).toBe(slug);
+    expect(delegationRoster(result).toSorted()).toEqual([...COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS].sort());
+  });
+
+  test.each(["gpt-5.6-sol", "future-native-default"])("does not replace a native default outside the requested five-model set: %s", slug => {
+    const source = [...completeRoster(), row(slug, 0)];
+    expect(prioritizeCompatibilityV1Models(source, "compatibility-v1")).toEqual(source);
+  });
+
   test("prefers GPT-6 while accepting older native catalogs without rewriting model capabilities", () => {
     const current = completeRoster();
     const older = current.map(model => ({ ...model, slug: model.slug === "gpt-6-sol" ? "gpt-5.6-sol"
       : model.slug === "gpt-6-luna" ? "gpt-5.6-luna" : model.slug }));
     expect(resolveCompatibilityV1PreferredRoster(older)).toEqual([
-      "chatgpt-web/gpt-6-pro", "chatgpt-web/gpt-5.6-pro", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna",
+      "gpt-6-astra", "chatgpt-web/gpt-6-pro", "chatgpt-web/gpt-5.6-pro", "gpt-5.6-sol", "gpt-5.6-luna",
     ]);
-    const mixed = [...current, row("gpt-5.6-sol", 0), row("gpt-5.6-luna", 0)];
+    const mixed = [...current, row("gpt-5.6-sol", 10), row("gpt-5.6-luna", 10)];
     expect(delegationRoster(prioritizeCompatibilityV1Models(mixed, "compatibility-v1")))
-      .toEqual([...COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS]);
+      .toEqual(["gpt-6-astra", "chatgpt-web/gpt-6-pro", "chatgpt-web/gpt-5.6-pro", "gpt-6-sol", "gpt-6-luna"]);
   });
   test("reserves the five explicit override slots and leaves all rows selectable", () => {
     const source = completeRoster();
     const snapshot = structuredClone(source);
     const result = prioritizeCompatibilityV1Models(source, "compatibility-v1");
 
-    expect(delegationRoster(result)).toEqual([...COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS]);
+    expect(delegationRoster(result)).toEqual(["gpt-6-astra", "chatgpt-web/gpt-6-pro", "chatgpt-web/gpt-5.6-pro", "gpt-6-sol", "gpt-6-luna"]);
     expect(source).toEqual(snapshot);
     expect(result.find(model => model.slug === "gpt-reserve")?.priority).toBe(0);
     for (const slug of ["chatgpt-web/medium", "chatgpt-web/high", "chatgpt-web/extra-high", "gpt-5.5"]) {

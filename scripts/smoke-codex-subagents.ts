@@ -16,6 +16,8 @@ import { routeChatGptWebRequest } from "../src/server";
 
 const protocol = process.argv.includes("--v1") ? "v1" : "v2";
 const webDefaults = process.argv.includes("--web-defaults");
+const nativeDefault = process.argv.includes("--native-default");
+if (nativeDefault && webDefaults) throw new Error("Choose either native-default or web-defaults smoke mode");
 const childModelArgument = process.argv.slice(2).find(argument => argument.startsWith("--child-model="));
 const codexArg = process.argv.slice(2).find(argument => !argument.startsWith("--"));
 const codex = resolve(
@@ -46,6 +48,11 @@ catalogConfig.proAvailable = true;
 catalogConfig.extraHighAvailable = true;
 catalogConfig.subagentProtocol = protocol === "v1" ? "compatibility-v1" : "native";
 const originalCatalog = JSON.stringify(sourceCatalog);
+const sourceNativeDefault = (sourceCatalog.models as Array<Record<string, unknown>>)
+  .filter(model => typeof model.slug === "string" && !model.slug.startsWith("chatgpt-web/")
+    && model.visibility === "list" && model.supported_in_api === true)
+  .toSorted((left, right) => Number(left.priority ?? Number.MAX_SAFE_INTEGER) - Number(right.priority ?? Number.MAX_SAFE_INTEGER))[0]?.slug;
+if (nativeDefault && typeof sourceNativeDefault !== "string") throw new Error("Source catalog has no eligible native default");
 const catalog = augmentNativeModelCatalog(sourceCatalog, catalogConfig);
 if (JSON.stringify(sourceCatalog) !== originalCatalog) {
   throw new Error("Web augmentation mutated the native catalog");
@@ -359,7 +366,7 @@ const server = Bun.serve({
 });
 
 writeFileSync(join(codexHome, "config.toml"), [
-  'model = "chatgpt-web/pro"',
+  ...(nativeDefault ? [] : ['model = "chatgpt-web/pro"']),
   'model_provider = "lifecycle"',
   `model_catalog_json = ${JSON.stringify(join(root, "models.json"))}`,
   "",
@@ -395,8 +402,7 @@ try {
     "--json",
     "--sandbox", "read-only",
     "-c", 'approval_policy="never"',
-    "--model",
-    "chatgpt-web/pro",
+    ...(nativeDefault ? [] : ["--model", "chatgpt-web/pro"]),
     "ROOT_LIFECYCLE: complete the nested subagent lifecycle and the follow-up.",
   ], {
     cwd: root,
@@ -464,6 +470,9 @@ try {
       }
     }
   }
+  if (nativeDefault && requestLog.some(request => request.role === "root" && request.model !== sourceNativeDefault)) {
+    failures.push(`Unspecified root model changed from the native default ${sourceNativeDefault}`);
+  }
   if (failures.length > 0) {
     throw new Error(
       `${failures.join("; ")}\nObserved: ${JSON.stringify([...observed])}`
@@ -476,7 +485,8 @@ try {
       if (!advertisedModels.has(slug)) throw new Error(`Native tool declarations did not advertise ${slug}`);
     }
   }
-  const proof = { protocol, observed: [...observed].toSorted(), childModel: explicitChildModel, childEffort: explicitChildReasoningEffort, advertisedModels: [...advertisedModels], requests: requestLog };
+  const proof = { protocol, observed: [...observed].toSorted(), childModel: explicitChildModel, childEffort: explicitChildReasoningEffort, advertisedModels: [...advertisedModels],
+    ...(nativeDefault ? { nativeDefault: sourceNativeDefault } : {}), requests: requestLog };
   if (childModelArgument) {
     mkdirSync(resolve("output"), { recursive: true });
     const proofName = explicitChildModel.replace(/[^A-Za-z0-9_.-]/g, "_");

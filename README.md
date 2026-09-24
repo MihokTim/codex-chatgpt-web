@@ -10,7 +10,7 @@ The current fork identity is **6.0.0-fork.2**. The application version remains *
 
 | Area | Behavior |
 | --- | --- |
-| Subagent catalog | Compatibility V1 prioritizes GPT-6 Pro (Web), GPT-5.6 Pro (Web), native GPT-6 Astra, Sol and Luna within its five explicit model overrides. Older native Sol/Luna rows are fallback candidates only when their current equivalents are unavailable. |
+| Subagent catalog | Compatibility V1 reserves GPT-6 Pro (Web), GPT-5.6 Pro (Web), native GPT-6 Astra, Sol and Luna within its five explicit model overrides, keeping the original native default first. Older native Sol/Luna rows are fallback candidates only when their current equivalents are unavailable. |
 | Model identity | Execution replay and compaction continuations are separated by named model family. |
 | Browser responses | Answers remain anchored to the submitted user turn even when older assistant messages are remounted. |
 | Model controls | Selection verifies the live effort state, recovers bounded focus/menu hydration failures, and preserves typed terminal errors. |
@@ -21,6 +21,8 @@ The current fork identity is **6.0.0-fork.2**. The application version remains *
 | Distribution | Build provenance is recorded, and upstream automatic installation cannot overwrite the fork's patches. |
 
 See the [V6 review and per-commit disposition](docs/v6-fork-review.md) for evidence, removed workarounds and limits. The fork preserves V6's named models and original legacy aliases. In particular, `chatgpt-web/light` is **not** repurposed as GPT-5.6 Pro; choose `chatgpt-web/gpt-5.6-pro` explicitly.
+
+The shared catalog priority also controls an unspecified parent model. The five-model policy applies only when it can retain the original native default; incomplete catalogs and future defaults outside this set keep their original priorities. Explicit model choices and user configuration are not rewritten.
 
 ## Build and install
 
@@ -57,6 +59,7 @@ Optional native Codex compatibility tests run against a supplied executable with
 ```sh
 bun run scripts/smoke-codex-subagents.ts /path/to/codex --v1 --child-model=chatgpt-web/gpt-6-pro
 bun run scripts/smoke-codex-subagents.ts /path/to/codex --v1 --child-model=chatgpt-web/gpt-5.6-pro
+bun run scripts/smoke-codex-subagents.ts /path/to/codex --v1 --native-default --child-model=chatgpt-web/gpt-5.6-pro
 bun run scripts/smoke-codex-subagents.ts /path/to/codex --v2
 ```
 

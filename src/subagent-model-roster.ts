@@ -39,7 +39,7 @@ export function hasCompleteCompatibilityV1PreferredRoster(models: readonly unkno
   return resolveCompatibilityV1PreferredRoster(models) !== undefined;
 }
 
-/** Prefer current native models; accept each older generation only when the new row is absent. */
+/** Resolve five eligible overrides without changing the source catalog's native default. */
 export function resolveCompatibilityV1PreferredRoster(models: readonly unknown[]): string[] | undefined {
   const eligibleSlugs = new Set(models.filter(delegationModel).map(modelSlug));
   const roster: Array<string | undefined> = COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS.map(slug => {
@@ -48,22 +48,31 @@ export function resolveCompatibilityV1PreferredRoster(models: readonly unknown[]
     if (slug === "gpt-6-luna" && eligibleSlugs.has("gpt-5.6-luna")) return "gpt-5.6-luna";
     return undefined;
   });
-  return roster.every((slug): slug is string => slug !== undefined) ? roster : undefined;
+  if (!roster.every((slug): slug is string => slug !== undefined)) return undefined;
+  // Codex also uses this priority for an unspecified parent model. Keep its original
+  // native choice first rather than silently switching a new task onto Web Pro.
+  const nativeDefault = models.filter(delegationModel)
+    .filter(model => { const slug = modelSlug(model); return slug && !slug.startsWith("chatgpt-web/"); })
+    .toSorted((left, right) => (modelPriority(left) ?? Number.MAX_SAFE_INTEGER)
+      - (modelPriority(right) ?? Number.MAX_SAFE_INTEGER))[0];
+  const defaultSlug = modelSlug(nativeDefault);
+  // A future default outside these five cannot safely share their bounded priority slots.
+  if (!defaultSlug || !roster.includes(defaultSlug)) return undefined;
+  return [defaultSlug, ...roster.filter(slug => slug !== defaultSlug)];
 }
 
 /**
  * Return a catalog with Compatibility V1 delegation priorities applied without mutating its rows.
- * Incomplete catalogs keep their original priorities so staged rollouts and non-Pro accounts retain
- * the legacy policy until every preferred model is actually usable.
+ * Incomplete catalogs and catalogs with a different native default retain their priorities.
+ * No model, effort, capability, or user configuration is created or rewritten by this policy.
  */
 export function prioritizeCompatibilityV1Models(
   models: readonly ModelCatalogRow[],
   protocol: SubagentProtocol,
 ): ModelCatalogRow[] {
+  if (protocol !== "compatibility-v1") return [...models];
   const preferred = resolveCompatibilityV1PreferredRoster(models);
-  if (protocol !== "compatibility-v1" || !preferred) {
-    return [...models];
-  }
+  if (!preferred) return [...models];
 
   const ranks = new Map<string, number>(
     preferred.map((slug, rank) => [slug, rank]),
