@@ -1495,12 +1495,16 @@ export function chatGptAssistantIdentityAfterUser(
   }
   const answers = state.responseIdentities.filter(identity => afterUser.has(identity));
   if (answers.length === 0) return undefined;
-  if (following.length !== 1 || answers.length !== 1) {
+  if (answers.length !== 1) {
     throw new ChatGptWebAdapterError(
       `ChatGPT exposed ambiguous response ownership after the submitted user (containers=${following.length}, answers=${answers.length}).`,
       { status: 502, errorType: "server_error", code: "chatgpt_turn_identity_conflict", retryable: false },
     );
   }
+  // A live render can briefly mount an empty container beside the response. It is
+  // not evidence of a second answer, but neither may it be skipped to bind one.
+  // Wait for an unambiguous boundary; the caller retains its normal bounded grace.
+  if (following.length !== 1) return undefined;
   return answers[0];
 }
 
@@ -3110,7 +3114,13 @@ export class ChatGptBrowserWorker {
       // Virtualization removes a turn's section, but retains its outer identity container.
       const containers = [...document.querySelectorAll("[data-turn-id-container]")].filter(element =>
         element.parentElement?.closest("[data-turn-id-container]")?.getAttribute("data-turn-id-container")
-          !== element.getAttribute("data-turn-id-container"));
+          !== element.getAttribute("data-turn-id-container"))
+        // This empty client sentinel is inserted only after Send, ahead of the first
+        // user. It is not a logical conversation turn or a virtualized message anchor.
+        .filter(element => element.getAttribute("data-turn-id-container") !== "client-created-root"
+          || element.matches("[data-turn-id], [data-turn]")
+          || element.querySelector("[data-turn-id], [data-turn]") !== null
+          || Boolean(element.textContent?.trim()));
       let turnIdentities: string[];
       let userIdentities: string[];
       let responseIdentities: string[];

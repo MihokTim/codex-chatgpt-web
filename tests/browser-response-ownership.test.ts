@@ -30,6 +30,51 @@ const current = (ack: string, answer: string, mountUser = true) => section("prep
 const render = (page: Page, html: string) => page.evaluate(value => { document.body.innerHTML = value; }, html);
 const observer = () => Object.create(ChatGptBrowserWorker.prototype) as Observer;
 
+test("a post-send client sentinel does not shift the submitted user boundary", async () => {
+  const page = await browser.newPage();
+  try {
+    const worker = observer();
+    await render(page, '');
+    const baseline = await worker.captureSubmissionBaseline(page);
+    const sent = '<div data-turn-id-container="client-created-root" data-is-intersecting="true"></div>'
+      + section('submitted-user', 'user', 'Actual request');
+    await render(page, sent + section('answer-shell', 'assistant', 'Actual answer'));
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBe('user_turn');
+    const binding = await worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2_000);
+    expect(binding).toMatchObject({ userIdentity: 'submitted-user', identity: 'answer-shell' });
+    expect(await worker.currentSubmissionAnswerText(page, baseline)).toBe('Actual answer');
+    await render(page, sent + section('answer-final', 'assistant', 'Actual final answer'));
+    expect((await worker.reconcileAssistantTurnBinding(page, baseline, binding)).identity).toBe('answer-final');
+  } finally { await page.close(); }
+});
+
+test("an unknown empty response placeholder delays binding without claiming another answer", async () => {
+  const page = await browser.newPage();
+  try {
+    const worker = observer();
+    await render(page, '');
+    const baseline = await worker.captureSubmissionBaseline(page);
+    const sent = section('submitted-user', 'user', 'Actual request');
+    await render(page, sent + '<div data-turn-id-container="temporary-placeholder"></div>'
+      + section('answer', 'assistant', 'Actual answer'));
+    expect(await worker.currentSubmissionEvidence(page, baseline)).toBe('user_turn');
+    expect(await worker.currentSubmissionAnswerText(page, baseline)).toBe('');
+    const pending = worker.waitForNewAssistantTurn(page, baseline, Date.now() + 2_000);
+    expect(await Promise.race([pending.then(() => 'bound'), new Promise(r => setTimeout(() => r('pending'), 80))])).toBe('pending');
+    await render(page, sent + section('answer', 'assistant', 'Actual answer'));
+    expect((await pending).identity).toBe('answer');
+  } finally { await page.close(); }
+});
+
+test("a reserved client root containing a real turn is never silently discarded", async () => {
+  const page = await browser.newPage();
+  try {
+    const worker = observer();
+    await render(page, section('client-created-root', 'user', 'Actual message'));
+    expect((await worker.captureSubmissionBaseline(page)).initialTurnIdentities).toEqual(['client-created-root']);
+  } finally { await page.close(); }
+});
+
 const timeline = (key: string, message: string, answer: string, mounted = true) => `<div data-turn-key="${key}">
   ${mounted ? `<div data-chatgpt-search-unit-key="fallback:0:user" data-chatgpt-search-message-ids="${key}"><div data-user-message-bubble>${message}</div></div>` : ""}
   <span hidden data-chatgpt-agent-turn-start></span>
