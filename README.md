@@ -4,7 +4,7 @@ This is an unofficial fork of [miuuyy/codex-chatgpt-web](https://github.com/miuu
 
 **Native and Web models use the same Codex application and configuration home.** Setup adds Web routes to the native catalog; native requests retain upstream's native passthrough. Production uses `CODEX_HOME`, or `~/.codex` when unset. The bridge keeps its own settings and browser profile in `~/.codex-chatgpt-web`. Only the upstream development profile uses a separate test home.
 
-The current fork identity is **6.0.0-fork.3**. The application version remains **6.0.0** for upstream compatibility. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build.
+The current fork identity is **6.0.0-fork.4**. The application version remains **6.0.0** for upstream compatibility. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build.
 
 ## Changes in this fork
 
@@ -23,6 +23,8 @@ The current fork identity is **6.0.0-fork.3**. The application version remains *
 See the [V6 review and per-commit disposition](docs/v6-fork-review.md) for evidence, removed workarounds and limits. The fork preserves V6's named models and original legacy aliases. In particular, `chatgpt-web/light` is **not** repurposed as GPT-5.6 Pro; choose `chatgpt-web/gpt-5.6-pro` explicitly.
 
 The [fork.3 review resolutions](docs/v6-review-resolutions.md) describe the additional recovery, submission ownership, compaction, and default-model regressions addressed after independent review. Historical validation claims are scoped to their reviewed revision.
+
+The [fork.4 browser compatibility patch](docs/chatgpt-ui-compatibility.md) supports the composer, model picker, app mentions, attachments, and conversation timeline observed on September 24, 2026. Composer detection failures now report an integration error instead of a misleading capacity error.
 
 The shared catalog priority also controls an unspecified parent model. The five-model policy applies only when it can retain the original native default; incomplete catalogs and future defaults outside this set keep their original priorities. Explicit model choices and user configuration are not rewritten.
 
