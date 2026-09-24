@@ -4,7 +4,7 @@ This is an unofficial fork of [miuuyy/codex-chatgpt-web](https://github.com/miuu
 
 **Native and Web models use the same Codex application and configuration home.** Setup adds Web routes to the native catalog; native requests retain upstream's native passthrough. Production uses `CODEX_HOME`, or `~/.codex` when unset. The bridge keeps its own settings and browser profile in `~/.codex-chatgpt-web`. Only the upstream development profile uses a separate test home.
 
-The current fork identity is **6.0.0-fork.5**. The application version remains **6.0.0** for upstream compatibility. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build.
+The current fork identity is **6.0.0-fork.6**. The application version remains **6.0.0** for upstream compatibility. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now `757942251222ee0f71953c35636679c6d92dd636`, including reviewed post-release fixes.
 
 ## Changes in this fork
 
@@ -27,6 +27,8 @@ The [fork.3 review resolutions](docs/v6-review-resolutions.md) describe the addi
 The [fork.4 browser compatibility patch](docs/chatgpt-ui-compatibility.md) supports the composer, model picker, app mentions, attachments, and conversation timeline observed on September 24, 2026. Composer detection failures now report an integration error instead of a misleading capacity error.
 
 Fork.5 corrects a further live failure in the legacy timeline: an empty `client-created-root` inserted after Send was counted as a message, preventing the first submitted user from being bound. See the [follow-up diagnosis](docs/chatgpt-ui-compatibility.md#fork5-follow-up-post-send-root-sentinel).
+
+Fork.6 integrates the upstream hook and login fixes, handles an already-expanded current model picker, and retains unattributed human XML through compaction. **Settings → Updates** always shows the installed build and the last fetched published release, with a separate upstream-source comparison, errors, timestamps and a **Check now** button. See [fork.6 changes and update behavior](docs/fork6-updates.md).
 
 The shared catalog priority also controls an unspecified parent model. The five-model policy applies only when it can retain the original native default; incomplete catalogs and future defaults outside this set keep their original priorities. Explicit model choices and user configuration are not rewritten.
 
@@ -54,7 +56,7 @@ The platform package is written to `launcher/artifacts`. On Windows, `bun run --
 
 Availability depends on the signed-in account. V6's **Limits** panel estimates messages submitted by this launcher; it does not report OpenAI account quota. The optional saved-chat and fresh-conversation settings retain upstream defaults.
 
-The updater can notify about newer upstream versions but does not install their binaries over a fork build. Review the next official tag, reevaluate each patch, run verification, and install a new fork package manually.
+Update checks run at startup and every six hours; **Settings → Updates → Check now** retries without restarting. The sidebar opens the update information when upstream changes or a check failure need attention. Published packages and source changes are reported separately, including when the published version equals this fork's application version. Official binaries cannot be installed over a fork build. Review upstream changes, reevaluate each patch, run verification, and install a new fork package manually.
 
 ## Verification
 
