@@ -2914,8 +2914,15 @@ export class ChatGptBrowserWorker {
     let composer: Locator;
     try {
       composer = await this.activeComposer(page);
-    } catch {
-      throw new Error("ChatGPT web login is expired or the new chat surface is unavailable");
+    } catch (cause) {
+      if (cause instanceof ChatGptWebAdapterError || (cause instanceof DOMException && cause.name === "AbortError")) throw cause;
+      // Only an explicit session alert establishes expired authentication. A changed
+      // composer contract must not be inferred as model overload from "unavailable".
+      await throwIfChatGptSessionFailureAlert(page);
+      throw new ChatGptWebAdapterError(
+        "ChatGPT could not prepare the message composer. Reload ChatGPT and check the browser integration before retrying.",
+        { status: 502, errorType: "server_error", code: "chatgpt_composer_unavailable", retryable: false, cause },
+      );
     }
     if (!useSavedChats && await dismissChatGptTemporaryChatOnboarding(page)) {
       await captureDiagnostic?.("temporary-chat-onboarding-dismissed");

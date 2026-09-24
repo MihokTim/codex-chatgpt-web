@@ -269,7 +269,8 @@ export function httpStatusFromTerminalError(error: {
     error.code === "subscription_required"
   ) return 403;
   if (error.type === "insufficient_quota" || error.code === "insufficient_quota") return 429;
-  if (error.code === "chatgpt_model_selection_failed" || error.code === "chatgpt_effort_unavailable") return 502;
+  if (error.code === "chatgpt_model_selection_failed" || error.code === "chatgpt_effort_unavailable"
+    || error.code === "chatgpt_composer_unavailable") return 502;
   if (error.type === "server_error" && error.code === "server_is_overloaded") return 503;
   // Client-closed messages often arrive as invalid_request_error after classifyError; check message
   // before treating every invalid_request_error as HTTP 400.
