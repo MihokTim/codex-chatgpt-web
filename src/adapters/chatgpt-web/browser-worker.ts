@@ -2452,12 +2452,16 @@ export class ChatGptBrowserWorker {
   }
 
   private async ensurePage(): Promise<Page> {
-    if (this.page && !this.page.isClosed()) return this.page;
+    if (this.page && !this.page.isClosed()) {
+      if (this.config.browserHost === "launcher") await this.ensureMaintenanceViewport(this.page);
+      return this.page;
+    }
     if (this.config.browserHost === "launcher") {
       const connection = await connectLauncherBrowserHost(this.config.browserHostDescriptorPath!);
       this.browser = connection.browser;
       this.context = connection.context;
       this.page = connection.page;
+      await this.ensureMaintenanceViewport(this.page);
       return this.page;
     }
     if (!existsSync(this.config.storageStatePath) || !existsSync(loginVerificationMarkerPath(this.config.storageStatePath))) {
@@ -2473,6 +2477,16 @@ export class ChatGptBrowserWorker {
     this.context = await this.browser.newContext({ storageState: this.config.storageStatePath });
     this.page = await this.context.newPage();
     return this.page;
+  }
+
+  private async ensureMaintenanceViewport(page: Page): Promise<void> {
+    // A hidden primary Electron view can retain a 0x0 renderer despite native bounds.
+    // The new composer cannot reliably process selection/deletion in that state.
+    // Only repair the owned maintenance surface; leased turns have their own viewport owner.
+    const usable = await withChatGptBrowserObservationTimeout(page.evaluate(() => (
+      innerWidth > 0 && innerHeight > 0
+    )));
+    if (!usable) await page.setViewportSize({ width: 1280, height: 900 });
   }
 
   private async ensureManagedBrowser(): Promise<{ browser: Browser; context: BrowserContext }> {

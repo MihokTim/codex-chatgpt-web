@@ -1358,6 +1358,14 @@ test("connector selection re-resolves the active composer after ChatGPT replaces
   ]);
 });
 
+test.each([false, true])("launcher maintenance repairs only an unusable viewport (usable=%s)", async usable => {
+  const sizes: unknown[] = [];
+  const page = { evaluate: async () => usable, setViewportSize: async (size: unknown) => { sizes.push(size); } };
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+  await worker.ensureMaintenanceViewport(page);
+  expect(sizes).toEqual(usable ? [] : [{ width: 1280, height: 900 }]);
+});
+
 test.each([false, true])("connector selection moves highlight to the exact hidden-viewport row before Enter (current=%s)", async current => {
   const keys: string[] = [];
   let arrowCount = 0;

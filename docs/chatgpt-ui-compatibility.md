@@ -10,6 +10,8 @@ The current answer renderer is identified by its assistant message styling metad
 
 Missing composer controls now produce HTTP 502 with `chatgpt_composer_unavailable`, non-retryable, while preserving explicit authentication errors and cancellation. This does not change genuine model-capacity or rate-limit handling.
 
+Hidden launcher maintenance also restores a usable renderer viewport when Electron reports zero width or height. This allows the new editor to select and clear its app-mention proof. Visible maintenance pages keep their measured viewport; leased response tabs retain their existing viewport owner.
+
 Validation includes real Chromium fixtures for both layouts, model selection, app identity, exact prompt readback, attachment scoping, and timeline ownership under remounts and virtualization. Live checks confirmed both named Pro selections without submitting Pro generations, app selection, multiline Japanese prompt integrity, text and image uploads, and one short GPT-5.6 High response through send, extraction, and completion. These checks do not establish every tool workflow or long-context compaction behavior.
 
 Upstream `7579422` independently removes the localized display-text requirement for legacy selected connectors; this patch uses the same metadata-based direction and adds the new app-mention format. The other upstream hook changes are outside this compatibility patch.
