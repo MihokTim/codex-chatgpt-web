@@ -2,6 +2,8 @@
 
 Reviewed on 2026-09-23. Baseline: official `v6.0.0`, commit `212ceef2acac9d6ee0f3c9037abfaf4ad8ff9827`.
 
+This document records the original patch selection and validation. Subsequent independent review found additional boundary defects; see [fork.3 review resolutions](v6-review-resolutions.md) for the corrected contracts and regression coverage. The original passing test counts below do not imply that those additional cases were covered.
+
 ## Lineage and integration
 
 This fork starts at the official V6 tag and applies focused feature commits. The previous fork and its V6 merge are not ancestors of the new fork commits. Old changes were examined as source material, not merged as a batch.
