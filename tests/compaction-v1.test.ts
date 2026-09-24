@@ -23,13 +23,24 @@ test("compaction retains human instructions, not native grouped runtime preamble
     ["# AGENTS.md instructions\nFollow the repository rules", "<environment_context><cwd>/project</cwd></environment_context>"]);
   const mixed = message("mixed", ["user.text", "agents_md.instructions"], ["A real human instruction", "Repository rules"]);
   const unknown = message("unknown", ["future.kind"], ["Preserve unknown input"]);
-  const context = { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>cwd</environment_context>" }] };
-  const notification = { type: "message", role: "user", content: [{ type: "input_text", text: "<subagent_notification>Done</subagent_notification>" }] };
+  const context = message("context", ["environments.environment_context"], ["<environment_context>cwd</environment_context>"]);
+  const notification = message("notification", ["multi_agent.subagent_notification"], ["<subagent_notification>Done</subagent_notification>"]);
   const input = [human, grouped, context, notification, mixed, unknown];
   const saved = structuredClone(input);
   expect(extractCompactUserMessages(input)).toEqual([human, mixed, unknown]);
   expect(input).toEqual(saved);
 });
+
+test.each([undefined, ["user.text"], ["future.kind"], ["user.text", "environments.environment_context"]].map(kinds => ({ kinds })))(
+  "compaction preserves human or unattributed XML with provenance %j", ({ kinds }) => {
+    const messages = ["environment_context", "subagent_notification"].map(tag => ({
+      type: "message", role: "user", content: [{ type: "input_text", text: `<${tag}>Review this example.</${tag}>` }],
+      ...(kinds ? { internal_chat_message_metadata_passthrough: { content_item_kinds: kinds } } : {}),
+    }));
+    expect(extractCompactUserMessages(messages)).toEqual(messages);
+    expect(buildCompactV1Output(extractCompactUserMessages(messages), "Summary").slice(0, -1)).toHaveLength(2);
+  },
+);
 
 test("v1 compaction keeps only the newest ten structured images without copying them into text", () => {
   const input = Array.from({ length: 12 }, (_, index) => ({

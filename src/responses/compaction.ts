@@ -142,12 +142,14 @@ export function extractCompactUserMessages(input: unknown): CompactMessageItem[]
     const metadata = rec.internal_chat_message_metadata_passthrough;
     const kinds = metadata && typeof metadata === "object"
       ? (metadata as { content_item_kinds?: unknown }).content_item_kinds : undefined;
-    if (Array.isArray(kinds) && kinds.length > 0 && kinds.every(kind => COMPACTION_RUNTIME_CONTENT_KINDS.has(kind))) continue;
-    const blocks = compactContentBlocks(rec);
-    if (blocks.length > 0 && blocks.every(block => textBlock(block) && (
-      /^<environment_context>[\s\S]*<\/environment_context>$/.test(block.text!.trim())
-      || /^<subagent_notification>[\s\S]*<\/subagent_notification>$/.test(block.text!.trim())
-    ))) continue;
+    if (Array.isArray(kinds) && kinds.length > 0) {
+      if (kinds.every(kind => COMPACTION_RUNTIME_CONTENT_KINDS.has(kind))) continue;
+      // Explicit human, mixed, and future kinds must not be reclassified by their text.
+      out.push(structuredClone(rec));
+      continue;
+    }
+    // Unattributed environment/notification XML can be human-authored example data.
+    // Only the native content kinds above establish that those messages are runtime input.
     // Codex removes InternalModelContextFragment during process_annotated_compacted_history.
     // In particular, a goal continuation is runtime steering, not a retained human message.
     // Exclude it before computing the v1 checkpoint source, or the next request authenticates
