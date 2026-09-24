@@ -92,10 +92,21 @@ export interface OperationState {
   message: string;
 }
 
-export type UpdateState =
+export interface UpdateInformation {
+  installedBuild: string;
+  integratedCommit: string | null;
+  checkedAt: string | null;
+  lastSuccessfulCheckAt: string | null;
+  release: { version: string; publishedAt: string; newer: boolean; url: string } | null;
+  source: { aheadBy: number; status: "identical" | "ahead" | "behind" | "diverged"; head: string; url: string } | null;
+}
+
+export type UpdateState = (
   | { status: "disabled" | "idle" | "checking" | "up-to-date" }
   | { status: "available" | "downloading" | "installing"; version: string }
-  | { status: "error"; message: string };
+  | { status: "upstream-available" }
+  | { status: "error"; message: string }
+) & { information?: UpdateInformation };
 
 export interface LauncherSnapshot {
   profile: LauncherProfile;
@@ -180,6 +191,7 @@ export interface LauncherApi {
   logs(limit?: number): Promise<LogRecord[]>;
   exportLogs(): Promise<string | null>;
   installUpdate(): Promise<boolean>;
+  checkUpdates(): Promise<UpdateState>;
   windowState(): Promise<{ fullScreen: boolean; maximized: boolean }>;
   windowControl(action: "close" | "minimize" | "zoom"): void;
   onWindowStateChanged(listener: (state: { fullScreen: boolean; maximized: boolean }) => void): () => void;

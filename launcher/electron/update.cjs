@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { pipeline } = require("node:stream/promises");
+const { createForkUpdateController } = require("./fork-update.cjs");
 
 const REPOSITORY = "miuuyy/codex-chatgpt-web";
 const RELEASE_API_URL = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
@@ -208,6 +209,15 @@ function buildJob({ version, platform, executablePath, assetPath, stagingRoot, t
 function defaultDependencies() {
   return {
     fetchRelease: async () => JSON.parse(await downloadText(RELEASE_API_URL)),
+    fetchComparison: async (base) => {
+      const ref = JSON.parse(await downloadText(`https://api.github.com/repos/${REPOSITORY}/git/ref/heads/main`));
+      const sha = ref?.object?.sha;
+      if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("GitHub returned an invalid upstream main revision");
+      const comparison = JSON.parse(await downloadText(
+        `https://api.github.com/repos/${REPOSITORY}/compare/${base}...${sha}?per_page=1`,
+      ));
+      return { ...comparison, head_commit: { sha } };
+    },
     downloadText,
     downloadFile,
     sha256,
@@ -259,12 +269,17 @@ function createUpdateController({
 }) {
   const deps = { ...defaultDependencies(), ...dependencies };
   const forkInstalled = Boolean(forkMetadataPath && fs.existsSync(forkMetadataPath));
-  const forkUpdateMessage = "This is a fork build. Install a reviewed build from the fork repository; official updates would replace its patches.";
+  if (forkInstalled) return createForkUpdateController({
+    currentVersion, metadataPath: forkMetadataPath,
+    fetchRelease: deps.fetchRelease, fetchComparison: deps.fetchComparison,
+    compareVersions, publish, logger,
+  });
   const supportedAsset = releaseAssetName(currentVersion, platform, arch);
   let state = packaged && supportedAsset ? { status: "idle" } : { status: "disabled" };
   let checked = false;
   let pending = null;
   let candidate = null;
+  let checkPending = null;
 
   const transition = (next) => {
     state = next;
@@ -287,9 +302,6 @@ function createUpdateController({
       if (compareVersions(version, currentVersion) <= 0) {
         candidate = null;
         return transition({ status: "up-to-date" });
-      }
-      if (forkInstalled) {
-        return transition({ status: "error", message: `Upstream v${version} is available. ${forkUpdateMessage}` });
       }
       const assetName = releaseAssetName(version, platform, arch);
       if (!assetName) return transition({ status: "disabled" });
@@ -315,7 +327,6 @@ function createUpdateController({
   }
 
   async function beginInstall() {
-    if (forkInstalled) throw new Error(forkUpdateMessage);
     if (pending) throw new Error("An update is already being prepared");
     if (state.status !== "available" || !candidate) throw new Error("No launcher update is available");
     const available = candidate;
@@ -380,6 +391,13 @@ function createUpdateController({
   return {
     getState: () => state,
     checkOnce,
+    checkNow: () => {
+      if (checkPending) return checkPending;
+      if (["checking", "downloading", "installing"].includes(state.status)) return Promise.resolve(state);
+      checked = false;
+      checkPending = checkOnce().finally(() => { checkPending = null; });
+      return checkPending;
+    },
     beginInstall,
     cancelInstall,
   };

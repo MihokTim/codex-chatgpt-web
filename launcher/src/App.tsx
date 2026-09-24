@@ -15,6 +15,8 @@ import { Icon, type IconName } from "./icons";
 import { LimitsSurface } from "./LimitsSurface";
 import { limitsCopyFor } from "./limits-copy";
 import { useLimits } from "./useLimits";
+import { UpdatesPanel } from "./UpdatesPanel";
+import { updateCopyFor } from "./update-copy";
 import type {
   BrowserInteractionMode,
   BrowserState,
@@ -366,7 +368,9 @@ function LauncherShell({
   const mcpOptional = snapshot.state.browserInteractionMode === "automatic"
     && snapshot.state.codexCatalogVerified === true
     && snapshot.state.mcpSetupComplete !== true;
-  const updateVisible = ["available", "downloading", "installing"].includes(snapshot.update.status);
+  const updateVisible = ["available", "downloading", "installing", "upstream-available", "error"].includes(snapshot.update.status);
+  const updateInformationOnly = Boolean(snapshot.update.information) || snapshot.update.status === "error";
+  const updateCopy = updateCopyFor(language);
   const updateBusy = snapshot.update.status === "downloading" || snapshot.update.status === "installing";
   const updateVersion = "version" in snapshot.update ? snapshot.update.version : null;
   const selectedManualTab = browser?.tabs.find(tab => tab.active && tab.interactionMode === "manual");
@@ -627,10 +631,11 @@ function LauncherShell({
               {updateVisible ? (
                 <SidebarItem
                   active={false}
-                  disabled={updateBusy || operation?.status === "running" || browser?.status === "running"}
+                  disabled={!updateInformationOnly && (updateBusy || operation?.status === "running" || browser?.status === "running")}
                   icon="update"
-                  label={updateBusy ? copy.updating : `${copy.updateAvailable} v${updateVersion}`}
-                  onClick={() => void installUpdate()}
+                  label={updateInformationOnly ? (snapshot.update.status === "error" ? updateCopy.errorNotice : updateCopy.notice)
+                    : updateBusy ? copy.updating : `${copy.updateAvailable} v${updateVersion}`}
+                  onClick={() => updateInformationOnly ? navigateSurface("settings") : void installUpdate()}
                   tone="update"
                 />
               ) : null}
@@ -1720,6 +1725,7 @@ function SettingsSurface({
 
   return (
     <ContentSurface narrow title={devProfile ? copy.devSettingsTitle : copy.settingsTitle}>
+      <UpdatesPanel update={snapshot.update} version={snapshot.version} language={language} api={api!} />
       <SectionHeading label={copy.general} />
       <div className="settings-list">
         {!devProfile ? <SettingRow body={copy.launchAtLoginBody} flushAfter label={copy.launchAtLogin}>

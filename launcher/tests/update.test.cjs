@@ -17,18 +17,24 @@ const {
 test("fork updates announce upstream releases without overwriting the fork installation", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "fork-update-"));
   const metadata = path.join(root, "fork-metadata.json");
-  fs.writeFileSync(metadata, JSON.stringify({ distribution: "MihokTim/codex-chatgpt-web" }));
+  fs.writeFileSync(metadata, JSON.stringify({
+    schemaVersion: 1, distribution: "MihokTim/codex-chatgpt-web", buildId: "6.0.0-fork.6", baseVersion: "6.0.0",
+    upstream: { repository: "https://github.com/miuuyy/codex-chatgpt-web", commit: "a".repeat(40) },
+  }));
   let downloaded = false;
   try {
     const updater = createUpdateController({
       currentVersion: "6.0.0", platform: "win32", arch: "x64", packaged: true,
       forkMetadataPath: metadata,
       dependencies: {
-        fetchRelease: async () => ({ tag_name: "v6.0.1" }),
+        fetchRelease: async () => ({ tag_name: "v6.0.1", published_at: "2026-09-24T00:00:00Z" }),
+        fetchComparison: async () => ({ ahead_by: 1, status: "ahead", head_commit: { sha: "b".repeat(40) } }),
         downloadFile: async () => { downloaded = true; },
       },
     });
-    assert.match((await updater.checkOnce()).message, /v6\.0\.1.*fork build/);
+    const state = await updater.checkOnce();
+    assert.equal(state.status, "upstream-available");
+    assert.equal(state.information.release.version, "6.0.1");
     await assert.rejects(updater.beginInstall(), /fork build/);
     assert.equal(downloaded, false);
   } finally {
