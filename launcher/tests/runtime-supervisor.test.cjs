@@ -2033,7 +2033,12 @@ server.listen(config.port, config.host);
     const started = await supervisor.startIfConfigured();
     assert.equal(started.status, "ready");
     assert.notEqual(started.daemonPid, stale.pid);
-    assert.equal(stale.exitCode !== null || stale.killed, true);
+    // The shutdown response and replacement readiness can precede Node's child-exit
+    // notification. Assert actual termination, not whether this observer sent a signal.
+    if (stale.exitCode === null && stale.signalCode === null) {
+      await require("node:events").once(stale, "exit", { signal: AbortSignal.timeout(5_000) });
+    }
+    assert.equal(stale.exitCode !== null || stale.signalCode !== null, true);
   } finally {
     await supervisor.stopForSetup().catch(() => {});
     if (stale.exitCode === null) stale.kill("SIGTERM");
