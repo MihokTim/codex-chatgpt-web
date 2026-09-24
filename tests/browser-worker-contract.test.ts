@@ -601,11 +601,11 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
       ? assistantLocator
       : hiddenLocator,
   } as unknown as Page;
-  let sendPresses = 0;
+  let sendActivations = 0;
   const sendButton = {
     waitFor: async () => {},
     isEnabled: async () => true,
-    press: async () => { sendPresses += 1; },
+    click: async () => { sendActivations += 1; },
   };
   const composer = {
     locator: () => ({ locator: () => sendButton }),
@@ -665,7 +665,7 @@ test("an accepted Full-mode send survives one stalled DOM probe and a later MCP 
   );
 
   expect(evidence).toBe("mcp_tool_call");
-  expect(sendPresses).toBe(1);
+  expect(sendActivations).toBe(1);
   expect(domObservations).toBe(2);
   expect(recoveries).toBe(1);
   expect(lifecycle).toEqual(["activated", "submitted"]);
@@ -717,15 +717,14 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     isClosed: () => false,
     locator: () => hiddenLocator,
   } as unknown as Page;
-  let pressOptions: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number } | undefined;
+  let clickOptions: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number } | undefined;
   const sendButton = {
     waitFor: async () => {},
     isEnabled: async () => true,
-    press: async (
-      _key: string,
+    click: async (
       options?: { noWaitAfter?: boolean; signal?: AbortSignal; timeout?: number },
     ) => {
-      pressOptions = options;
+      clickOptions = options;
       if (options?.timeout !== 0) throw new Error("nested locator timeout replaced the outer stage budget");
     },
   };
@@ -740,8 +739,8 @@ test("Bigger Context send activation keeps the outer stage budget instead of res
     1_000,
     stageSignal => worker.sendAttachedPrompt(page, {}, undefined, stageSignal),
   )).resolves.toBe("user_turn");
-  expect(pressOptions).toMatchObject({ noWaitAfter: true, timeout: 0 });
-  expect(pressOptions?.signal).toBeInstanceOf(AbortSignal);
+  expect(clickOptions).toMatchObject({ noWaitAfter: true, timeout: 0 });
+  expect(clickOptions?.signal).toBeInstanceOf(AbortSignal);
 });
 
 test("two-part saved chats re-prove unchanged effort after the first message creates the conversation URL", async () => {

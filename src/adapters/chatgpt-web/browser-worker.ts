@@ -1922,6 +1922,7 @@ class ChatGptBrowserDiagnostics {
           assistantTurnSelector,
           userTurnSelector,
           stopButtonSelector,
+          sendButtonSelector,
           completionActionSelector,
           connectorSelector,
           connectorRowSelector,
@@ -1995,6 +1996,18 @@ class ChatGptBrowserDiagnostics {
                 contentEditable: (element as HTMLElement).isContentEditable,
                 focused: element === document.activeElement,
               })),
+              sendButtons: [...new Set(composers.flatMap(element => (
+                [...element.closest("form")?.querySelectorAll(sendButtonSelector) ?? []]
+              )))].map(element => {
+                const rect = element.getBoundingClientRect();
+                return {
+                  visible: rendered(element) && rect.width > 0 && rect.height > 0,
+                  disabled: element.matches(":disabled"),
+                  ariaDisabled: element.getAttribute("aria-disabled"),
+                  focused: element === document.activeElement,
+                  rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+                };
+              }),
               selectedConnectorCount: selectedConnectors.length,
               exactSelectedConnectorCount: selectedConnectors.filter(
                 element => (element.getAttribute("data-keyword")
@@ -2051,6 +2064,7 @@ class ChatGptBrowserDiagnostics {
           assistantTurnSelector: CHATGPT_ASSISTANT_TURN_SELECTOR,
           userTurnSelector: CHATGPT_USER_TURN_SELECTOR,
           stopButtonSelector: CHATGPT_STOP_BUTTON_SELECTOR,
+          sendButtonSelector: CHATGPT_SEND_BUTTON_SELECTOR,
           completionActionSelector: CHATGPT_COMPLETION_ACTION_SELECTOR,
           connectorSelector: CHATGPT_SELECTED_CONNECTOR_SELECTOR,
           connectorRowSelector: CHATGPT_CONNECTOR_MENU_ROW_SELECTOR,
@@ -3858,14 +3872,20 @@ export class ChatGptBrowserWorker {
     await captureDiagnostic?.("send-ready");
     const initialToolBatchRevision = externalProgress?.snapshot().lastToolBatchRevision ?? 0;
     await submissionLifecycle?.onSendActivated?.();
-    await sendButton.press("Enter", {
+    await captureDiagnostic?.("send-preflight-complete");
+    // Model verification can remount/disable Send after the early readiness check. Keyboard
+    // activation does not wait for enabled/stable/hit-target state and may do nothing. Resolve
+    // this locator afresh and let one actionable click wait for readiness after preflight.
+    // Never retry the click after ambiguous acceptance; only observation can be recovered.
+    await sendButton.click({
       noWaitAfter: true,
       signal: abortSignal,
       // runStage owns the operation budget. A second Locator timeout would silently collapse the
-      // 180-second Bigger Context budget back to the ordinary 20 seconds after Enter has already
+      // 180-second Bigger Context budget back to the ordinary 20 seconds after Send has already
       // submitted the message; semantic submission evidence below remains the authority.
       timeout: 0,
     });
+    await captureDiagnostic?.("send-click-complete");
     const evidence = await this.waitForSubmissionAcceptedWithRecovery(
       page,
       baseline,
@@ -5351,7 +5371,9 @@ export class ChatGptBrowserWorker {
             : undefined,
         ),
       );
-      console.info(`[chatgpt-web] browser turn ${turn.traceId} submission accepted evidence=${finalSubmissionEvidence}`);
+      const finalPartLabel = prepared.multipart
+        ? ` multipart part ${prepared.multipart.parts.length}/${prepared.multipart.parts.length}` : "";
+      console.info(`[chatgpt-web] browser turn ${turn.traceId}${finalPartLabel} submission accepted evidence=${finalSubmissionEvidence}`);
       let responseTurn = await this.waitForNewAssistantTurn(
         page,
         submissionBaseline,
