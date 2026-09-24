@@ -41,8 +41,10 @@ export async function selectChatGptModelFamily(
     if (expanded === "false") await trigger.click({ timeout: 5_000 });
     else if (expanded === null) {
       const view = menu.menu.locator('[data-model-picker-view]');
-      if (await view.count() !== 1 || await view.getAttribute('data-model-picker-view') !== 'simple') throw familyError(family);
-      await trigger.click({ timeout: 5_000 });
+      if (await view.count() !== 1) throw familyError(family);
+      const currentView = await view.getAttribute('data-model-picker-view');
+      if (currentView === 'simple') await trigger.click({ timeout: 5_000 });
+      else if (currentView !== 'advanced') throw familyError(family);
     }
     await option.waitFor({ state: "visible", timeout: 5_000 });
     await option.click({ timeout: 5_000 });

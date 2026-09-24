@@ -104,12 +104,12 @@ test("current power ticks respect locks and reject disabled or incomplete contro
   } finally { await page.close(); }
 }, 15_000);
 
-test("current model view toggle selects and verifies the requested family", async () => {
+test.each(['simple', 'advanced'])("current model view %s selects and verifies the requested family", async view => {
   const page = await browser.newPage();
   try {
-    await page.setContent(`<div role="menu"><div data-model-picker-view="simple">
+    await page.setContent(`<div role="menu"><div data-model-picker-view="${view}">
       <div role="menuitem" aria-hidden="false" data-model-picker-view-toggle="true" onclick="this.parentElement.dataset.modelPickerView='advanced';document.querySelector('#choices').hidden=false">Models</div>
-      <div id="choices" hidden><div role="menuitemradio" aria-checked="true">Latest</div><div role="menuitemradio" aria-checked="false">GPT-5.6 Sol</div></div>
+      <div id="choices" ${view === 'simple' ? 'hidden' : ''}><div role="menuitemradio" aria-checked="true">Latest</div><div role="menuitemradio" aria-checked="false">GPT-5.6 Sol</div></div>
       </div></div><script>document.querySelectorAll('[role=menuitemradio]').forEach(row=>row.onclick=()=>{document.querySelectorAll('[role=menuitemradio]').forEach(e=>e.setAttribute('aria-checked',String(e===row)));});</script>`);
     const menu:any={menu:page.getByRole('menu')};
     await selectChatGptModelFamily(page,menu,'5.6',async()=>menu);
