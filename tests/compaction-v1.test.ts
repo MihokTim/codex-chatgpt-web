@@ -33,12 +33,15 @@ test("compaction retains human instructions, not native grouped runtime preamble
 
 test.each([undefined, ["user.text"], ["future.kind"], ["user.text", "environments.environment_context"]].map(kinds => ({ kinds })))(
   "compaction preserves human or unattributed XML with provenance %j", ({ kinds }) => {
-    const messages = ["environment_context", "subagent_notification"].map(tag => ({
-      type: "message", role: "user", content: [{ type: "input_text", text: `<${tag}>Review this example.</${tag}>` }],
+    const messages = ["environment_context", "subagent_notification", "goal_context", "codex_internal_context"].map(tag => ({
+      type: "message", role: "user", content: [
+        { type: "input_text", text: "Review this XML without discarding the instruction." },
+        { type: "input_text", text: `<${tag}${tag === 'codex_internal_context' ? ' source="example"' : ''}>Review this example.</${tag}>` },
+      ],
       ...(kinds ? { internal_chat_message_metadata_passthrough: { content_item_kinds: kinds } } : {}),
     }));
     expect(extractCompactUserMessages(messages)).toEqual(messages);
-    expect(buildCompactV1Output(extractCompactUserMessages(messages), "Summary").slice(0, -1)).toHaveLength(2);
+    expect(buildCompactV1Output(extractCompactUserMessages(messages), "Summary").slice(0, -1)).toEqual(messages);
   },
 );
 

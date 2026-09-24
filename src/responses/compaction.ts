@@ -148,16 +148,9 @@ export function extractCompactUserMessages(input: unknown): CompactMessageItem[]
       out.push(structuredClone(rec));
       continue;
     }
-    // Unattributed environment/notification XML can be human-authored example data.
-    // Only the native content kinds above establish that those messages are runtime input.
-    // Codex removes InternalModelContextFragment during process_annotated_compacted_history.
-    // In particular, a goal continuation is runtime steering, not a retained human message.
-    // Exclude it before computing the v1 checkpoint source, or the next request authenticates
-    // against a message that native Codex has already discarded.
-    if (compactContentBlocks(rec).some(block => textBlock(block) && (
-      /^<codex_internal_context source="[a-z][a-z0-9_]*">[\s\S]*<\/codex_internal_context>$/.test(block.text!.trim())
-      || /^<goal_context>[\s\S]*<\/goal_context>$/.test(block.text!.trim())
-    ))) continue;
+    // Unattributed XML, including goal/internal-context examples, can be human input.
+    // Only the native kinds above establish runtime provenance. A matching block must
+    // not discard the entire message, its surrounding instructions, or its attachments.
     if (isReadableCompactionSummaryText(
       compactContentBlocks(rec).filter(textBlock).map(block => block.text).join(""),
     )) continue;
