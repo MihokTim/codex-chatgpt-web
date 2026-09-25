@@ -22,6 +22,8 @@ export class LauncherOwnedCdpTransport implements ConnectOverCDPTransport {
   private pending: object[] = [];
   private closed = false;
   private notified = false;
+  private resolveDisconnection!: () => void;
+  readonly disconnected = new Promise<void>(resolve => { this.resolveDisconnection = resolve; });
 
   constructor(private readonly endpoint: string, private readonly targetId: string) {
     const url = new URL(endpoint);
@@ -76,6 +78,7 @@ export class LauncherOwnedCdpTransport implements ConnectOverCDPTransport {
   }
 
   private notifyClosed(): void {
+    this.resolveDisconnection();
     if (this.notified || !this.onclose) return;
     this.notified = true;
     this.onclose?.("Launcher owned CDP connection closed");

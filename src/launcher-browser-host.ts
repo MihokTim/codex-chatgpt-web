@@ -295,9 +295,13 @@ export async function connectLauncherBrowserHost(
     return { descriptor, browser, context, page };
   } catch (error) {
     transport?.close();
+    await transport?.disconnected;
     await browser?.close().catch(() => {});
     if (abortSignal?.aborted) throw new DOMException("Launcher browser connection aborted", "AbortError");
     if (deadline.signal.aborted) throw new Error("Launcher browser connection timed out");
+    if (transport && !browser) {
+      throw new Error(`Could not connect Playwright to the launcher browser: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
     throw error;
   } finally {
     clearTimeout(timer);

@@ -20,6 +20,7 @@ test("owned CDP validates endpoint authority and disconnects exactly once before
   }
   const transport = new LauncherOwnedCdpTransport("ws://127.0.0.1:9222/devtools/browser/fixture", "target");
   transport.close();
+  await transport.disconnected;
   let closes = 0;
   transport.onclose = () => { closes++; };
   transport.open();

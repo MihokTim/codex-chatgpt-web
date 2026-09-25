@@ -140,6 +140,18 @@ try {
   await afterAbort.browser.close();
   report.reconnectAfterCancellation = "PASS";
 
+  // A disappeared native target is a preparation failure; preserve its classified
+  // error and release the failed connection before another acquisition starts.
+  const missingDescriptor = join(root, "missing-target.json");
+  const missingMetadata = JSON.parse(readFileSync(descriptor, "utf8"));
+  missingMetadata.surfaceTargets[surfaceId] = "missing-isolated-target";
+  writeFileSync(missingDescriptor, JSON.stringify(missingMetadata), { mode: 0o600 });
+  let missingRejected = false;
+  try { await bounded(connectLauncherBrowserHost(missingDescriptor, 2_000, surfaceId), "missing-target"); }
+  catch (error) { missingRejected = error instanceof Error && error.message.startsWith("Could not connect Playwright to the launcher browser:"); }
+  check(missingRejected, "Missing target did not preserve its preparation failure classification");
+  report.missingTargetCleanup = "PASS";
+
   const controller = new AbortController();
   controller.abort();
   let cancelled = false;
