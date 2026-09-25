@@ -356,6 +356,13 @@ export async function inspectLauncherBrowserHost(
 export const LAUNCHER_SESSION_INSPECTION_TIMEOUT_MS = 30_000;
 export const LAUNCHER_CAPABILITY_INSPECTION_TIMEOUT_MS = 120_000;
 
+export interface LauncherTaskIdentity {
+  threadId?: string;
+  parentThreadId?: string;
+  agentName?: string;
+}
+export type LauncherWorkStage = "preparing" | "waiting" | "sending" | "ingesting" | "compacting" | "generating";
+
 export type LauncherTurnActivity =
   | {
       phase: "usage";
@@ -376,6 +383,8 @@ export type LauncherTurnActivity =
       conversationKey?: string;
       connectorIdentity?: string;
       requireRetainedConversation?: boolean;
+      taskIdentity?: LauncherTaskIdentity;
+      workStage?: LauncherWorkStage;
     }
   | {
       phase: "heartbeat";
@@ -383,6 +392,9 @@ export type LauncherTurnActivity =
       helperPid: number;
       /** Re-establish the launcher's hidden viewport after the caller closes its CDP session. */
       refreshViewport?: boolean;
+      taskIdentity?: LauncherTaskIdentity;
+      workStage?: LauncherWorkStage;
+      retryAt?: number;
     }
   | {
       phase: "end";

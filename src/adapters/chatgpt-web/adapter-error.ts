@@ -1,9 +1,12 @@
+import type { RequestLimitEvidence } from "./request-limits";
+
 export interface ChatGptWebAdapterErrorOptions {
   status: number;
   errorType: string;
   code: string;
   retryable: boolean;
   cause?: unknown;
+  requestLimit?: RequestLimitEvidence;
 }
 
 export class ChatGptWebAdapterError extends Error {
@@ -11,6 +14,7 @@ export class ChatGptWebAdapterError extends Error {
   readonly errorType: string;
   readonly code: string;
   readonly retryable: boolean;
+  readonly requestLimit?: RequestLimitEvidence;
 
   constructor(message: string, options: ChatGptWebAdapterErrorOptions) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
@@ -19,6 +23,7 @@ export class ChatGptWebAdapterError extends Error {
     this.errorType = options.errorType;
     this.code = options.code;
     this.retryable = options.retryable;
+    this.requestLimit = options.requestLimit;
   }
 }
 

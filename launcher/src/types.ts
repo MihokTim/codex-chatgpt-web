@@ -64,6 +64,9 @@ export interface BrowserTabState {
   manualDeadlineAt?: string;
   canCopyPrompt?: boolean;
   canConfirmSent?: boolean;
+  taskIdentity?: { threadId?: string; parentThreadId?: string; agentName?: string };
+  workStage?: "preparing" | "waiting" | "sending" | "ingesting" | "compacting" | "generating" | "retained";
+  retryAt?: number;
 }
 
 export interface LogRecord {

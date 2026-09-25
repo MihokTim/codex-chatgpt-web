@@ -420,9 +420,16 @@ export function createChatGptWebAdapter(
     hooks: {
       onCompactionProgress?: () => void;
       onCompactionSubmitted?: () => void;
+      onPreparationProgress?: (stage: string, waitUntil?: number) => void;
       failedThinkingRecovery?: boolean;
     } = {},
   ): ChatGptTurnRuntime => {
+    const nativeTaskIdentity = extractChatGptTurnIdentity(parsed);
+    const taskIdentity = {
+      ...(nativeTaskIdentity.threadId ? { threadId: nativeTaskIdentity.threadId } : {}),
+      ...(nativeTaskIdentity.parentThreadId ? { parentThreadId: nativeTaskIdentity.parentThreadId } : {}),
+      ...(nativeTaskIdentity.agentName ? { agentName: nativeTaskIdentity.agentName } : {}),
+    };
     const manualRequest = isChatGptWebZeroRiskBackendModel(parsed.modelId);
     if (manualRequest !== manualInteraction) {
       throw new Error(
@@ -534,7 +541,7 @@ export function createChatGptWebAdapter(
       },
     };
     const multipartProgressLifecycle = hooks.onCompactionProgress
-      ? { onMultipartStageAcknowledged: hooks.onCompactionProgress }
+      ? { onMultipartStageAcknowledged: hooks.onCompactionProgress, onPreparationProgress: hooks.onPreparationProgress }
       : {};
     if (manualRequest) {
       if (!environment) throw new Error("ChatGPT Zero Risk requires a trusted Codex environment");
@@ -704,6 +711,7 @@ export function createChatGptWebAdapter(
     if (!mode.localTools) {
       const browserTurn = cancellableBrowserTurn(finalizeCheckpoint(worker.run({
         traceId,
+        taskIdentity,
         modelId: parsed.modelId,
         reasoning: parsed.options.reasoning,
         ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
@@ -776,6 +784,7 @@ export function createChatGptWebAdapter(
     const browserTurn = cancellableBrowserTurn(trackBrowserOwner(finalizeCheckpoint(worker.run({
       traceId,
       modelId: parsed.modelId,
+      taskIdentity,
       reasoning: parsed.options.reasoning,
       ...(parsed._chatgptModelFamily ? { modelFamily: parsed._chatgptModelFamily } : {}),
       capabilities: turnCapabilities,
@@ -949,17 +958,24 @@ export function createChatGptWebAdapter(
                     },
                   );
                   let handoffTimer: ReturnType<typeof setTimeout> | undefined;
+                  let handoffPhase: "source" | "preparing" | "generating" | "cleanup" = "source";
+                  let handoffStage = "source_retirement";
                   const suspendHandoffDeadline = (): void => {
                     if (!handoffTimer) return;
                     clearTimeout(handoffTimer);
                     handoffTimer = undefined;
                   };
-                  const armHandoffDeadline = (): void => {
-                    if (handoffDeadline.signal.aborted) return;
+                  const armHandoffDeadline = (budgetMs = handoffTimeoutMs): void => {
+                    // An ACK callback can be queued behind a submitted IPC frame. Generation is
+                    // a latched phase: late preparation events cannot rearm its five-minute timer.
+                    if (handoffDeadline.signal.aborted || handoffPhase === "generating") return;
                     suspendHandoffDeadline();
                     handoffTimer = setTimeout(
-                      () => handoffDeadline.abort(handoffTimeoutError),
-                      handoffTimeoutMs,
+                      () => {
+                        console.warn(`[chatgpt-web] compaction_deadline ${JSON.stringify({ traceId: freshCompactionTraceId, phase: handoffPhase, stage: handoffStage, budgetMs })}`);
+                        handoffDeadline.abort(handoffTimeoutError);
+                      },
+                      budgetMs,
                     );
                     handoffTimer.unref?.();
                   };
@@ -973,6 +989,8 @@ export function createChatGptWebAdapter(
                     // Bound preparation, multipart acknowledgements, and cleanup separately. Once
                     // ChatGPT accepts the final compact prompt, its normal browser observation owns
                     // model-generation liveness; a fixed handoff timer must not cancel active work.
+                    handoffPhase = "preparing";
+                    handoffStage = "browser_start";
                     armHandoffDeadline();
                     const fallbackRuntime = startRuntime(
                       parsed,
@@ -980,13 +998,22 @@ export function createChatGptWebAdapter(
                       freshCompactionTraceId,
                       turnCapabilities,
                       {
-                        onCompactionProgress: armHandoffDeadline,
-                        onCompactionSubmitted: suspendHandoffDeadline,
+                        onCompactionProgress: () => armHandoffDeadline(),
+                        onCompactionSubmitted: () => { handoffPhase = "generating"; suspendHandoffDeadline(); },
+                        onPreparationProgress: (stage, waitUntil) => {
+                          if (handoffPhase === "generating") return;
+                          handoffStage = stage;
+                          // The scheduler owns a bounded, cancellable wait. It must not consume
+                          // preparation's budget, and ordinary helper heartbeats cannot extend it.
+                          armHandoffDeadline(handoffTimeoutMs + Math.min(600_000, Math.max(0, (waitUntil ?? 0) - Date.now())));
+                        },
                       },
                     );
                     retainOwnershipUntil(fallbackRuntime.physicalSettlement);
                     try {
                       const rawSummary = await withAbort(fallbackRuntime.browser, operationSignal);
+                      handoffPhase = "cleanup";
+                      handoffStage = "physical_settlement";
                       armHandoffDeadline();
                       await withAbort(fallbackRuntime.physicalSettlement, operationSignal);
                       return canonicalizeCompactionHandoff(parsed, rawSummary);

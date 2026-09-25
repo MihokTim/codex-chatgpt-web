@@ -2620,7 +2620,21 @@ test.each([
     errorType: "rate_limit_error",
     code: "rate_limit_exceeded",
     retryable: false,
-    message: "ChatGPT rate limit: too many requests. Try again in a few minutes.",
+    message: "ChatGPT displayed a request-frequency limit. The affected HTTP request is unknown; accepted context parts are not replayed.",
+    requestLimit: { source: "dialog", category: "unknown" },
+  });
+  expect(fixture.pressed).toEqual(["Enter"]);
+});
+
+test("multipart acknowledgement reports a limit immediately instead of consuming its whole deadline", async () => {
+  const fixture = dialogPage("Too many requests. You're making requests too quickly.");
+  const page = Object.assign(fixture.page, { isClosed: () => false });
+  const waitForAck = (ChatGptBrowserWorker.prototype as unknown as {
+    waitForMultipartAcknowledgement(...args: unknown[]): Promise<void>;
+  }).waitForMultipartAcknowledgement;
+  await expect(waitForAck.call({}, page, {}, {}, {}, undefined)).rejects.toMatchObject({
+    status: 429, code: "rate_limit_exceeded", retryable: false,
+    requestLimit: { source: "dialog", category: "unknown" },
   });
   expect(fixture.pressed).toEqual(["Enter"]);
 });

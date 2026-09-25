@@ -11,6 +11,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { copyFor, localizeRuntimeMessage, type Copy } from "./i18n";
+import { browserTaskLabel, browserTaskTooltip, browserTabsOverview } from "./browser-tab-label";
 import { Icon, type IconName } from "./icons";
 import { LimitsSurface } from "./LimitsSurface";
 import { limitsCopyFor } from "./limits-copy";
@@ -932,7 +933,7 @@ function BrowserSurface({
 
   return (
     <section className="browser-surface">
-      <div className="browser-tab-strip" title={copy.browserTabLimit}>
+      <div className="browser-tab-strip" title={`${copy.browserTabLimit}\n${browserTabsOverview(browser?.tabs ?? [], copy)}`}>
         {(browser?.tabs ?? []).map((tab) => (
           <div
             className={`browser-tab${tab.active ? " is-active" : ""}`}
@@ -942,8 +943,8 @@ function BrowserSurface({
             aria-selected={tab.active}
           >
             <BrandMark small />
-            <span title={tab.traceId ? `${tab.title} · ${tab.traceId}` : tab.title}>
-              {browserTabTitleFromTitle(tab.title, copy)}
+            <span title={browserTaskTooltip(tab, copy)}>
+              {browserTaskLabel(tab, copy) || browserTabTitleFromTitle(tab.title, copy)}
             </span>
             {tab.loading ? <i className="tab-spinner" /> : <StateDot state={browserTabTone(tab.status)} />}
             {tab.closable ? (

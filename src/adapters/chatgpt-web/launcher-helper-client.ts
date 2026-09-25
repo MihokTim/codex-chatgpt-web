@@ -6,6 +6,7 @@ import { notifyLauncherTurn, readLauncherBrowserHostDescriptor } from "../../lau
 import { ChatGptCompactionHandoffAccepted, ChatGptWebAdapterError } from "./adapter-error";
 import type { CompiledChatGptWebPrompt } from "./prompt";
 import type { BrowserTurn, ResolvedBrowserConfig } from "./browser-worker";
+import { parseRequestLimitEvidence, type RequestLimitEvidence } from "./request-limits";
 import {
   parseChatGptLunaCheckpoint,
   type ChatGptLunaCheckpoint,
@@ -28,6 +29,7 @@ type HelperMessage =
   | { type: "event"; id: string; event: "heartbeat" | "send_activated" | "submitted" | "reasoning" | "commentary" | "text"; text?: string; continuation?: boolean }
   | { type: "event"; id: string; event: "tool_batch_observed"; revision: number }
   | { type: "event"; id: string; event: "multipart_stage_acknowledged"; stageIndex: number }
+  | { type: "event"; id: string; event: "preparation_progress"; stage: string; waitUntil?: number }
   | { type: "event"; id: string; event: "completion_fence_begin"; requestId: number }
   | { type: "event"; id: string; event: "completion_fence_commit"; requestId: number; revision: number }
   | { type: "event"; id: string; event: "prepared_selected"; reused: boolean }
@@ -42,6 +44,7 @@ type HelperMessage =
       errorType?: string;
       code?: string;
       retryable?: boolean;
+      requestLimit?: RequestLimitEvidence;
     };
 
 function parseHelperMessage(line: string): HelperMessage {
@@ -63,6 +66,14 @@ function parseHelperMessage(line: string): HelperMessage {
   }
   if (message.type === "event") {
     const event = message.event;
+    if (event === "preparation_progress") {
+      if (typeof message.stage !== "string" || !/^[a-z0-9_]{1,80}$/.test(message.stage)
+        || (message.waitUntil !== undefined && (!Number.isSafeInteger(message.waitUntil) || (message.waitUntil as number) < 0))) {
+        throw new Error("Invalid helper preparation progress");
+      }
+      return { type: "event", id: message.id, event, stage: message.stage,
+        ...(message.waitUntil !== undefined ? { waitUntil: message.waitUntil as number } : {}) };
+    }
     if (event === "multipart_stage_acknowledged") {
       if (!Number.isSafeInteger(message.stageIndex) || (message.stageIndex as number) <= 0) {
         throw new Error("Launcher browser helper multipart stage index is invalid");
@@ -173,6 +184,7 @@ function parseHelperMessage(line: string): HelperMessage {
         errorType: errorType as string,
         code: code as string,
         retryable: retryable as boolean,
+        ...(message.requestLimit ? { requestLimit: parseRequestLimitEvidence(message.requestLimit) } : {}),
       } : {}),
     };
   }
@@ -287,6 +299,8 @@ export class LauncherBrowserHelperClient {
             modelId: turn.modelId,
             reasoning: turn.reasoning,
             ...(turn.modelFamily ? { modelFamily: turn.modelFamily } : {}),
+            ...(turn.taskIdentity ? { taskIdentity: turn.taskIdentity } : {}),
+            ...(turn.onPreparationProgress && this.helperFeatures.has("preparation-progress") ? { preparationProgress: true } : {}),
             capabilities: turn.capabilities,
             ...(turn.nativeConnector ? { nativeConnector: true } : {}),
             ...(turn.prepareResume ? { resumeAvailable: true } : {}),
@@ -419,6 +433,10 @@ export class LauncherBrowserHelperClient {
     if (!pending) return;
     if (message.type === "event") {
       if (message.event === "heartbeat") pending.turn.onHeartbeat?.();
+      else if (message.event === "preparation_progress") {
+        void Promise.resolve(pending.turn.onPreparationProgress?.(message.stage, message.waitUntil))
+          .catch(error => this.abortWithLocalFailure(message.id, error instanceof Error ? error : new Error(String(error)), pending));
+      }
       else if (message.event === "tool_batch_observed") {
         const progress = pending.turn.externalProgress;
         if (!progress) {
@@ -578,6 +596,7 @@ export class LauncherBrowserHelperClient {
           errorType: message.errorType!,
           code: message.code!,
           retryable: message.retryable!,
+          ...(message.requestLimit ? { requestLimit: message.requestLimit } : {}),
         })
         : message.name === "AbortError"
           ? new DOMException(message.message, "AbortError")

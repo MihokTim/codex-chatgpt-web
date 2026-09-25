@@ -4,7 +4,7 @@ This is an unofficial fork of [miuuyy/codex-chatgpt-web](https://github.com/miuu
 
 **Native and Web models use the same Codex application and configuration home.** Setup adds Web routes to the native catalog; native requests retain upstream's native passthrough. Production uses `CODEX_HOME`, or `~/.codex` when unset. The bridge keeps its own settings and browser profile in `~/.codex-chatgpt-web`. Only the upstream development profile uses a separate test home.
 
-The current fork identity is **6.0.0-fork.6**. The application version remains **6.0.0** for upstream compatibility. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now `757942251222ee0f71953c35636679c6d92dd636`, including reviewed post-release fixes.
+The current fork identity is **6.0.0-fork.7**. The application version remains **6.0.0** for upstream compatibility. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now `757942251222ee0f71953c35636679c6d92dd636`, including reviewed post-release fixes.
 
 ## Changes in this fork
 
@@ -27,6 +27,8 @@ The [fork.3 review resolutions](docs/v6-review-resolutions.md) describe the addi
 The [fork.4 browser compatibility patch](docs/chatgpt-ui-compatibility.md) supports the composer, model picker, app mentions, attachments, and conversation timeline observed on September 24, 2026. Composer detection failures now report an integration error instead of a misleading capacity error.
 
 Fork.5 corrects a further live failure in the legacy timeline: an empty `client-created-root` inserted after Send was counted as a message, preventing the first submitted user from being bound. See the [follow-up diagnosis](docs/chatgpt-ui-compatibility.md#fork5-follow-up-post-send-root-sentinel).
+
+Fork.7 adds request-category diagnostics, shared send pacing and bounded rate-limit waits, safe multipart preparation recovery, short-lived account verification caching, task-labelled tabs, and phase-aware compaction deadlines. See [the investigation and implementation record](docs/request-limit-investigation-20260925.md).
 
 Fork.6 integrates the upstream hook and login fixes, handles an already-expanded current model picker, and retains unattributed human XML through compaction. **Settings → Updates** always shows the installed build and the last fetched published release, with a separate upstream-source comparison, errors, timestamps and a **Check now** button. See [fork.6 changes and update behavior](docs/fork6-updates.md).
 

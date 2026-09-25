@@ -8,6 +8,7 @@ const {
   verifyConnectorWithBrowserHelper,
 } = require("./browser-helper-verifier.cjs");
 const { validateConnectorName } = require("./connector-identity.cjs");
+const { backendRequestLimitEvidence } = require("./backend-request-evidence.cjs");
 const { processRunning } = require("./process-tree.cjs");
 const { validatePasskeyLoginState } = require("./passkey-login-state.cjs");
 const {
@@ -47,7 +48,7 @@ const RETAINED_TURN_TAB_TTL_MS = 30 * 60 * 1000;
 const BROWSER_NAVIGATION_TIMEOUT_MS = 60_000;
 const CHATGPT_AUTH_SESSION_TIMEOUT_MS = 5_000;
 const WINDOW_VISIBILITY_EVENTS = ["show", "hide", "minimize", "restore"];
-const CHATGPT_BACKEND_REQUEST_FILTER = { urls: [`${CHATGPT_ORIGIN}/backend-api/*`] };
+const CHATGPT_BACKEND_REQUEST_FILTER = { urls: [`${CHATGPT_ORIGIN}/backend-api/*`, `${CHATGPT_ORIGIN}/api/auth/*`] };
 const ZOOM_FACTORS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 const SHELL_ZOOM_LEVEL_STEP = 0.5;
 const SHELL_ZOOM_LEVEL_LIMIT = 5;
@@ -512,6 +513,9 @@ class BrowserHost {
       loading: tab.loading === true,
       active: this.selectedTabId === tab.id,
       closable: true,
+      ...(tab.taskIdentity ? { taskIdentity: tab.taskIdentity } : {}),
+      ...(tab.workStage ? { workStage: tab.workStage } : {}),
+      ...(tab.retryAt ? { retryAt: tab.retryAt } : {}),
     };
     if (tab.interactionMode === "manual") {
       Object.assign(snapshot, {
@@ -523,6 +527,19 @@ class BrowserHost {
       });
     }
     return snapshot;
+  }
+
+  updateTurnDetails(traceId, helperPid, details) {
+    const tab = [...this.turnTabs.values()].find(candidate => candidate.traceId === traceId);
+    if (!tab || tab.helperPid !== helperPid || tab.status !== "running") {
+      throw new Error("Browser task metadata owner mismatch");
+    }
+    if (details.taskIdentity) tab.taskIdentity = { ...details.taskIdentity };
+    if (details.workStage) {
+      tab.workStage = details.workStage;
+      tab.retryAt = details.workStage === "waiting" ? details.retryAt : undefined;
+    }
+    this.publishState?.(this.snapshot());
   }
 
   selectedTurnTab() {
@@ -1190,9 +1207,12 @@ class BrowserHost {
   bindChatGptBackendRecovery() {
     this.view.webContents.session.webRequest.onCompleted(
       CHATGPT_BACKEND_REQUEST_FILTER,
-      details => browserInteractionModeFor(this) === "automatic"
-        ? this.handleChatGptBackendResponse(details)
-        : undefined,
+      details => {
+        if (browserInteractionModeFor(this) !== "automatic") return;
+        const evidence = backendRequestLimitEvidence(details, this.view.webContents.id, this.turnTabs);
+        if (evidence) this.logger.warn("browser.http_rate_limit", evidence);
+        return this.handleChatGptBackendResponse(details);
+      },
     );
   }
 
@@ -2385,6 +2405,8 @@ class BrowserHost {
     }
     const cancelledByUser = this.userCancelledTurnOwners.get(traceId) === helperPid;
     tab.status = status === "completed" ? "ready" : status === "aborted" ? "aborted" : "error";
+    tab.workStage = status === "completed" ? "retained" : undefined;
+    tab.retryAt = undefined;
     this.syncPowerSaveBlocker();
     tab.message = status === "completed" ? "Task completed" : message || `ChatGPT turn ${status}`;
     tab.loading = false;

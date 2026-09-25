@@ -1348,6 +1348,10 @@ test.each([false, true])("fresh multipart compaction preserves phase budgets wit
     mock.timers.tick(25);
     expect(turn.abortSignal?.aborted).toBeFalse();
     turn.onSubmitted!();
+    // IPC can deliver submitted synchronously before the final ACK's queued callback runs.
+    // Neither that callback nor delayed preparation progress can restart the handoff timer.
+    await turn.onMultipartStageAcknowledged!(5);
+    await turn.onPreparationProgress?.("send");
     // The final prompt is accepted and visibly running. Model generation follows the ordinary
     // browser lifecycle and may legitimately exceed the handoff coordination budget.
     mock.timers.tick(80);

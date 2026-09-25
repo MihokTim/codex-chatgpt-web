@@ -168,6 +168,7 @@ test("accepted compaction retires through the helper as completed without hiding
     hostname: "127.0.0.1", port: 0,
     async fetch(request) {
       const body = await request.json() as Record<string, unknown>;
+      if (new URL(request.url).pathname === "/v1/traffic/acquire") return Response.json({ ok: true, granted: true });
       if (body.phase === "start") return Response.json({
         ok: true, surfaceId: "launcher_surface_id_0123456789AB", reused: true, connectorBound: true,
       });

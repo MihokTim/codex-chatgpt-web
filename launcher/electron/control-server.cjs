@@ -1,6 +1,7 @@
 const { createServer } = require("node:http");
 const { randomBytes, timingSafeEqual } = require("node:crypto");
 const { releaseRetainedConversation } = require("./retained-turn-release.cjs");
+const { RequestCoordinator } = require("./request-coordinator.cjs");
 
 const MAX_BODY_BYTES = 16 * 1024;
 const MAX_MANUAL_START_BODY_BYTES = 3 * 1024 * 1024;
@@ -44,6 +45,7 @@ class BrowserControlServer {
     this.getPreferences = getPreferences;
     this.resolveProxy = resolveProxy;
     this.limits = limits;
+    this.requestCoordinator = new RequestCoordinator();
     this.token = randomBytes(32).toString("base64url");
     this.port = 0;
     this.server = createServer((request, response) => {
@@ -102,6 +104,8 @@ class BrowserControlServer {
     const isTurnRelease = request.url === "/v1/turn/release";
     const isSessionInspect = request.url === "/v1/session/inspect";
     const isProxyResolution = request.url === "/v1/network/resolve-proxy";
+    const trafficAction = request.url === "/v1/traffic/acquire" ? "acquire"
+      : request.url === "/v1/traffic/report" ? "report" : undefined;
     const manualAction = new Map([
       ["/v1/manual/start", "start"],
       ["/v1/manual/wait-sent", "wait-sent"],
@@ -110,7 +114,7 @@ class BrowserControlServer {
       ["/v1/manual/end", "end"],
       ["/v1/manual/cancel", "cancel"],
     ]).get(request.url);
-    if (request.method !== "POST" || (!isTurn && !isTurnRelease && !isSessionInspect && !isProxyResolution && !manualAction)) {
+    if (request.method !== "POST" || (!isTurn && !isTurnRelease && !isSessionInspect && !isProxyResolution && !manualAction && !trafficAction)) {
       writeJson(response, 404, { error: "not_found" });
       return;
     }
@@ -161,6 +165,31 @@ class BrowserControlServer {
       }
       if (!Number.isInteger(body.helperPid) || body.helperPid < 1) {
         throw new Error("browser helper pid is invalid");
+      }
+      if (trafficAction) {
+        if (host.browserInteractionMode() === "manual") throw new Error("Automatic request scheduling is disabled in Zero Risk mode");
+        const owner = `${body.helperPid}:${body.traceId}`;
+        if (trafficAction === "report" || body.intent !== "open") host.heartbeatTurn(body.traceId, body.helperPid);
+        const result = trafficAction === "acquire"
+          ? this.requestCoordinator.acquire(owner, body.intent)
+          : { retryAt: this.requestCoordinator.report(owner, body.evidence) };
+        writeJson(response, 200, { ok: true, ...result });
+        return;
+      }
+      if (body.taskIdentity !== undefined) {
+        const identity = body.taskIdentity;
+        if (!identity || typeof identity !== "object" || Array.isArray(identity)
+          || Object.keys(identity).some(key => !["threadId", "parentThreadId", "agentName"].includes(key))
+          || Object.values(identity).some(value => typeof value !== "string" || !value.trim()
+            || value.length > 128 || /[\u0000-\u001f\u007f]/.test(value))) {
+          throw new Error("Invalid task identity metadata");
+        }
+      }
+      if (body.workStage !== undefined && !["preparing", "waiting", "sending", "ingesting", "compacting", "generating"].includes(body.workStage)) {
+        throw new Error("Invalid browser work stage");
+      }
+      if (body.retryAt !== undefined && (!Number.isSafeInteger(body.retryAt) || body.retryAt < 0)) {
+        throw new Error("Invalid request retry time");
       }
       if (body.conversationKey !== undefined && !/^[a-f0-9]{64}$/.test(body.conversationKey)) {
         throw new Error("conversationKey is invalid");
@@ -327,10 +356,12 @@ class BrowserControlServer {
           response.off("close", onClose);
         }
         this.logger.info("browser.turn_started", { traceId: body.traceId });
+        if (body.taskIdentity || body.workStage) host.updateTurnDetails(body.traceId, body.helperPid, body);
         writeJson(response, 200, { ok: true, ...lease, trackUsage: this.limits?.enabled() === true });
         return;
       } else if (request.url === "/v1/turn/heartbeat") {
         host.heartbeatTurn(body.traceId, body.helperPid, body.refreshViewport === true);
+        if (body.taskIdentity || body.workStage) host.updateTurnDetails(body.traceId, body.helperPid, body);
         this.logger.debug?.("browser.turn_heartbeat", { traceId: body.traceId });
         writeJson(response, 200, { ok: true });
         return;

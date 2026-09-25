@@ -1,9 +1,62 @@
 import { createHash } from "node:crypto";
-import type { Locator, Page } from "playwright-core";
+import type { BrowserContext, Locator, Page } from "playwright-core";
 import { parseChatGptModelAnnouncement } from "./model-announcement";
 
 export type ChatGptLimitsPlan = "pro_100" | "pro_200" | "unsupported";
 export type ChatGptUsageModel = "gpt-6-pro" | "gpt-5.6-pro" | "pro-unknown" | "other";
+
+type UsageAccount = Awaited<ReturnType<typeof readChatGptUsageAccount>>;
+
+/** Cache only while locally observed session cookies are unchanged. No credential leaves memory. */
+export class ChatGptUsageAccountCache {
+  private value?: { fingerprint: string; account: UsageAccount; expires: number };
+  private pending?: { fingerprint: string; promise: Promise<UsageAccount> };
+  private revision = 0;
+  constructor(private readonly now = Date.now, private readonly ttlMs = 60_000) {}
+
+  invalidate(): void { this.revision++; this.value = undefined; this.pending = undefined; }
+
+  async read(fingerprint: () => Promise<string | undefined>, load: () => Promise<UsageAccount>): Promise<UsageAccount> {
+    const before = await fingerprint().catch(error => { this.invalidate(); throw error; });
+    if (!before) { this.invalidate(); return load(); }
+    if (this.value?.fingerprint === before && this.value.expires > this.now()) return this.value.account;
+    if (this.pending?.fingerprint === before) return this.pending.promise;
+    this.value = undefined;
+    const revision = this.revision;
+    let promise!: Promise<UsageAccount>;
+    promise = (async () => {
+      const account = await load();
+      const after = await fingerprint();
+      if (before !== after || revision !== this.revision) throw new Error("The ChatGPT account changed during usage verification");
+      if (this.pending?.promise === promise) this.value = { fingerprint: before, account, expires: this.now() + this.ttlMs };
+      return account;
+    })();
+    this.pending = { fingerprint: before, promise };
+    try { return await promise; }
+    finally { if (this.pending?.promise === promise) this.pending = undefined; }
+  }
+}
+
+const usageAccountCaches = new WeakMap<BrowserContext, ChatGptUsageAccountCache>();
+
+export function invalidateChatGptUsageAccountCache(context: BrowserContext): void {
+  usageAccountCaches.get(context)?.invalidate();
+}
+
+export async function readCachedChatGptUsageAccount(page: Page): Promise<UsageAccount> {
+  const context = page.context();
+  let cache = usageAccountCaches.get(context);
+  if (!cache) { cache = new ChatGptUsageAccountCache(); usageAccountCaches.set(context, cache); }
+  return cache.read(async () => {
+    // This is a local browser-protocol read, not an /api/auth/session request. Include all
+    // session/account cookie changes; do not log the cookies or this private fingerprint.
+    const cookies = (await context.cookies("https://chatgpt.com"))
+      .filter(cookie => /auth|session|account|login/i.test(cookie.name))
+      .sort((a, b) => `${a.domain}:${a.path}:${a.name}`.localeCompare(`${b.domain}:${b.path}:${b.name}`));
+    if (!cookies.length) return undefined;
+    return createHash("sha256").update(JSON.stringify(cookies)).digest("hex");
+  }, () => readChatGptUsageAccount(page));
+}
 
 /** Only stable account identity leaves the page; never export session credentials. */
 export async function readChatGptUsageAccount(page: Page): Promise<{

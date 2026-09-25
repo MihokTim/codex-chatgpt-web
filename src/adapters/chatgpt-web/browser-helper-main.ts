@@ -27,6 +27,8 @@ interface RunMessage {
     modelId: string;
     reasoning?: string;
     modelFamily?: "5.6" | "6";
+    taskIdentity?: BrowserTurn["taskIdentity"];
+    preparationProgress?: boolean;
     capabilities: ChatGptWebCapabilities;
     nativeConnector?: boolean;
     resumeAvailable?: boolean;
@@ -224,6 +226,12 @@ async function run(message: RunMessage): Promise<void> {
     modelId: message.turn.modelId,
     reasoning: message.turn.reasoning,
     ...(message.turn.modelFamily ? { modelFamily: message.turn.modelFamily } : {}),
+    ...(message.turn.taskIdentity ? { taskIdentity: message.turn.taskIdentity } : {}),
+    ...(message.turn.preparationProgress ? { onPreparationProgress: (stage: string, waitUntil?: number) => {
+      if (!writeProtocol({ type: "event", id: message.id, event: "preparation_progress", stage, ...(waitUntil ? { waitUntil } : {}) })) {
+        throw new Error("Browser helper could not report preparation progress");
+      }
+    } } : {}),
     capabilities: message.turn.capabilities,
     ...(message.turn.nativeConnector ? { nativeConnector: true } : {}),
     prepare: prepareSelected,
@@ -325,6 +333,7 @@ async function run(message: RunMessage): Promise<void> {
         errorType: error.errorType,
         code: error.code,
         retryable: error.retryable,
+        ...(error.requestLimit ? { requestLimit: error.requestLimit } : {}),
       } : {}),
     });
   } finally {
@@ -538,4 +547,4 @@ process.once("SIGTERM", () => {
 });
 
 // Advertise the optional frames this helper understands so the daemon can negotiate them explicitly.
-writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments", "multipart-2-6", "pinned-model-family"] });
+writeProtocol({ type: "ready", features: ["progress", "tool-boundary-ack", "completion-fence", "multipart-stage-ack", "skill-attachments", "multipart-2-6", "pinned-model-family", "preparation-progress"] });
