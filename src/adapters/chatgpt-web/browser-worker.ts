@@ -56,6 +56,7 @@ import {
   assertAuthenticatedChatGptPage,
   assertNewChatPage,
   chatGptNewChatUrl,
+  chatGptAssistantTurnSelector,
   CHATGPT_ASSISTANT_TURN_SELECTOR,
   CHATGPT_COMPLETION_ACTION_SELECTOR,
   CHATGPT_COMPOSER_SELECTOR,
@@ -174,6 +175,9 @@ const CHATGPT_DOM_REVISION_ATTRIBUTES = [
   "data-turn-key",
   "data-chatgpt-search-unit-key",
   "data-chatgpt-search-message-ids",
+  "data-content-search-unit-key",
+  "data-conversation-role",
+  "data-user-message-bubble",
   "data-markdown-text-style",
   "disabled",
   "hidden",
@@ -2054,7 +2058,7 @@ class ChatGptBrowserDiagnostics {
               assistant: assistantTurns.map(element => ({
                 textChars: (element.textContent ?? "").length,
                 htmlChars: (element as HTMLElement).innerHTML.length,
-                markdownCount: element.querySelectorAll(".markdown").length,
+                markdownCount: element.querySelectorAll('.markdown, [data-markdown-text-style="assistant-message"]').length,
                 streamingStatusCount: element.querySelectorAll("[data-streaming-response-status]").length,
                 completionActionCount: element.querySelectorAll(completionActionSelector).length,
                 renderedCompletionActionCount: [...element.querySelectorAll(completionActionSelector)]
@@ -2256,13 +2260,6 @@ export function insertPlainTextIntoComposer(element: HTMLElement, value: string)
     return false;
   }
   return document.execCommand("insertText", false, value);
-}
-
-function chatGptResponseTurnSelector(identity: string): string {
-  const prefix = "timeline-assistant:";
-  return identity.startsWith(prefix)
-    ? `[data-turn-key=${JSON.stringify(identity.slice(prefix.length))}]`
-    : `[data-turn-id=${JSON.stringify(identity)}]`;
 }
 
 export class ChatGptBrowserWorker {
@@ -2608,7 +2605,7 @@ export class ChatGptBrowserWorker {
       if (!mode.thinkEnabled) await setChatGptThinkMode(composerForm, false, captureDiagnostic);
       return mode;
     }
-    const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).last();
+    const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
     // Recover only the controls on this document. In particular, do not replay
     // a Bigger Context preparation message or restart the browser turn.
     const recoverControls = async (): Promise<SelectedChatGptWebModelMode> => {
@@ -3156,7 +3153,8 @@ export class ChatGptBrowserWorker {
       // data-testid contains a display index: ChatGPT can renumber it while the same turn lives.
       // Virtualization removes a turn's section, but retains its outer identity container.
       const containers = [...document.querySelectorAll("[data-turn-id-container]")].filter(element =>
-        element.parentElement?.closest("[data-turn-id-container]")?.getAttribute("data-turn-id-container")
+        !element.closest("[data-turn-key]")
+        && element.parentElement?.closest("[data-turn-id-container]")?.getAttribute("data-turn-id-container")
           !== element.getAttribute("data-turn-id-container"))
         // This empty client sentinel is inserted only after Send, ahead of the first
         // user. It is not a logical conversation turn or a virtualized message anchor.
@@ -3164,41 +3162,46 @@ export class ChatGptBrowserWorker {
           || element.matches("[data-turn-id], [data-turn]")
           || element.querySelector("[data-turn-id], [data-turn]") !== null
           || Boolean(element.textContent?.trim()));
-      let turnIdentities: string[];
-      let userIdentities: string[];
-      let responseIdentities: string[];
+      // Preserve document order across both renderers. Every timeline reserves the
+      // same two logical roles, including while its inner content is virtualized.
+      const legacyTurns = (selector: string) => [...document.querySelectorAll(selector)]
+        .filter(element => !element.closest("[data-turn-key]"));
+      const userIdentities = identities(legacyTurns(options.userTurnSelector), "data-turn-id");
+      const responseIdentities = identities(legacyTurns(options.assistantTurnSelector), "data-turn-id");
+      identities(containers, "data-turn-id-container");
+      const turnIdentities: string[] = [];
       const timeline = [...document.querySelectorAll('[data-turn-key]')];
-      if (timeline.length > 0) {
-        if (containers.length > 0) throw new Error("ChatGPT exposed mixed conversation identity formats");
-        const keys = identities(timeline, "data-turn-key");
-        turnIdentities = [];
-        userIdentities = [];
-        responseIdentities = [];
-        timeline.forEach((container, index) => {
-          // The new timeline keeps one outer key for the user and all of its response
-          // content. Reserve both logical anchors even when the inner content virtualizes.
-          // Display-index search keys and changing assistant message IDs are not ownership.
-          const key = keys[index]!;
+      identities(timeline, "data-turn-key");
+      if (timeline.some(element => element.parentElement?.closest('[data-turn-key]'))) {
+        throw new Error("ChatGPT exposed nested conversation turn identities");
+      }
+      const ownedContainers = new Set([...containers, ...timeline]);
+      for (const container of document.querySelectorAll('[data-turn-id-container], [data-turn-key]')) {
+        if (!ownedContainers.has(container)) continue;
+        const key = container.getAttribute('data-turn-key');
+        if (key !== null) {
           const user = `timeline-user:${key}`;
           const assistant = `timeline-assistant:${key}`;
           turnIdentities.push(user, assistant);
           const users = [...container.querySelectorAll('[data-chatgpt-search-unit-key$=":user"]')];
+          const bubbles = [...container.querySelectorAll('[data-user-message-bubble]')];
           if (users.length > 1 || (users.length === 1
-            && !users[0]!.getAttribute('data-chatgpt-search-message-ids')?.split(/\s+/).includes(key))) {
+            && !users[0]!.getAttribute('data-chatgpt-search-message-ids')?.split(/\s+/).includes(key))
+            || bubbles.length > 1 || (users.length === 1 && bubbles.some(bubble => !users[0]!.contains(bubble)))) {
             throw new Error("ChatGPT timeline user has no unique matching message identity");
           }
-          if (users.length === 1) userIdentities.push(user);
-          if (container.querySelector('[data-chatgpt-agent-turn-start]')
-            && container.querySelector('[data-chatgpt-search-unit-key$=":assistant"]')) {
+          if (users.length === 1 || bubbles.length === 1) userIdentities.push(user);
+          if (container.querySelector('[data-conversation-role="assistant"]')
+            || (container.querySelector('[data-chatgpt-agent-turn-start]')
+              && container.querySelector('[data-chatgpt-search-unit-key$=":assistant"]'))) {
             responseIdentities.push(assistant);
           }
-        });
-      } else {
-        turnIdentities = identities(containers, "data-turn-id-container");
-        userIdentities = identities([...document.querySelectorAll(options.userTurnSelector)], "data-turn-id");
-        responseIdentities = identities([...document.querySelectorAll(options.assistantTurnSelector)], "data-turn-id");
+        } else {
+          turnIdentities.push(container.getAttribute('data-turn-id-container')!);
+        }
       }
       const knownTurns = new Set(turnIdentities);
+      if (knownTurns.size !== turnIdentities.length) throw new Error("ChatGPT exposed duplicate conversation turn identities");
       if ([...userIdentities, ...responseIdentities].some(identity => !knownTurns.has(identity))) {
         throw new Error("ChatGPT conversation turn has no matching identity container");
       }
@@ -3250,7 +3253,7 @@ export class ChatGptBrowserWorker {
     const userIdentity = submittedUserIdentity(baseline, state);
     const identity = userIdentity ? chatGptAssistantIdentityAfterUser(state, userIdentity) : undefined;
     if (!identity) return "";
-    const locator = page.locator(chatGptResponseTurnSelector(identity));
+    const locator = page.locator(chatGptAssistantTurnSelector(identity));
     return (await this.responseDomSnapshot(locator, {})).visibleText;
   }
 
@@ -3351,7 +3354,7 @@ export class ChatGptBrowserWorker {
         && completionTracker?.needsToolBatchObservation(progress.lastToolBatchRevision)) {
         const boundaryText = identity
           ? (await this.responseDomSnapshot(
-            observationPage.locator(chatGptResponseTurnSelector(identity)),
+            observationPage.locator(chatGptAssistantTurnSelector(identity)),
             {},
           )).visibleText
           : "";
@@ -3360,10 +3363,15 @@ export class ChatGptBrowserWorker {
       }
       if (identity && userIdentity) return {
         identity,
-        locator: observationPage.locator(chatGptResponseTurnSelector(identity)),
+        locator: observationPage.locator(chatGptAssistantTurnSelector(identity)),
         acceptedTurnIdentities: state.turnIdentities,
         userIdentity,
       };
+      // The power UI can expose Stop for a long reasoning phase before mounting any assistant
+      // node. Fresh generation evidence extends only DOM grace, never the caller's deadline.
+      if (state.visibleStopButtonCount > 0) {
+        responseDeadline = Math.min(deadline ?? Number.POSITIVE_INFINITY, Date.now() + graceMs);
+      }
       // A delayed renderer wake can cross the grace while the assistant appears. Only a fresh
       // observation can prove it is still missing; the explicit turn deadline remains above.
       if (Date.now() >= responseDeadline
@@ -3401,7 +3409,7 @@ export class ChatGptBrowserWorker {
     if (!identity || identity === binding.identity) return binding;
     return {
       identity,
-      locator: page.locator(chatGptResponseTurnSelector(identity)),
+      locator: page.locator(chatGptAssistantTurnSelector(identity)),
       acceptedTurnIdentities: state.turnIdentities,
       userIdentity: binding.userIdentity,
     };
@@ -3450,7 +3458,7 @@ export class ChatGptBrowserWorker {
     const name = JSON.stringify(this.config.appName);
     return composer
       .locator(`[data-id^="plugin:"][data-keyword=${name}], `
-        + `[app-mention-path^="app://"][app-mention-display-name=${name}][data-prompt-link-href][contenteditable="false"]`)
+        + `[app-mention-path^="app://"][app-mention-display-name=${name}][contenteditable="false"]`)
       .filter({ visible: true });
   }
 
@@ -3459,7 +3467,8 @@ export class ChatGptBrowserWorker {
     const keywords = await withBrowserTurnAbort(
       withChatGptBrowserObservationTimeout(selected.evaluateAll(elements => (
         elements.map(element => element.getAttribute("data-keyword")
-          ?? (element.getAttribute("app-mention-path") === element.getAttribute("data-prompt-link-href")
+          ?? (!element.hasAttribute("data-prompt-link-href")
+            || element.getAttribute("app-mention-path") === element.getAttribute("data-prompt-link-href")
             ? element.getAttribute("app-mention-display-name") : null))
       ))),
       abortSignal,
@@ -4225,6 +4234,7 @@ export class ChatGptBrowserWorker {
       await Promise.all(files.map(file => (
         composerForm.getByRole("group", { name: file.name, exact: true })
           .or(composerForm.locator('[data-composer-attachments]').getByRole("button", { name: file.name, exact: true }))
+          .or(composerForm.locator(`.composer-attachment-surface[role="button"][aria-label=${JSON.stringify(file.name)}]`))
           .waitFor({ state: "visible", timeout: 60_000 })
       )));
     } catch {
@@ -4318,13 +4328,22 @@ export class ChatGptBrowserWorker {
       // ChatGPT's DIL renderer has no .markdown class (#538). Read its response root within the
       // assistant-owned PUIK container; the CSS module hash is build-specific. Both renderers
       // feed the same content serializer and completion checks below, without reading UI text.
-      const answerRootSelector = '.markdown, [data-message-author-role="assistant"] .puik-root.not-markdown > [class*="_DilResponseRoot"], [data-chatgpt-search-unit-key$=":assistant"] [data-markdown-text-style="assistant-message"]';
+      const answerRootSelector = '.markdown, [data-message-author-role="assistant"] .puik-root.not-markdown > [class*="_DilResponseRoot"], [data-markdown-text-style="assistant-message"]';
       // ChatGPT uses the same content renderer for intermediate commentary and for the final
       // answer. Older responses nested commentary in the streaming-status container. Pro can also
       // render a completed commentary Markdown root immediately before that live status container.
       // Final-answer Markdown follows the live status instead, so DOM order remains the semantic
       // boundary without relying on localized labels such as "Pro thinking".
       const allMarkdownRoots = [...root.querySelectorAll<HTMLElement>(answerRootSelector)]
+        .filter(candidate => {
+          if (!root.hasAttribute("data-turn-key") && !candidate.hasAttribute("data-markdown-text-style")) return true;
+          const unit = candidate.closest('[data-content-search-unit-key], [data-chatgpt-search-unit-key]');
+          if (!unit) return false;
+          if (unit.hasAttribute('data-content-search-unit-key')) {
+            return Array.from(unit.children).some(child => child.getAttribute("data-conversation-role") === "assistant");
+          }
+          return unit.getAttribute('data-chatgpt-search-unit-key')?.endsWith(':assistant') === true;
+        })
         .filter(candidate => !candidate.parentElement?.closest(answerRootSelector))
         .filter(candidate => !candidate.closest('[data-user-message-bubble], [data-chatgpt-search-unit-key$=":user"]'))
         .filter(renderedInDom);
@@ -5595,7 +5614,7 @@ export class ChatGptBrowserWorker {
             };
             responseTurn = {
               ...responseTurn,
-              locator: page.locator(chatGptResponseTurnSelector(responseTurn.identity)),
+              locator: page.locator(chatGptAssistantTurnSelector(responseTurn.identity)),
             };
             responseDomCache.key = undefined;
             responseDomCache.snapshot = undefined;

@@ -100,25 +100,23 @@ test("submission DOM tracks logical identities and retains virtualized history i
     { id: "current-answer", index: 4, role: "assistant", mounted: true },
   ];
   const observers: (() => void)[] = [];
-  const element = (turn: Turn, container: boolean) => ({
-    getAttribute: (name: string) => ({
-      "data-turn-id": container ? null : turn.id,
-      "data-turn-id-container": turn.id,
-      "data-testid": container ? null : `conversation-turn-${turn.index}`,
-    })[name],
-    parentElement: { closest: () => container ? null : element(turn, true) },
-  });
+  const { createWindow } = require("@mixmark-io/domino");
+  let lastMarkup = "";
+  let fixtureDocument: Document;
+  const querySelectorAll = (selector: string) => {
+    const markup = turns.map(turn => `<div data-turn-id-container="${turn.id}">${turn.mounted
+      ? `<section data-turn-id-container="${turn.id}" data-turn-id="${turn.id}" data-turn="${turn.role}" data-testid="conversation-turn-${turn.index}"></section>` : ""}</div>`).join("");
+    if (markup !== lastMarkup) {
+      fixtureDocument = createWindow(markup).document;
+      lastMarkup = markup;
+    }
+    return Array.from(fixtureDocument.querySelectorAll(selector));
+  };
   const context = createContext({
     performance: { timeOrigin: 1 },
     document: {
       documentElement: {},
-      querySelectorAll: (selector: string) => {
-        if (selector === "[data-turn-id-container]") {
-          return turns.flatMap(turn => [element(turn, true), ...(turn.mounted ? [element(turn, false)] : [])]);
-        }
-        const role = selector.includes('="assistant"') ? "assistant" : selector.includes('="user"') ? "user" : undefined;
-        return turns.filter(turn => turn.mounted && turn.role === role).map(turn => element(turn, false));
-      },
+      querySelectorAll,
     },
     MutationObserver: class {
       constructor(callback: () => void) { observers.push(callback); }
@@ -154,6 +152,55 @@ test("submission DOM tracks logical identities and retains virtualized history i
   turns.push({ ...turns[3]!, index: 20 });
   observers.forEach(notify => notify());
   await expect(worker.submissionDomState(page, baseline.domCache)).rejects.toThrow("duplicate");
+});
+
+test("power turn identity separates roles and keeps virtualized groups in the submission baseline", async () => {
+  const { createWindow } = require("@mixmark-io/domino");
+  const window = createWindow('<div data-turn-id-container="legacy"><section data-testid="conversation-turn-0" data-turn="assistant" data-turn-id="legacy"></section></div><div data-turn-key="history"></div><div data-turn-key="previous"><div data-user-message-bubble></div><h4 data-conversation-role="assistant"></h4><div data-turn-id-container="search-only"><section data-testid="conversation-turn-search" data-turn="assistant"><div data-message-author-role="assistant"></div></section></div></div>');
+  const observers: (() => void)[] = [];
+  const context = createContext({
+    performance: { timeOrigin: 1 },
+    document: {
+      documentElement: window.document.documentElement,
+      querySelectorAll: (selector: string) => Array.from(window.document.querySelectorAll(selector)),
+    },
+    MutationObserver: class {
+      constructor(callback: () => void) { observers.push(callback); }
+      observe(_element: unknown, options: { attributeFilter: string[] }) {
+        expect(options.attributeFilter).toContain("data-turn-key");
+        expect(options.attributeFilter).toContain("data-conversation-role");
+      }
+    },
+  });
+  const page = {
+    evaluate: async (callback: Function, options: unknown) => runInContext(`(${callback.toString()})`, context)(options),
+    locator: () => ({}),
+  } as unknown as Page;
+  const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+  const baseline = await worker.captureSubmissionBaseline(page);
+  expect(Array.from(baseline.initialTurnIdentities)).toEqual([
+    "legacy", "timeline-user:history", "timeline-assistant:history", "timeline-user:previous", "timeline-assistant:previous",
+  ]);
+  window.document.querySelector('[data-turn-key="history"]').innerHTML = '<div data-user-message-bubble></div><h4 data-conversation-role="assistant"></h4>';
+  observers.forEach(notify => notify());
+  expect(await worker.currentSubmissionEvidence(page, baseline)).toBeUndefined();
+  const next = window.document.createElement("div");
+  next.setAttribute("data-turn-key", "next");
+  next.innerHTML = '<div data-user-message-bubble></div>';
+  window.document.body.appendChild(next);
+  observers.forEach(notify => notify());
+  expect(await worker.currentSubmissionEvidence(page, baseline)).toBe("user_turn");
+  expect(chatGptNewTurnIdentity(baseline.initialTurnIdentities, (await worker.submissionDomState(page)).responseIdentities)).toBeUndefined();
+  next.innerHTML += '<h4 data-conversation-role="assistant"></h4>';
+  observers.forEach(notify => notify());
+  expect(chatGptNewTurnIdentity(baseline.initialTurnIdentities, (await worker.submissionDomState(page)).responseIdentities)).toBe("timeline-assistant:next");
+  window.document.body.appendChild(next.cloneNode(true));
+  observers.forEach(notify => notify());
+  await expect(worker.submissionDomState(page)).rejects.toThrow("duplicate conversation turn identities");
+  window.document.body.lastChild.remove();
+  next.setAttribute("data-turn-key", "");
+  observers.forEach(notify => notify());
+  await expect(worker.submissionDomState(page)).rejects.toThrow("no stable data-turn-key");
 });
 
 test("response caching rechecks CSS visibility without requiring a DOM mutation", async () => {
@@ -987,7 +1034,7 @@ test("missing-assistant expiry checks fresh DOM after a delayed wake while prese
   } as unknown as Page;
   const realDateNow = Date.now;
   try {
-    for (const scenario of ["appeared", "missing", "turn-deadline"] as const) {
+    for (const scenario of ["appeared", "missing", "turn-deadline", "running", "stopped"] as const) {
       let now = 1_000;
       Date.now = () => now;
       const worker = ChatGptBrowserWorker.forProvider({
@@ -1008,11 +1055,14 @@ test("missing-assistant expiry checks fresh DOM after a delayed wake while prese
         return {
           turnIdentities: ["conversation-turn-user", "conversation-turn-assistant"],
           userIdentities: ["conversation-turn-user"],
-          responseIdentities: waits > 0 && scenario !== "missing" ? ["conversation-turn-assistant"] : [],
+          responseIdentities: waits > (scenario === "running" ? 1 : 0)
+            && scenario !== "missing" && scenario !== "stopped" ? ["conversation-turn-assistant"] : [],
+          visibleStopButtonCount: scenario === "running" || scenario === "turn-deadline"
+            || (scenario === "stopped" && waits === 0) ? 1 : 0,
         };
       };
       worker.waitForTurnDomOrExternalProgress = async () => {
-        if (++waits > 1) throw new Error("missing response was allowed to wait past its grace");
+        if (++waits > (scenario === "running" ? 2 : 1)) throw new Error("missing response was allowed to wait past its grace");
         // Renderer or scheduler resumes after the response grace with a newly rendered turn.
         now += CHATGPT_RESPONSE_DOM_GRACE_MS + 1;
       };
@@ -1021,15 +1071,15 @@ test("missing-assistant expiry checks fresh DOM after a delayed wake while prese
         { initialTurnIdentities: [], initialUserAnchors: [], domCache: {} },
         scenario === "turn-deadline" ? now + CHATGPT_RESPONSE_DOM_GRACE_MS : undefined,
       );
-      if (scenario === "appeared") {
+      if (scenario === "appeared" || scenario === "running") {
         await expect(result).resolves.toMatchObject({ identity: "conversation-turn-assistant", locator: assistantLocator });
       } else {
-        await expect(result).rejects.toThrow(scenario === "missing"
+        await expect(result).rejects.toThrow(scenario === "missing" || scenario === "stopped"
           ? "ChatGPT accepted the message but did not expose its assistant turn in the DOM"
           : "ChatGPT web turn timed out");
       }
-      expect(observations).toBe(scenario === "turn-deadline" ? 1 : 2);
-      expect(waits).toBe(1);
+      expect(observations).toBe(scenario === "turn-deadline" ? 1 : scenario === "running" ? 3 : 2);
+      expect(waits).toBe(scenario === "running" ? 2 : 1);
     }
   } finally {
     Date.now = realDateNow;
@@ -1294,6 +1344,12 @@ test("selected connector identity does not depend on its visible pill text", asy
   expect(await selected('<span data-id="unrelated" data-keyword="Codex Native2">Codex Native2</span>')).toBeFalse();
   expect(await selected(pill.replace('<span ', '<span hidden '))).toBeFalse();
   await expect(selected(pill + pill)).rejects.toThrow("duplicate");
+  const powerPill = '<span app-mention-path="app://configured" app-mention-display-name="Codex Native2" contenteditable="false">表示名</span>';
+  expect(await selected(powerPill)).toBeTrue();
+  expect(await selected(powerPill.replace('app://configured', 'https://example.com'))).toBeFalse();
+  expect(await selected(powerPill.replace('contenteditable="false"', 'contenteditable="true"'))).toBeFalse();
+  expect(await selected(powerPill.replace('app-mention-display-name="Codex Native2"', 'app-mention-display-name="Other"'))).toBeFalse();
+  await expect(selected(pill + powerPill)).rejects.toThrow("duplicate");
 });
 
 test("connector selection re-resolves the active composer after ChatGPT replaces it", async () => {
@@ -2308,6 +2364,10 @@ test("image attachment readiness uses exact file tiles and not localized remove-
     },
     locator: (selector: string) => {
       if (selector === CHATGPT_FILE_INPUT_SELECTOR) return input;
+      if (selector.startsWith('.composer-attachment-surface')) {
+        expect(selector).toContain('aria-label="codex-input-image-1.png"');
+        return {};
+      }
       if (selector === '[data-composer-attachments]') return {
         getByRole: (role: string, options: { name: string; exact: boolean }) => {
           expect(role).toBe("button");
@@ -2336,7 +2396,7 @@ test("image attachment readiness uses exact file tiles and not localized remove-
   };
   const page = {
     locator: (selector: string) => {
-      if (selector === 'input[data-testid="upload-photos-input"]') return input;
+      if (selector === 'input[data-testid="upload-photos-input"], form[data-chatgpt-composer] input[type="file"][multiple]:not([accept])') return input;
       if (selector === '[role="alert"]') {
         return { allInnerTexts: async () => [] };
       }
@@ -2862,6 +2922,7 @@ test.each([
 test("effort selection stops as soon as ChatGPT reports an expired session", async () => {
   const neverVisible = new Promise<void>(() => {});
   const effortControl = {
+    filter() { return this; },
     last() { return this; },
     waitFor: async () => await neverVisible,
   };
@@ -2913,6 +2974,7 @@ test("effort selection stops as soon as ChatGPT reports an expired session", asy
 test("effort menu waiting stops when ChatGPT reports an expired session", async () => {
   const neverVisible = new Promise<void>(() => {});
   const effortControl = {
+    filter() { return this; },
     last() { return this; },
     waitFor: async () => {},
     getAttribute: async () => "true",

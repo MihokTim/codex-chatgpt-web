@@ -29,7 +29,7 @@ export const CHATGPT_CONNECTOR_MENU_ROW_SELECTOR = [
 ].join(", ");
 export const CHATGPT_SELECTED_CONNECTOR_SELECTOR = [
   '[data-id^="plugin:"][data-keyword]',
-  '[app-mention-path^="app://"][app-mention-display-name][data-prompt-link-href][contenteditable="false"]',
+  '[app-mention-path^="app://"][app-mention-display-name][contenteditable="false"]',
 ].join(", ");
 export const CHATGPT_EFFORT_CONTROL_SELECTOR = [
   'button[aria-haspopup="menu"][data-tone="neutral"]',
@@ -41,10 +41,12 @@ export const CHATGPT_EFFORT_MENU_SELECTOR = [
   '[role="menu"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
   '[role="group"]:has([role="menuitemradio"], [data-model-reasoning-effort-slider])',
   '[role="menu"]:has([data-reasoning-slider="true"])',
+  '[role="menu"]:has([data-model-picker-power-slider])',
 ].join(", ");
 export const CHATGPT_EFFORT_ITEM_SELECTOR = '[role="menuitemradio"]';
-export const CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR = '[data-model-reasoning-effort-slider], [role="menuitem"][data-reasoning-slider="true"]';
-export const CHATGPT_EFFORT_SLIDER_SELECTOR = '[data-model-reasoning-effort-slider] [role="slider"], [data-reasoning-slider="true"] [role="slider"]';
+// Pick the power control itself, not both it and its outer reasoning-menu item.
+export const CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR = '[data-model-reasoning-effort-slider]:not(:has([data-model-picker-power-slider])), [data-model-picker-power-slider]';
+export const CHATGPT_EFFORT_SLIDER_SELECTOR = '[data-model-reasoning-effort-slider] [role="slider"], [data-model-picker-power-slider] [role="slider"]';
 export const CHATGPT_EFFORT_SLIDER_MAX_OPTIONS = 5;
 export const CHATGPT_STOP_BUTTON_SELECTOR = [
   '[data-testid="stop-button"]',
@@ -55,19 +57,28 @@ export const CHATGPT_COMPLETION_ACTION_SELECTOR = [
   'button[data-testid="copy-turn-action-button"]',
   '[data-turn-key] button[aria-label="コピーする"]',
   '[data-turn-key] button[aria-label="Copy"]',
+  '[data-turn-key] .turn-action-controls button',
 ].join(", ");
 export const CHATGPT_ASSISTANT_TURN_SELECTOR = [
-  '[data-testid^="conversation-turn-"][data-turn="assistant"]',
-  '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]',
-  '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"])',
-  '[data-turn-key] [data-chatgpt-search-unit-key$=":assistant"]',
+  '[data-testid^="conversation-turn-"][data-turn="assistant"]:not([data-turn-key] *)',
+  '[data-testid^="conversation-turn-"][data-message-author-role="assistant"]:not([data-turn-key] *)',
+  '[data-testid^="conversation-turn-"]:has([data-message-author-role="assistant"]):not([data-turn-key] *)',
+  '[data-turn-key]:has([data-conversation-role="assistant"], [data-chatgpt-search-unit-key$=":assistant"])',
 ].join(", ");
 export const CHATGPT_USER_TURN_SELECTOR = [
-  '[data-testid^="conversation-turn-"][data-turn="user"]',
-  '[data-testid^="conversation-turn-"][data-message-author-role="user"]',
-  '[data-testid^="conversation-turn-"]:has([data-message-author-role="user"])',
-  '[data-turn-key] [data-chatgpt-search-unit-key$=":user"]',
+  '[data-testid^="conversation-turn-"][data-turn="user"]:not([data-turn-key] *)',
+  '[data-testid^="conversation-turn-"][data-message-author-role="user"]:not([data-turn-key] *)',
+  '[data-testid^="conversation-turn-"]:has([data-message-author-role="user"]):not([data-turn-key] *)',
+  '[data-turn-key]:has([data-user-message-bubble], [data-chatgpt-search-unit-key$=":user"])',
 ].join(", ");
+
+/** The new renderer groups both roles under the user's stable turn key. */
+export function chatGptAssistantTurnSelector(identity: string): string {
+  const prefix = "timeline-assistant:";
+  return identity.startsWith(prefix)
+    ? `[data-turn-key=${JSON.stringify(identity.slice(prefix.length))}]`
+    : `[data-turn-id=${JSON.stringify(identity)}]`;
+}
 
 export interface ChatGptEffortSliderState {
   min: number;
@@ -83,7 +94,7 @@ export interface ChatGptEffortActivation {
 }
 
 export function chatGptEffortSlider(page: Page): { sliderContainer: Locator; slider: Locator } {
-  const sliderContainer = page.locator(CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR).filter({ visible: true }).last();
+  const sliderContainer = page.locator(CHATGPT_EFFORT_SLIDER_CONTAINER_SELECTOR).filter({ visible: true });
   // The current picker keeps ARIA values on a zero-width, aria-hidden semantic input.
   // Its visible container proves the active surface; the input proves the effort range.
   return { sliderContainer, slider: sliderContainer.locator('[role="slider"]') };
@@ -96,7 +107,9 @@ function effortMenuSelectorForId(menuId: string): string {
 export async function chatGptEffortMenuForControl(page: Page, control: Locator): Promise<Locator> {
   const menuId = await control.getAttribute("aria-controls").catch(() => null);
   if (menuId) return page.locator(effortMenuSelectorForId(menuId));
-  return page.locator(CHATGPT_EFFORT_MENU_SELECTOR).filter({ visible: true }).last();
+  const controlId = await control.getAttribute("id").catch(() => null);
+  if (controlId) return page.locator(`[role="menu"][aria-labelledby~=${JSON.stringify(controlId)}]`).filter({ visible: true });
+  return page.locator(CHATGPT_EFFORT_MENU_SELECTOR).filter({ visible: true });
 }
 
 async function visibleEffortSurface(
@@ -194,10 +207,12 @@ export async function readChatGptEffortAvailability(
   // Plus exposes a fourth ARIA position for a locked Pro upsell. Only the ticks
   // carry both attributes; the slider root also has data-locked and is not a choice.
   const locks = await sliderContainer.evaluate(container => {
-    if (container.matches('[role="menuitem"][data-reasoning-slider="true"]')) {
-      const power = container.querySelector('[data-model-picker-power-slider]');
-      const track = power?.querySelector('[data-orientation="horizontal"][aria-disabled]');
-      if (!track || track.getAttribute('aria-disabled') !== 'false') return [];
+    const power = container.matches('[data-model-picker-power-slider]')
+      ? container : container.querySelector('[data-model-picker-power-slider]');
+    if (power) {
+      const tracks = power.querySelectorAll('[data-orientation="horizontal"][aria-disabled]');
+      const track = tracks[0];
+      if (tracks.length !== 1 || !track || track.getAttribute('aria-disabled') !== 'false') return [];
       // Current controls omit false boolean lock attributes. Restrict that contract to
       // their marked power track; legacy controls still require explicit lock values.
       return Array.from(track.querySelectorAll('[data-selected]'), tick => {
@@ -251,9 +266,9 @@ export async function detectChatGptAccountCapabilities(
   options: { selectorTimeoutMs?: number; stableAbsenceMs?: number } = {},
 ): Promise<ChatGptWebAccountCapabilities & { extraHighAvailable: boolean }> {
   const composers = page.locator(CHATGPT_COMPOSER_SELECTOR).filter({ visible: true });
-  const composer = composers.last();
+  const composer = composers;
   const composerForm = composer.locator("xpath=ancestor::form[1]");
-  const effortButton = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).last();
+  const effortButton = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
   const deadline = Date.now() + (options.selectorTimeoutMs ?? 30_000);
   const stableAbsenceMs = options.stableAbsenceMs ?? 3_000;
   let absenceSince: number | undefined;

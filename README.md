@@ -4,7 +4,9 @@ This is an unofficial fork of [miuuyy/codex-chatgpt-web](https://github.com/miuu
 
 **Native and Web models use the same Codex application and configuration home.** Setup adds Web routes to the native catalog; native requests retain upstream's native passthrough. Production uses `CODEX_HOME`, or `~/.codex` when unset. The bridge keeps its own settings and browser profile in `~/.codex-chatgpt-web`. Only the upstream development profile uses a separate test home.
 
-The current fork identity is **6.0.0-fork.8**. The application version remains **6.0.0** for upstream compatibility. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now `757942251222ee0f71953c35636679c6d92dd636`, including reviewed post-release fixes.
+The current fork identity is **6.1.0-fork.1**, with application version **6.1.0**. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now the 6.1.0 release commit `293341084ac7a1ddd2de12fede3706023f5b6474`.
+
+The [6.1.0 integration notes](docs/upstream-6.1.0-integration.md) describe the combined UI contracts. This revision adopts the upstream browser, Billing, announcement, logging, installer, and launcher changes while preserving the fork's response ownership, localized model verification, focus recovery, shared request pacing, and compaction protections.
 
 ## Changes in this fork
 
