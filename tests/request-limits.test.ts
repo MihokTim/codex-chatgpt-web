@@ -167,6 +167,101 @@ test("dialog observation propagates cancellation and cannot outlive a send or a 
   } finally { await monitor.close(); }
 });
 
+test("distinct auxiliary GET limits preserve the same accepted response more than once", async () => {
+  const page = Object.assign(new EventEmitter(), { mainFrame: () => page, context: () => ({}) }) as unknown as Page;
+  let now = 1_000;
+  let observations = 0;
+  let generationRequests = 0;
+  const reports: Array<{ source: string }> = [];
+  const monitor = new ChatGptRequestMonitor("repeated-dialog-fixture", async evidence => { reports.push(evidence); }, () => now);
+  const emit = (pathname: string, method: string, status: number) => {
+    const req = { frame: () => page, method: () => method, url: () => `https://chatgpt.com${pathname}` } as unknown as Request;
+    if (method === "POST") generationRequests++;
+    (page as unknown as EventEmitter).emit("request", req);
+    const response = { request: () => req, status: () => status, headers: () => ({}) };
+    (page as unknown as EventEmitter).emit("response", response);
+    return response;
+  };
+  const dialog = { id: "repeated-dialog-limit", source: "dialog", category: "unknown" } as const;
+  const observe = async () => { observations++; return true; };
+  try {
+    monitor.bind(page); monitor.beginSend(); monitor.markSubmitted();
+    emit("/backend-api/f/conversation", "POST", 200);
+    const firstResponse = emit("/backend-api/conversation/fixture", "GET", 429);
+    expect(await monitor.observeAcceptedResponseAfterDialog(dialog, observe)).toBe(true);
+    expect(await monitor.observeAcceptedResponseAfterDialog(dialog, observe)).toBe(false);
+    (page as unknown as EventEmitter).emit("response", firstResponse);
+    expect(await monitor.observeAcceptedResponseAfterDialog(dialog, observe)).toBe(false);
+    now += 300;
+    emit("/backend-api/conversation/fixture", "GET", 429);
+    expect(await monitor.observeAcceptedResponseAfterDialog({ ...dialog, id: "next-dialog-limit" }, observe)).toBe(true);
+    now += 7 * 60_000;
+    emit("/backend-api/conversation/fixture", "GET", 429);
+    expect(await monitor.observeAcceptedResponseAfterDialog({ ...dialog, id: "later-dialog-limit" }, observe)).toBe(true);
+    expect(observations).toBe(3);
+    expect(generationRequests).toBe(1);
+    expect(reports.filter(evidence => evidence.source === "dialog")).toHaveLength(3);
+    expect(reports.filter(evidence => evidence.source === "http")).toHaveLength(3);
+    expect(monitor.failure()).toBeUndefined();
+  } finally { await monitor.close(); }
+});
+
+test.each(["no-progress", "generation-rejected", "auth-rejected", "ambiguous", "stale"])(
+  "a second auxiliary limit still requires current response evidence: %s", async scenario => {
+    const page = Object.assign(new EventEmitter(), { mainFrame: () => page, context: () => ({}) }) as unknown as Page;
+    let now = 1_000;
+    let observations = 0;
+    const monitor = new ChatGptRequestMonitor("second-dialog-guard-fixture", async () => {}, () => now);
+    const emit = (pathname: string, method: string, status: number) => {
+      const req = { frame: () => page, method: () => method, url: () => `https://chatgpt.com${pathname}` } as unknown as Request;
+      (page as unknown as EventEmitter).emit("request", req);
+      (page as unknown as EventEmitter).emit("response", { request: () => req, status: () => status, headers: () => ({}) });
+    };
+    const dialog = { id: "guarded-dialog-limit", source: "dialog", category: "unknown" } as const;
+    try {
+      monitor.bind(page); monitor.beginSend(); monitor.markSubmitted();
+      emit("/backend-api/f/conversation", "POST", 200);
+      emit("/backend-api/conversation/fixture", "GET", 429);
+      expect(await monitor.observeAcceptedResponseAfterDialog(dialog, async () => true)).toBe(true);
+      emit("/backend-api/conversation/fixture", "GET", 429);
+      if (scenario === "stale") now += 5_001;
+      if (scenario === "generation-rejected") emit("/backend-api/f/conversation", "POST", 429);
+      if (scenario === "auth-rejected") emit("/api/auth/session", "GET", 401);
+      if (scenario === "ambiguous") emit("/backend-api/other", "POST", 429);
+      expect(await monitor.observeAcceptedResponseAfterDialog(dialog, async () => {
+        observations++; return scenario !== "no-progress";
+      })).toBe(false);
+      expect(observations).toBe(scenario === "no-progress" ? 1 : 0);
+    } finally { await monitor.close(); }
+  },
+);
+
+test("a fresh auxiliary rejection during observation is retained without parallel observation", async () => {
+  const page = Object.assign(new EventEmitter(), { mainFrame: () => page, context: () => ({}) }) as unknown as Page;
+  const monitor = new ChatGptRequestMonitor("concurrent-dialog-fixture", async () => {});
+  const emit = (pathname: string, method: string, status: number) => {
+    const req = { frame: () => page, method: () => method, url: () => `https://chatgpt.com${pathname}` } as unknown as Request;
+    (page as unknown as EventEmitter).emit("request", req);
+    (page as unknown as EventEmitter).emit("response", { request: () => req, status: () => status, headers: () => ({}) });
+  };
+  const dialog = { id: "concurrent-dialog-limit", source: "dialog", category: "unknown" } as const;
+  let completeObservation!: (observed: boolean) => void;
+  let parallelObservations = 0;
+  try {
+    monitor.bind(page); monitor.beginSend(); monitor.markSubmitted();
+    emit("/backend-api/f/conversation", "POST", 200);
+    emit("/backend-api/conversation/fixture", "GET", 429);
+    const first = monitor.observeAcceptedResponseAfterDialog(dialog, () => new Promise(resolve => { completeObservation = resolve; }));
+    emit("/backend-api/conversation/fixture", "GET", 429);
+    expect(await monitor.observeAcceptedResponseAfterDialog(dialog, async () => { parallelObservations++; return true; })).toBe(false);
+    expect(parallelObservations).toBe(0);
+    completeObservation(true);
+    expect(await first).toBe(true);
+    expect(await monitor.observeAcceptedResponseAfterDialog(dialog, async () => true)).toBe(true);
+    expect(await monitor.observeAcceptedResponseAfterDialog(dialog, async () => true)).toBe(false);
+  } finally { await monitor.close(); }
+});
+
 test("usage cache refuses a mid-verification account switch and does not cache failures", async () => {
   let identity = "A";
   const cache = new ChatGptUsageAccountCache();

@@ -4,11 +4,11 @@ This is an unofficial fork of [miuuyy/codex-chatgpt-web](https://github.com/miuu
 
 **Native and Web models use the same Codex application and configuration home.** Setup adds Web routes to the native catalog; native requests retain upstream's native passthrough. Production uses `CODEX_HOME`, or `~/.codex` when unset. The bridge keeps its own settings and browser profile in `~/.codex-chatgpt-web`. Only the upstream development profile uses a separate test home.
 
-The current fork identity is **6.1.0-fork.3**, with application version **6.1.0**. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now the 6.1.0 release commit `293341084ac7a1ddd2de12fede3706023f5b6474`.
+The current fork identity is **6.1.0-fork.4**, with application version **6.1.0**. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now the 6.1.0 release commit `293341084ac7a1ddd2de12fede3706023f5b6474`.
 
 The [6.1.0 integration notes](docs/upstream-6.1.0-integration.md) describe the combined UI contracts. This revision adopts the upstream browser, Billing, announcement, logging, installer, and launcher changes while preserving the fork's response ownership, localized model verification, focus recovery, shared request pacing, and compaction protections. The [browser and handoff resilience notes](docs/browser-handoff-resilience.md) describe the fork.2 connection isolation and bounded automatic recovery.
 
-The [request and model-control recovery notes](docs/request-control-recovery.md) describe fork.3: preserving proven accepted responses after auxiliary request limits, pacing subsequent sends during conversation cooldowns, and recovering disappearing effort controls without changing the requested model.
+The [request and model-control recovery notes](docs/request-control-recovery.md) describe fork.4: preserving proven accepted responses across repeated, independently observed auxiliary request limits without replaying sends, pacing subsequent sends during conversation cooldowns, and recovering disappearing effort controls without changing the requested model.
 
 ## Changes in this fork
 

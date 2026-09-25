@@ -8,7 +8,7 @@ import { ChatGptBrowserWorker, throwIfChatGptRateLimitDialog, type BrowserTurn }
 import { resolveChatGptWebModelMode } from "../src/adapters/chatgpt-web/model";
 import { LAUNCHER_BROWSER_HOST_KIND, LAUNCHER_BROWSER_IDLE_URL } from "../src/launcher-browser-host";
 
-test.each(["auxiliary-live", "auxiliary-unconfirmed", "unknown", "generation-rejected"])(
+test.each(["auxiliary-live", "auxiliary-live-repeated", "repeated-without-new-http", "auxiliary-unconfirmed", "unknown", "generation-rejected"])(
   "multipart part 3 preserves ACKs and never resends an accepted part after a dialog: %s", async scenario => {
     const root = mkdtempSync(join(tmpdir(), "auxiliary-429-fixture-"));
     const reports: Array<{ category: string; source: string }> = [];
@@ -79,6 +79,13 @@ test.each(["auxiliary-live", "auxiliary-unconfirmed", "unknown", "generation-rej
         if (scenario === "generation-rejected") emit("/backend-api/f/conversation", "POST", 429);
         modal = true;
         await throwIfChatGptRateLimitDialog(page as unknown as Page, async () => scenario !== "auxiliary-unconfirmed");
+        if (scenario === "auxiliary-live-repeated" || scenario === "repeated-without-new-http") {
+          for (let repeat = 0; repeat < 2; repeat++) {
+            if (scenario === "auxiliary-live-repeated") emit("/backend-api/conversation/fixture", "GET", 429);
+            modal = true;
+            await throwIfChatGptRateLimitDialog(page as unknown as Page, async () => true);
+          }
+        }
       },
     });
     try {
@@ -89,7 +96,7 @@ test.each(["auxiliary-live", "auxiliary-unconfirmed", "unknown", "generation-rej
           multipart: { parts: Array.from({ length: 6 }, (_, i) => JSON.stringify({ part: i + 1 })), commit: "Finish" },
           release: () => { released = true; } }),
       }, "fixture-owned-surface", page).then(() => null, (error: unknown) => error);
-      const continued = scenario === "auxiliary-live";
+      const continued = scenario === "auxiliary-live" || scenario === "auxiliary-live-repeated";
       if (continued) expect(error).toBe(reachedResponse);
       else expect(error).toMatchObject({ code: "rate_limit_exceeded", retryable: false,
         requestLimit: { category: scenario === "generation-rejected" ? "generation" : "unknown" } });
@@ -98,7 +105,9 @@ test.each(["auxiliary-live", "auxiliary-unconfirmed", "unknown", "generation-rej
         : ["multipart_stage_1_send", "multipart_stage_2_send", "multipart_stage_3_send"]);
       expect(acknowledgements).toEqual(continued ? [1, 2, 3, 4, 5] : [1, 2]);
       if (continued) expect(reports.map(({ category, source }) => ({ category, source })))
-        .toEqual([{ category: "conversation", source: "http" }, { category: "unknown", source: "dialog" }]);
+        .toEqual(Array.from({ length: scenario === "auxiliary-live-repeated" ? 3 : 1 }, () => [
+          { category: "conversation", source: "http" }, { category: "unknown", source: "dialog" },
+        ]).flat());
       expect(released).toBe(true);
       expect(page.listenerCount("request")).toBe(0);
       expect(page.listenerCount("response")).toBe(0);

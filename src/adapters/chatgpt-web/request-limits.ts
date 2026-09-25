@@ -70,7 +70,9 @@ export class ChatGptRequestMonitor {
   private generationResponded = false;
   private auxiliaryLimitedAt?: number;
   private ambiguousLimit = false;
-  private observedDialog = false;
+  private auxiliaryLimitRevision = 0;
+  private observedAuxiliaryLimitRevision = 0;
+  private observingDialog = false;
   private counts: Record<string, number> = {};
   private recent: Record<string, unknown>[] = [];
   private writes = new Set<Promise<unknown>>();
@@ -82,7 +84,8 @@ export class ChatGptRequestMonitor {
   beginSend(): void {
     this.send = randomUUID(); this.rejection = undefined;
     this.submitted = false; this.generationResponded = false;
-    this.auxiliaryLimitedAt = undefined; this.ambiguousLimit = false; this.observedDialog = false;
+    this.auxiliaryLimitedAt = undefined; this.ambiguousLimit = false;
+    this.auxiliaryLimitRevision = 0; this.observedAuxiliaryLimitRevision = 0;
   }
   markSubmitted(): void { if (this.send) this.submitted = true; }
   endSend(): void { this.send = undefined; this.submitted = false; }
@@ -90,24 +93,46 @@ export class ChatGptRequestMonitor {
 
   /** A nearby GET limit is correlation, not attribution. Require fresh semantic evidence of
    * this accepted response after dismissing the modal; never send, reload, or infer success here.
-   * The unknown dialog still puts new requests into the owner's cooldown. */
+   * The unknown dialog still puts new requests into the owner's cooldown. Each distinct GET
+   * rejection can warrant another observation of the SAME response; it never permits a Send.
+   * Consuming the HTTP evidence, rather than one recovery per Send, handles repeated auxiliary
+   * failures during long generations without accepting uncorrelated or repeated modals. */
   async observeAcceptedResponseAfterDialog(evidence: RequestLimitEvidence,
     observe: () => Promise<boolean>): Promise<boolean> {
     const send = this.send;
     const page = this.page;
-    if (!send || !this.submitted || !this.generationResponded || this.rejection || this.ambiguousLimit
-      || this.observedDialog || this.auxiliaryLimitedAt === undefined
-      || this.now() - this.auxiliaryLimitedAt > 5_000 || !this.report) return false;
-    this.observedDialog = true;
-    if (!await observe() || this.send !== send || this.page !== page || this.rejection || this.ambiguousLimit) return false;
-    try { await this.report(evidence); }
-    catch {
-      console.warn(`[chatgpt-web] request_limit_report_failed traceId=${this.traceId}`);
+    const stopped = (reason: string): false => {
+      console.info(`[chatgpt-web] accepted_response_observation_stopped ${JSON.stringify({
+        traceId: this.traceId, stage: this.stage, reason,
+      })}`);
       return false;
+    };
+    if (!send || !page || !this.submitted) return stopped("submission_not_confirmed");
+    if (!this.generationResponded) return stopped("generation_http_not_confirmed");
+    if (this.rejection || this.ambiguousLimit) return stopped("conflicting_rejection");
+    if (this.observingDialog) return stopped("observation_in_progress");
+    if (this.auxiliaryLimitedAt === undefined
+      || this.auxiliaryLimitRevision === this.observedAuxiliaryLimitRevision) return stopped("no_new_auxiliary_evidence");
+    if (this.now() - this.auxiliaryLimitedAt > 5_000) return stopped("auxiliary_evidence_expired");
+    if (!this.report) return stopped("scheduler_unavailable");
+    this.observedAuxiliaryLimitRevision = this.auxiliaryLimitRevision;
+    this.observingDialog = true;
+    try {
+      if (!await observe()) return stopped("response_not_observable");
+      if (this.send !== send || this.page !== page) return stopped("owner_changed");
+      if (this.rejection || this.ambiguousLimit) return stopped("conflicting_rejection");
+      try { await this.report(evidence); }
+      catch {
+        console.warn(`[chatgpt-web] request_limit_report_failed traceId=${this.traceId}`);
+        return stopped("scheduler_report_failed");
+      }
+      if (this.send !== send || this.page !== page) return stopped("owner_changed");
+      if (this.rejection || this.ambiguousLimit) return stopped("conflicting_rejection");
+      console.info(`[chatgpt-web] accepted_response_observation_preserved traceId=${this.traceId}`);
+      return true;
+    } finally {
+      this.observingDialog = false;
     }
-    if (this.send !== send || this.page !== page || this.rejection || this.ambiguousLimit) return false;
-    console.info(`[chatgpt-web] accepted_response_observation_preserved traceId=${this.traceId}`);
-    return true;
   }
 
   private onRequest = (request: Request): void => {
@@ -122,6 +147,8 @@ export class ChatGptRequestMonitor {
   private onResponse = (response: Response): void => {
     const request = this.requests.get(response.request());
     if (!request) return;
+    // A duplicate response notification must not create new evidence or report another limit.
+    this.requests.delete(response.request());
     const status = response.status();
     const currentSend = !!request.send && request.send === this.send;
     if (currentSend && request.category === "generation" && status >= 200 && status < 300) this.generationResponded = true;
@@ -138,7 +165,10 @@ export class ChatGptRequestMonitor {
     if (this.recent.length > 12) this.recent.shift();
     if (status !== 429) return;
     if (currentSend) {
-      if (request.category === "conversation" && request.method === "GET") this.auxiliaryLimitedAt = this.now();
+      if (request.category === "conversation" && request.method === "GET") {
+        this.auxiliaryLimitedAt = this.now();
+        this.auxiliaryLimitRevision += 1;
+      }
       else this.ambiguousLimit = true;
     }
     const evidence: RequestLimitEvidence = { id: randomUUID(), source: "http", category: request.category,
