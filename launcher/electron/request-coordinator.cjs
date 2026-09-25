@@ -47,8 +47,11 @@ class RequestCoordinator {
     if (!INTENTS.has(intent)) throw new Error("Invalid request scheduling intent");
     const now = this.now();
     for (const [key, value] of this.localCooldowns) if (value.until + 600_000 < now) this.localCooldowns.delete(key);
+    // A new Send also causes the SPA to fetch conversation state. Let a known history
+    // cooldown settle before adding that traffic, including from other helpers/compaction.
+    // Already accepted responses remain outside acquire() and keep being observed.
     const categories = intent === "open" ? ["conversation", "authentication", "generation"]
-      : intent === "send" ? ["generation"] : ["authentication"];
+      : intent === "send" ? ["generation", "conversation"] : ["authentication"];
     const cooldownUntil = Math.max(this.localCooldowns.get(owner)?.until ?? 0,
       ...categories.map(category => this.cooldowns.get(category)?.until ?? 0));
     const until = Math.max(cooldownUntil, intent === "send" ? this.nextSendAt : 0);

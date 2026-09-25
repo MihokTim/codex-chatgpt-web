@@ -3,11 +3,31 @@ import { chromium, type Browser, type Page } from "playwright-core";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 import { CHATGPT_WEB_MODEL_ID, type ChatGptWebCapabilities } from "../src/adapters/chatgpt-web/model";
 import { defaultChromeExecutable } from "../src/config";
+import { focusChatGptEffortControl } from "../src/adapters/chatgpt-web/browser-model-controls";
+import { ChatGptWebAdapterError } from "../src/adapters/chatgpt-web/adapter-error";
+import type { Locator } from "playwright-core";
 
 let browser: Browser;
 beforeAll(async () => { browser = await chromium.launch({ executablePath: defaultChromeExecutable(), headless: true }); });
 afterAll(async () => { await browser?.close(); });
 const capabilities: ChatGptWebCapabilities = { localToolsEnabled: false, solAvailable: true, extraHighAvailable: true, proAvailable: true };
+
+test("effort focus is cancellable during inert hydration and preserves non-transient errors", async () => {
+  const page = await browser.newPage();
+  try {
+    await page.setContent('<div inert><div role="menuitem" tabindex="0">Effort</div></div>');
+    const controller = new AbortController();
+    const pending = focusChatGptEffortControl(page.getByRole("menuitem", { includeHidden: true }), controller.signal);
+    const abort = new DOMException("owner cancelled", "AbortError");
+    setTimeout(() => controller.abort(abort), 100);
+    await expect(pending).rejects.toBe(abort);
+    for (const error of [new Error("Target page, context or browser has been closed"), new Error("strict mode violation"),
+      new ChatGptWebAdapterError("authentication failure", { status: 401, code: "auth", errorType: "authentication_error", retryable: false })]) {
+      const control = { isEnabled: async () => { throw error; } } as unknown as Locator;
+      await expect(focusChatGptEffortControl(control)).rejects.toBe(error);
+    }
+  } finally { await page.close(); }
+});
 const worker = Object.create(ChatGptBrowserWorker.prototype) as {
   selectModelAndEffort(page: Page, model: string, effort: string, capabilities: ChatGptWebCapabilities,
     captureDiagnostic?: (checkpoint: string) => Promise<void>, trackUsage?: boolean, modelFamily?: "6" | "5.6"):
@@ -36,7 +56,11 @@ async function fixture(page: Page, scenario: string, family?: "6" | "5.6", annou
       const description=document.createElement('span');description.id='model-description';description.hidden=true;
       document.body.append(description);document.querySelector('#owner').setAttribute('aria-describedby',description.id);
     }
-    button.onclick=()=>{menu.hidden=false;button.setAttribute('aria-expanded','true');window.opens++;menu.focus()};
+    const ownerTemplate=document.querySelector('#owner').cloneNode(true);
+    button.onclick=()=>{
+      if(!document.querySelector('#owner')){const replacement=ownerTemplate.cloneNode(true);menu.querySelector('[data-model-reasoning-effort-slider]').append(replacement);bind(replacement)}
+      menu.hidden=false;button.setAttribute('aria-expanded','true');window.opens++;menu.focus()
+    };
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){menu.hidden=true;button.setAttribute('aria-expanded','false');button.focus()}});
     window.composerFocusAttempts=0;
     document.addEventListener('focusin',e=>{
@@ -56,6 +80,7 @@ async function fixture(page: Page, scenario: string, family?: "6" | "5.6", annou
         if(!firstFocus)return;firstFocus=false;
         if(scenario==='focus-race')queueMicrotask(()=>menu.focus());
         if(scenario==='replace-on-focus')setTimeout(()=>{const replacement=owner.cloneNode(true);owner.replaceWith(replacement);bind(replacement);menu.focus()},30);
+        if(scenario==='focus-disappears')setTimeout(()=>{owner.remove();menu.focus()},30);
       };
       owner.onkeydown=e=>{
         if(!['ArrowRight','ArrowLeft'].includes(e.key))return;
@@ -73,7 +98,7 @@ async function fixture(page: Page, scenario: string, family?: "6" | "5.6", annou
     </script>`);
 }
 
-test.each(["focus-race", "replace-on-focus", "reopen", "delayed"])("effort selection survives menu hydration without submitting: %s", async scenario => {
+test.each(["focus-race", "replace-on-focus", "focus-disappears", "reopen", "delayed"])("effort selection survives menu hydration without submitting: %s", async scenario => {
   const page = await browser.newPage();
   try {
     await fixture(page, scenario);

@@ -46,6 +46,23 @@ test("an unattributed dialog on a maintenance or other page does not globally th
   assert.equal(coordinator.acquire("healthy-task", "send").granted, true);
 });
 
+test("known conversation limits pause new sends across helpers without replaying or stopping accepted work", () => {
+  let now = 1_000;
+  const coordinator = new RequestCoordinator({ now: () => now, spacingMs: 0 });
+  assert.equal(coordinator.acquire("already-generating", "send").granted, true);
+  const evidence = { id: "conversation-limit", source: "http", category: "conversation", status: 429, retryAfterMs: 60_000 };
+  assert.equal(coordinator.report("helper-A", evidence), 61_000);
+  for (const owner of ["helper-A", "new-helper-B", "compaction-C"]) {
+    assert.deepEqual(coordinator.acquire(owner, "send"), { granted: false, retryAt: 61_000, reason: "rate-limit" });
+    assert.equal(coordinator.acquire(owner, "open").granted, false);
+    assert.equal(coordinator.acquire(owner, "authentication").granted, true);
+  }
+  now += 5_000;
+  assert.equal(coordinator.report("helper-A", evidence), 61_000);
+  now = 61_000;
+  assert.equal(coordinator.acquire("next-part", "send").granted, true);
+});
+
 test("control traffic and tab metadata require the exact owned tab and valid fields", async () => {
   const tab = { id: "tab", traceId: "owner-trace", helperPid: process.pid, status: "running" };
   const host = Object.assign(Object.create(BrowserHost.prototype), {

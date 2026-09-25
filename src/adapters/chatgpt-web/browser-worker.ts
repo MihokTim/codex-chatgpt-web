@@ -741,26 +741,34 @@ const chatGptRateLimitDialog = (page: Page): Locator => page.locator('[role="dia
   .filter({ hasText: /making requests too quickly|過於頻繁|过于频繁|リクエストの頻度が高すぎます|요청을 너무 빠르게|요청이 너무 많습니다|너무 많은 요청/i })
   .last();
 
-export async function throwIfChatGptRateLimitDialog(page: Page): Promise<void> {
-  const rejection = requestMonitors.get(page)?.failure();
+export async function throwIfChatGptRateLimitDialog(page: Page,
+  observeAcceptedResponse?: () => Promise<boolean>): Promise<void> {
+  const monitor = requestMonitors.get(page);
+  const rejection = monitor?.failure();
   if (rejection) throw rejection;
   const dialog = chatGptRateLimitDialog(page);
   if (!await dialog.isVisible().catch(() => false)) return;
+  const evidence = { id: randomUUID(), source: "dialog", category: "unknown" } as const;
 
   const acknowledge = dialog.getByRole("button", { name: /^(Got it|知道了|了解|알겠습니다|확인)$/ }).last();
   if (await acknowledge.isVisible().catch(() => false)) {
     try {
-      await acknowledge.press("Enter");
+      await acknowledge.press("Enter", { timeout: 5_000 });
     } catch (error) {
       throw new ChatGptWebAdapterError(
         `ChatGPT rate limit: too many requests, and the dialog could not be dismissed (${error instanceof Error ? error.message : String(error)}). Try again in a few minutes.`,
-        { status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded", retryable: false },
+        { status: 429, errorType: "rate_limit_error", code: "rate_limit_exceeded", retryable: false, requestLimit: evidence },
       );
     }
   }
+  if (observeAcceptedResponse && monitor) {
+    const dismissed = await dialog.waitFor({ state: "hidden", timeout: 5_000 }).then(() => true, () => false);
+    if (dismissed && await monitor.observeAcceptedResponseAfterDialog(evidence, observeAcceptedResponse)) return;
+  }
+  if (monitor?.failure()) throw monitor.failure();
   // Dismissing the modal does not prove the account cooldown has cleared. Keep this failure
   // replayable in the adapter so native reconnects cannot start more browser submissions.
-  throw requestLimitError({ id: randomUUID(), source: "dialog", category: "unknown" });
+  throw requestLimitError(evidence);
 }
 
 const chatGptTemporaryChatOnboardingDialog = (page: Page): Locator => page
@@ -2559,13 +2567,15 @@ export class ChatGptBrowserWorker {
     trackUsage = false,
     modelFamily?: "5.6" | "6",
     recoveryAttempt = 0,
+    signal?: AbortSignal,
   ): Promise<SelectedChatGptWebModelMode> {
     const context: ChatGptModelSelectionContext = {
-      stage: "composer", family: modelFamily, effort: reasoning,
+      stage: "composer", family: modelFamily, effort: reasoning, signal,
     };
     try {
       return await this.configureModelAndEffort(page, modelId, reasoning, capabilities, context, captureDiagnostic, trackUsage, modelFamily, recoveryAttempt);
     } catch (error) {
+      signal?.throwIfAborted();
       throw normalizeChatGptModelSelectionError(error, context);
     }
   }
@@ -2606,21 +2616,30 @@ export class ChatGptBrowserWorker {
       return mode;
     }
     const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
+    let controlsUrl: string;
+    let controlsDocumentOrigin: number;
     // Recover only the controls on this document. In particular, do not replay
     // a Bigger Context preparation message or restart the browser turn.
     const recoverControls = async (): Promise<SelectedChatGptWebModelMode> => {
+      context.signal?.throwIfAborted();
+      if (page.url() !== controlsUrl
+        || !await page.evaluate(origin => performance.timeOrigin === origin, controlsDocumentOrigin)) {
+        throw controlError("effort-focus", "ChatGPT document changed while selecting model controls");
+      }
       await captureDiagnostic?.("effort-controls-reopening");
       await page.keyboard.press("Escape");
       await settleChatGptUi();
-      return this.selectModelAndEffort(page, modelId, reasoning, capabilities, captureDiagnostic, trackUsage, modelFamily, recoveryAttempt + 1);
+      context.signal?.throwIfAborted();
+      return this.selectModelAndEffort(page, modelId, reasoning, capabilities, captureDiagnostic, trackUsage, modelFamily, recoveryAttempt + 1, context.signal);
     };
     const effortWaitAbort = new AbortController();
+    const effortWaitSignal = context.signal ? AbortSignal.any([effortWaitAbort.signal, context.signal]) : effortWaitAbort.signal;
     context.stage = "effort-control";
     try {
       const ready = await Promise.race([
-        currentEffort.waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "effort" as const),
-        chatGptRateLimitDialog(page).waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "rate-limit" as const),
-        chatGptExpiredSessionAlert(page).waitFor({ state: "visible", timeout: 70_000, signal: effortWaitAbort.signal }).then(() => "session-expired" as const),
+        currentEffort.waitFor({ state: "visible", timeout: 70_000, signal: effortWaitSignal }).then(() => "effort" as const),
+        chatGptRateLimitDialog(page).waitFor({ state: "visible", timeout: 70_000, signal: effortWaitSignal }).then(() => "rate-limit" as const),
+        chatGptExpiredSessionAlert(page).waitFor({ state: "visible", timeout: 70_000, signal: effortWaitSignal }).then(() => "session-expired" as const),
       ]);
       if (ready === "rate-limit") await throwIfChatGptRateLimitDialog(page);
       if (ready === "session-expired") await throwIfChatGptSessionFailureAlert(page);
@@ -2649,14 +2668,15 @@ export class ChatGptBrowserWorker {
     const effortSlider = activation.slider;
     const sliderContainer = activation.sliderContainer;
     const waitAbort = new AbortController();
+    const sliderWaitSignal = context.signal ? AbortSignal.any([waitAbort.signal, context.signal]) : waitAbort.signal;
     context.stage = "effort-slider";
     try {
       const ready = await Promise.race([
-        sliderContainer.waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal })
-          .then(() => effortSlider.waitFor({ state: "attached", timeout: 70_000, signal: waitAbort.signal }))
+        sliderContainer.waitFor({ state: "visible", timeout: 70_000, signal: sliderWaitSignal })
+          .then(() => effortSlider.waitFor({ state: "attached", timeout: 70_000, signal: sliderWaitSignal }))
           .then(() => "slider" as const),
-        chatGptRateLimitDialog(page).waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "rate-limit" as const),
-        chatGptExpiredSessionAlert(page).waitFor({ state: "visible", timeout: 70_000, signal: waitAbort.signal }).then(() => "session-expired" as const),
+        chatGptRateLimitDialog(page).waitFor({ state: "visible", timeout: 70_000, signal: sliderWaitSignal }).then(() => "rate-limit" as const),
+        chatGptExpiredSessionAlert(page).waitFor({ state: "visible", timeout: 70_000, signal: sliderWaitSignal }).then(() => "session-expired" as const),
       ]);
       if (ready === "rate-limit") await throwIfChatGptRateLimitDialog(page);
       if (ready === "session-expired") await throwIfChatGptSessionFailureAlert(page);
@@ -2670,6 +2690,8 @@ export class ChatGptBrowserWorker {
       waitAbort.abort();
     }
     const selectionUrl = page.url();
+    controlsUrl = selectionUrl;
+    controlsDocumentOrigin = await page.evaluate(() => performance.timeOrigin);
     let sliderState = parseChatGptEffortSliderState(
       await effortSlider.getAttribute("aria-valuemin"),
       await effortSlider.getAttribute("aria-valuemax"),
@@ -2704,7 +2726,7 @@ export class ChatGptBrowserWorker {
       context.stage = "effort-focus";
       await throwIfChatGptRateLimitDialog(page);
       await throwIfChatGptSessionFailureAlert(page);
-      if (!await focusChatGptEffortControl(sliderControl)) {
+      if (!await focusChatGptEffortControl(sliderControl, context.signal)) {
         await captureDiagnostic?.("effort-focus-unavailable");
         if (recoveryAttempt === 0) return recoverControls();
         throw controlError("effort-focus", "ChatGPT effort control did not retain keyboard focus after reopening");
@@ -3271,6 +3293,22 @@ export class ChatGptBrowserWorker {
     };
   }
 
+  private async acceptedResponseIsObservable(page: Page, baseline: ChatGptSubmissionBaseline,
+    signal?: AbortSignal, acknowledgement?: string): Promise<boolean> {
+    signal?.throwIfAborted();
+    // Bypass the cached probe: evidence must be observed after this modal was dismissed.
+    const state = await this.submissionDomState(page, {}, signal);
+    const userIdentity = submittedUserIdentity(baseline, state);
+    if (!userIdentity) return false;
+    if (state.visibleStopButtonCount > 0) return true;
+    const identity = chatGptAssistantIdentityAfterUser(state, userIdentity);
+    if (!identity) return false;
+    const snapshot = await this.responseDomSnapshot(page.locator(chatGptAssistantTurnSelector(identity)), {});
+    if (!snapshot.responsePresent || snapshot.failedThinkingVisible || snapshot.stoppedThinkingVisible) return false;
+    const text = snapshot.visibleText.trim();
+    return acknowledgement === undefined ? text.length > 0 : text === acknowledgement;
+  }
+
   private async waitForNewAssistantTurn(
     page: Page,
     baseline: ChatGptSubmissionBaseline,
@@ -3302,7 +3340,9 @@ export class ChatGptBrowserWorker {
         throw new Error("ChatGPT web turn timed out");
       }
       await throwIfChatGptSessionFailureAlert(observationPage);
-      await throwIfChatGptRateLimitDialog(observationPage);
+      await throwIfChatGptRateLimitDialog(observationPage, () => (
+        this.acceptedResponseIsObservable(observationPage, observationBaseline, signal)
+      ));
       let state: ChatGptSubmissionDomState;
       try {
         state = await this.submissionDomState(
@@ -3969,7 +4009,9 @@ export class ChatGptBrowserWorker {
         throw new Error("ChatGPT Bigger Context transaction timed out while awaiting a stage acknowledgement");
       }
       await throwIfChatGptSessionFailureAlert(page);
-      await throwIfChatGptRateLimitDialog(page);
+      await throwIfChatGptRateLimitDialog(page, () => (
+        this.acceptedResponseIsObservable(page, submissionBaseline, abortSignal, stage.acknowledgement)
+      ));
       await throwIfChatGptTerminalErrorAlert(responseTurn.locator);
       let snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
       if (!snapshot.responsePresent && await responseTurn.locator.count() !== 1) {
@@ -5218,7 +5260,7 @@ export class ChatGptBrowserWorker {
       }
       // A retained lease proves the connector binding, not the current model selection.
       // Reconcile the live control before every submission, including retained continuations.
-      const selectStagingMode = () => (
+      const selectStagingMode = (stageSignal: AbortSignal) => (
         this.selectModelAndEffort(
           page,
           turn.modelId,
@@ -5227,6 +5269,8 @@ export class ChatGptBrowserWorker {
           checkpoint => diagnostics.capture(page, checkpoint),
           trackUsage,
           turn.modelFamily,
+          0,
+          turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
         )
       );
       let mode = await runStage(turn.traceId, "effort_selection", browserStageTimeouts.effortSelection, selectStagingMode);
@@ -5317,6 +5361,7 @@ export class ChatGptBrowserWorker {
           console.info(
             `[chatgpt-web] browser turn ${turn.traceId} multipart part ${index + 1}/${prepared.multipart.parts.length} submission accepted evidence=${evidence}`,
           );
+          requestMonitor.markSubmitted();
           await runStage(
             turn.traceId,
             `multipart_stage_${index + 1}_acknowledgement`,
@@ -5369,7 +5414,7 @@ export class ChatGptBrowserWorker {
             turn.traceId,
             "final_part_effort_selection",
             browserStageTimeouts.effortSelection,
-            () => this.selectModelAndEffort(
+            (stageSignal) => this.selectModelAndEffort(
               page,
               turn.modelId,
               requestedMode.effort,
@@ -5377,6 +5422,8 @@ export class ChatGptBrowserWorker {
               checkpoint => diagnostics.capture(page, `final-part-${checkpoint}`),
               trackUsage,
               turn.modelFamily,
+              0,
+              turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
             ),
           );
           await diagnostics.capture(page, "final-part-effort-selected");
@@ -5423,7 +5470,7 @@ export class ChatGptBrowserWorker {
             turn.traceId,
             "connector_catalog_refresh",
             browserStageTimeouts.temporaryChatPreparation,
-            async () => {
+            async (stageSignal) => {
               await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
               await this.prepareChatSurface(
                 page,
@@ -5438,6 +5485,8 @@ export class ChatGptBrowserWorker {
                 checkpoint => diagnostics.capture(page, checkpoint),
                 trackUsage,
                 turn.modelFamily,
+                0,
+                turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
               );
               submissionBaseline = await this.captureSubmissionBaseline(page);
             },
@@ -5466,6 +5515,7 @@ export class ChatGptBrowserWorker {
           turn.externalProgress,
           { ...turn, onSubmitted: () => {
             generationAccepted = true;
+            requestMonitor.markSubmitted();
             recordFinalUsage?.();
             return turn.onSubmitted?.();
           }, onSendActivated: async () => {
@@ -5564,7 +5614,9 @@ export class ChatGptBrowserWorker {
         }
         await throwIfChatGptSessionFailureAlert(page);
         await throwIfChatGptTerminalErrorAlert(responseTurn.locator);
-        if (requestMonitor.failure()) throw requestMonitor.failure();
+        await throwIfChatGptRateLimitDialog(page, () => (
+          this.acceptedResponseIsObservable(page, submissionBaseline, turn.abortSignal)
+        ));
 
         if (mode.localTools && await resolveChatGptToolConfirmation(
           page,

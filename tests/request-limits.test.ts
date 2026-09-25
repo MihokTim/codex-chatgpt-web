@@ -88,6 +88,85 @@ test("six sequential usage receipts share identity verification without survivin
   expect(calls).toBe(3);
 });
 
+test.each(["accepted", "no-semantic-acceptance", "no-http-acceptance", "stale", "unknown", "wrong-frame",
+  "generation-rejected", "auth-rejected", "ambiguous", "no-progress", "next-send", "rebind", "report-failed"])(
+  "a dialog can preserve only its proven accepted response after an auxiliary GET limit: %s", async scenario => {
+    const frame = {};
+    const page = Object.assign(new EventEmitter(), { mainFrame: () => frame, context: () => ({}) }) as unknown as Page;
+    let now = 1_000;
+    const reports: unknown[] = [];
+    const monitor = new ChatGptRequestMonitor("dialog-correlation-fixture", async evidence => {
+      if (evidence.source === "dialog" && scenario === "report-failed") throw new Error("fixture coordinator offline");
+      reports.push(evidence);
+    }, () => now);
+    const emit = (pathname: string, method: string, status: number, ownFrame = frame) => {
+      const req = { frame: () => ownFrame, method: () => method, url: () => `https://chatgpt.com${pathname}` } as Request;
+      (page as unknown as EventEmitter).emit("request", req);
+      (page as unknown as EventEmitter).emit("response", {
+        request: () => req, status: () => status, headers: () => ({}),
+      } as unknown as Response);
+    };
+    try {
+      monitor.bind(page);
+      monitor.beginSend();
+      if (scenario !== "no-http-acceptance") emit("/backend-api/f/conversation", "POST", 200);
+      if (scenario !== "no-semantic-acceptance") monitor.markSubmitted();
+      if (scenario !== "unknown") emit("/backend-api/conversation/fixture", "GET", 429, scenario === "wrong-frame" ? {} : frame);
+      if (scenario === "stale") now += 5_001;
+      if (scenario === "generation-rejected") emit("/backend-api/f/conversation", "POST", 429);
+      if (scenario === "auth-rejected") emit("/api/auth/session", "GET", 401);
+      if (scenario === "ambiguous") emit("/backend-api/something-else", "POST", 429);
+      const dialog = { id: "fixture-dialog-limit", source: "dialog", category: "unknown" } as const;
+      const observed = await monitor.observeAcceptedResponseAfterDialog(dialog, async () => {
+        if (scenario === "next-send") monitor.beginSend();
+        if (scenario === "rebind") monitor.bind(Object.assign(new EventEmitter(), { mainFrame: () => frame }) as unknown as Page);
+        return scenario !== "no-progress";
+      });
+      expect(observed).toBe(scenario === "accepted");
+      if (scenario === "accepted") {
+        expect(reports).toContainEqual(dialog);
+        expect(monitor.failure()).toBeUndefined();
+        expect(await monitor.observeAcceptedResponseAfterDialog({ ...dialog, id: "second-dialog-limit" }, async () => true)).toBe(false);
+        monitor.endSend();
+        expect(await monitor.observeAcceptedResponseAfterDialog(dialog, async () => true)).toBe(false);
+      }
+      if (scenario === "generation-rejected") expect(monitor.failure()?.requestLimit?.category).toBe("generation");
+    } finally { await monitor.close(); }
+    expect((page as unknown as EventEmitter).listenerCount("request")).toBe(0);
+    expect((page as unknown as EventEmitter).listenerCount("response")).toBe(0);
+  },
+);
+
+test("dialog observation propagates cancellation and cannot outlive a send or a late rejection", async () => {
+  const page = Object.assign(new EventEmitter(), { mainFrame: () => page, context: () => ({}) }) as unknown as Page;
+  let release!: () => void;
+  const monitor = new ChatGptRequestMonitor("late-dialog-fixture", evidence => evidence.source === "dialog"
+    ? new Promise<void>(resolve => { release = resolve; }) : Promise.resolve());
+  const emit = (pathname: string, method: string, status: number) => {
+    const req = { frame: () => page, method: () => method, url: () => `https://chatgpt.com${pathname}` } as unknown as Request;
+    (page as unknown as EventEmitter).emit("request", req);
+    (page as unknown as EventEmitter).emit("response", { request: () => req, status: () => status, headers: () => ({}) });
+  };
+  const prime = () => {
+    monitor.beginSend(); monitor.markSubmitted();
+    emit("/backend-api/f/conversation", "POST", 200);
+    emit("/backend-api/conversation/fixture", "GET", 429);
+  };
+  const evidence = { id: "cancel-dialog-limit", source: "dialog", category: "unknown" } as const;
+  try {
+    monitor.bind(page); prime();
+    const abort = new DOMException("owner cancelled", "AbortError");
+    await expect(monitor.observeAcceptedResponseAfterDialog(evidence, async () => { throw abort; })).rejects.toBe(abort);
+    prime();
+    const pending = monitor.observeAcceptedResponseAfterDialog(evidence, async () => true);
+    await Promise.resolve();
+    emit("/backend-api/f/conversation", "POST", 429);
+    release();
+    expect(await pending).toBe(false);
+    expect(monitor.failure()?.requestLimit?.category).toBe("generation");
+  } finally { await monitor.close(); }
+});
+
 test("usage cache refuses a mid-verification account switch and does not cache failures", async () => {
   let identity = "A";
   const cache = new ChatGptUsageAccountCache();

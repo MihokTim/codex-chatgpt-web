@@ -66,16 +66,49 @@ export class ChatGptRequestMonitor {
   private stage = "preparation";
   private send?: string;
   private rejection?: ChatGptWebAdapterError;
+  private submitted = false;
+  private generationResponded = false;
+  private auxiliaryLimitedAt?: number;
+  private ambiguousLimit = false;
+  private observedDialog = false;
   private counts: Record<string, number> = {};
   private recent: Record<string, unknown>[] = [];
-  private writes: Promise<unknown>[] = [];
+  private writes = new Set<Promise<unknown>>();
   constructor(private readonly traceId: string,
-    private readonly report?: (evidence: RequestLimitEvidence) => Promise<unknown>) {}
+    private readonly report?: (evidence: RequestLimitEvidence) => Promise<unknown>,
+    private readonly now: () => number = Date.now) {}
 
   setStage(stage: string): void { this.stage = stage.replace(/[^a-z0-9_]/gi, "_").slice(0, 80); }
-  beginSend(): void { this.send = randomUUID(); this.rejection = undefined; }
-  endSend(): void { this.send = undefined; }
+  beginSend(): void {
+    this.send = randomUUID(); this.rejection = undefined;
+    this.submitted = false; this.generationResponded = false;
+    this.auxiliaryLimitedAt = undefined; this.ambiguousLimit = false; this.observedDialog = false;
+  }
+  markSubmitted(): void { if (this.send) this.submitted = true; }
+  endSend(): void { this.send = undefined; this.submitted = false; }
   failure(): ChatGptWebAdapterError | undefined { return this.rejection; }
+
+  /** A nearby GET limit is correlation, not attribution. Require fresh semantic evidence of
+   * this accepted response after dismissing the modal; never send, reload, or infer success here.
+   * The unknown dialog still puts new requests into the owner's cooldown. */
+  async observeAcceptedResponseAfterDialog(evidence: RequestLimitEvidence,
+    observe: () => Promise<boolean>): Promise<boolean> {
+    const send = this.send;
+    const page = this.page;
+    if (!send || !this.submitted || !this.generationResponded || this.rejection || this.ambiguousLimit
+      || this.observedDialog || this.auxiliaryLimitedAt === undefined
+      || this.now() - this.auxiliaryLimitedAt > 5_000 || !this.report) return false;
+    this.observedDialog = true;
+    if (!await observe() || this.send !== send || this.page !== page || this.rejection || this.ambiguousLimit) return false;
+    try { await this.report(evidence); }
+    catch {
+      console.warn(`[chatgpt-web] request_limit_report_failed traceId=${this.traceId}`);
+      return false;
+    }
+    if (this.send !== send || this.page !== page || this.rejection || this.ambiguousLimit) return false;
+    console.info(`[chatgpt-web] accepted_response_observation_preserved traceId=${this.traceId}`);
+    return true;
+  }
 
   private onRequest = (request: Request): void => {
     try {
@@ -90,6 +123,9 @@ export class ChatGptRequestMonitor {
     const request = this.requests.get(response.request());
     if (!request) return;
     const status = response.status();
+    const currentSend = !!request.send && request.send === this.send;
+    if (currentSend && request.category === "generation" && status >= 200 && status < 300) this.generationResponded = true;
+    if (currentSend && request.category === "authentication" && status >= 400) this.ambiguousLimit = true;
     if (this.page && request.category === "authentication" && status >= 400) {
       invalidateChatGptUsageAccountCache(this.page.context());
     }
@@ -97,25 +133,34 @@ export class ChatGptRequestMonitor {
     this.counts[key] = (this.counts[key] ?? 0) + 1;
     const event = { at: new Date().toISOString(), traceId: this.traceId,
       category: request.category, method: request.method, stage: request.stage, status,
-      currentSend: !!request.send && request.send === this.send };
+      currentSend };
     this.recent.push(event);
     if (this.recent.length > 12) this.recent.shift();
     if (status !== 429) return;
+    if (currentSend) {
+      if (request.category === "conversation" && request.method === "GET") this.auxiliaryLimitedAt = this.now();
+      else this.ambiguousLimit = true;
+    }
     const evidence: RequestLimitEvidence = { id: randomUUID(), source: "http", category: request.category,
       status, retryAfterMs: retryAfterMilliseconds(response.headers()["retry-after"]) };
     if (request.category === "generation" && request.send && request.send === this.send) {
       this.rejection = requestLimitError(evidence);
     }
     console.warn(`[chatgpt-web] request_limit ${JSON.stringify({ ...event, ...evidence, recent: this.recent })}`);
-    if (this.report) this.writes.push(this.report(evidence).catch(() => {
-      console.warn(`[chatgpt-web] request_limit_report_failed traceId=${this.traceId}`);
-    }));
+    if (this.report) {
+      const write = this.report(evidence).catch(() => {
+        console.warn(`[chatgpt-web] request_limit_report_failed traceId=${this.traceId}`);
+      });
+      this.writes.add(write);
+      void write.finally(() => this.writes.delete(write));
+    }
   };
 
   bind(page: Page): void {
     if (page === this.page) return;
     this.detach();
     this.page = page;
+    this.auxiliaryLimitedAt = undefined;
     page.on("request", this.onRequest);
     page.on("response", this.onResponse);
   }
@@ -126,6 +171,7 @@ export class ChatGptRequestMonitor {
   async close(): Promise<void> {
     this.detach();
     this.page = undefined;
+    this.endSend();
     await Promise.allSettled(this.writes);
     console.info(`[chatgpt-web] request_counts ${JSON.stringify({ traceId: this.traceId, counts: this.counts })}`);
   }

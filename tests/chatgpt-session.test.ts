@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { runInNewContext } from "node:vm";
 import { ChatGptBrowserWorker } from "../src/adapters/chatgpt-web/browser-worker";
 import {
   CHATGPT_COMPOSER_SELECTOR,
@@ -308,6 +309,9 @@ function reasoningPicker(options: { max?: string; locks?: Array<string | null>; 
   const menu = { filter() { return this; }, last() { return this; }, isVisible: async () => true, locator: () => modelRows };
   const page = {
     url: () => "https://chatgpt.com/?temporary-chat=true",
+    evaluate: async (read: Function, argument: unknown) => runInNewContext(`(${read.toString()})(argument)`, {
+      argument, performance: { timeOrigin: 1_000 },
+    }),
     locator: (selector: string) => {
       if (selector === CHATGPT_COMPOSER_SELECTOR) return composer;
       if (selector === CHATGPT_EFFORT_MENU_SELECTOR) return menu;
