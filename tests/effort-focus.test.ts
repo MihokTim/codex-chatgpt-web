@@ -38,6 +38,19 @@ async function fixture(page: Page, scenario: string, family?: "6" | "5.6", annou
     }
     button.onclick=()=>{menu.hidden=false;button.setAttribute('aria-expanded','true');window.opens++;menu.focus()};
     document.addEventListener('keydown',e=>{if(e.key==='Escape'){menu.hidden=true;button.setAttribute('aria-expanded','false');button.focus()}});
+    window.composerFocusAttempts=0;
+    document.addEventListener('focusin',e=>{
+      if(e.target.id!=='prompt-textarea'||window.opens<2||!menu.hidden)return;
+      window.composerFocusAttempts++;
+      if(scenario==='preflight-focus-blocked'){button.focus();return}
+      if(window.composerFocusAttempts!==1)return;
+      if(scenario==='preflight-focus-race')queueMicrotask(()=>button.focus());
+      if(scenario==='preflight-focus-delayed')setTimeout(()=>button.focus(),25);
+      if(scenario==='preflight-focus-rerender'){
+        const replacement=e.target.cloneNode(true);e.target.replaceWith(replacement);button.focus();
+      }
+      if(scenario==='preflight-focus-surface-drift'){button.textContent='Changed effort';button.focus()}
+    });
     function bind(owner){
       owner.onfocus=()=>{
         if(!firstFocus)return;firstFocus=false;
@@ -92,6 +105,37 @@ test("Japanese Pro announcement from a different family is rejected before submi
     expect(await page.evaluate(() => (window as unknown as { submits: number }).submits)).toBe(0);
   } finally { await page.close(); }
 }, 20_000);
+
+test.each(["preflight-focus-race", "preflight-focus-delayed", "preflight-focus-rerender"])(
+  "preflight restores stable composer focus after menu dismissal without submitting: %s", async scenario => {
+    const page = await browser.newPage();
+    try {
+      await fixture(page, scenario, "6");
+      const mode = await worker.selectModelAndEffort(page, CHATGPT_WEB_MODEL_ID, "max", capabilities, undefined, true, "6");
+      await page.waitForTimeout(125);
+      expect(mode).toMatchObject({ uiEffortIndex: 4, modelFamily: "6", usageModel: "gpt-6-pro" });
+      expect(await page.locator("#effort").getAttribute("aria-expanded")).toBe("false");
+      expect(await page.locator("#prompt-textarea").innerText()).toBe("fixture");
+      expect(await page.locator("#prompt-textarea").evaluate(element => element === element.ownerDocument.activeElement)).toBe(true);
+      expect(await page.evaluate(() => (window as unknown as { composerFocusAttempts: number }).composerFocusAttempts)).toBeGreaterThanOrEqual(2);
+      expect(await page.evaluate(() => (window as unknown as { submits: number }).submits)).toBe(0);
+    } finally { await page.close(); }
+  }, 20_000,
+);
+
+test.each(["preflight-focus-blocked", "preflight-focus-surface-drift"])(
+  "preflight rejects unresolved focus or changed selection without submitting: %s", async scenario => {
+    const page = await browser.newPage();
+    try {
+      await fixture(page, scenario, "6");
+      const failure = await worker.selectModelAndEffort(page, CHATGPT_WEB_MODEL_ID, "max", capabilities, undefined, false, "6")
+        .then(() => null, error => error);
+      expect(failure).toMatchObject({ code: "chatgpt_model_selection_failed", retryable: false });
+      expect(await page.locator("#prompt-textarea").innerText()).toBe("fixture");
+      expect(await page.evaluate(() => (window as unknown as { submits: number }).submits)).toBe(0);
+    } finally { await page.close(); }
+  }, 20_000,
+);
 
 test.each(["jump", "range-drift"])("unexpected effort movement is terminal: %s", async scenario => {
   const page = await browser.newPage();

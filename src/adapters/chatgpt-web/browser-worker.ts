@@ -2884,11 +2884,34 @@ export class ChatGptBrowserWorker {
           `stage=preflight-restore; family=${mode.modelFamily ?? "default"}; ChatGPT did not close the model menu before submission`,
         );
       }
-      await composer.focus({ timeout: Math.max(1, deadline - Date.now()) });
-      const composerFocused = await composer.evaluate(element => (
+      const hasComposerFocus = (): Promise<boolean> => composer.evaluate(element => (
         element.isConnected && (element === element.ownerDocument.activeElement
           || element.contains(element.ownerDocument.activeElement))
-      ));
+      )).catch(() => false);
+      let composerFocused = false;
+      while (Date.now() < deadline) {
+        await assertClosedSurface();
+        try {
+          await composer.focus({ timeout: Math.max(1, deadline - Date.now()) });
+        } catch (error) {
+          if (Date.now() >= deadline) throw error;
+          await new Promise(resolveSleep => setTimeout(resolveSleep, 50));
+          continue;
+        }
+        // Menu dismissal and React hydration can return focus to the trigger, or replace the
+        // composer, after Locator.focus() has resolved. Require the restored focus to survive
+        // that deferred work before allowing a submission.
+        await new Promise(resolveSleep => setTimeout(
+          resolveSleep,
+          Math.min(100, Math.max(1, deadline - Date.now())),
+        ));
+        if (!await hasComposerFocus()) continue;
+        await assertClosedSurface();
+        if (await hasComposerFocus()) {
+          composerFocused = true;
+          break;
+        }
+      }
       if (!composerFocused) {
         throw chatGptModelSelectionError(
           `stage=preflight-restore; family=${mode.modelFamily ?? "default"}; ChatGPT did not return focus to the composer before submission`,
