@@ -29,6 +29,7 @@ import { createChatGptStructuredOutputValidator } from "./output-validation";
 import { failedThinkingRecoveryPolicy, hasCompleteRecoveryHistory, nativeToolResultProof } from "./failed-thinking-recovery";
 import { hasCompleteCompactionHistory, retireActiveCompactionBoundary } from "./compaction-source-history";
 import { chatGptWebTurnRetryPolicy } from "./retry-policy";
+import { isRecoverableResponseFailure, isTransientBrowserPreparationFailure, isTransientSummaryFailure, MAX_FRESH_COMPACTION_ATTEMPTS, preparedBrowserRecovery, recoveryDelay, sharePreparedBrowserRecovery } from "./transient-recovery";
 import { TurnBroker, type BrokerToolRequest, type BrokerToolResult, type TurnBrokerOwner } from "./turn-broker";
 import { ChatGptTextFeed, ChatGptTraceFeed, chatGptCompactionSourceExecutionKey, chatGptInstructionLineage, chatGptThreadOwnershipKey, chatGptTurnExecutionKey, chatGptTurnRetryKey, chatGptTurnRoundKey, chatGptTurnSessions, type ChatGptBrowserOutcome, type ChatGptTraceEvent, type ChatGptTurnRuntime, type ChatGptTurnSession } from "./turn-execution";
 import { estimateChatGptWebUsage, resolveBiggerContextMultipartParts } from "./usage";
@@ -982,46 +983,59 @@ export function createChatGptWebAdapter(
                   armHandoffDeadline();
                   const operationSignal = AbortSignal.any([operatorSignal, handoffDeadline.signal]);
                   const sourceConversationKey = chatGptConversationKey(parsed, executionNamespace);
+                  let freshCompactionAttempts = 0;
                   const runFreshCompaction = async (reason: string): Promise<string> => {
                     operationSignal.throwIfAborted();
                     if (freshConversationPerTurn) console.info("[chatgpt-web] compaction uses configured fresh conversation mode");
                     else console.warn(`[chatgpt-web] retained compaction fallback=${reason}`);
-                    // Bound preparation, multipart acknowledgements, and cleanup separately. Once
-                    // ChatGPT accepts the final compact prompt, its normal browser observation owns
-                    // model-generation liveness; a fixed handoff timer must not cancel active work.
-                    handoffPhase = "preparing";
-                    handoffStage = "browser_start";
-                    armHandoffDeadline();
-                    const fallbackRuntime = startRuntime(
-                      parsed,
-                      manualRequest ? environment : undefined,
-                      freshCompactionTraceId,
-                      turnCapabilities,
-                      {
-                        onCompactionProgress: () => armHandoffDeadline(),
-                        onCompactionSubmitted: () => { handoffPhase = "generating"; suspendHandoffDeadline(); },
-                        onPreparationProgress: (stage, waitUntil) => {
-                          if (handoffPhase === "generating") return;
-                          handoffStage = stage;
-                          // The scheduler owns a bounded, cancellable wait. It must not consume
-                          // preparation's budget, and ordinary helper heartbeats cannot extend it.
-                          armHandoffDeadline(handoffTimeoutMs + Math.min(600_000, Math.max(0, (waitUntil ?? 0) - Date.now())));
-                        },
-                      },
-                    );
-                    retainOwnershipUntil(fallbackRuntime.physicalSettlement);
-                    try {
-                      const rawSummary = await withAbort(fallbackRuntime.browser, operationSignal);
-                      handoffPhase = "cleanup";
-                      handoffStage = "physical_settlement";
+                    while (true) {
+                      freshCompactionAttempts++;
+                      // Bound preparation, multipart acknowledgements, and cleanup separately. Once
+                      // ChatGPT accepts the final compact prompt, its normal browser observation owns
+                      // model-generation liveness; a fixed handoff timer must not cancel active work.
+                      handoffPhase = "preparing";
+                      handoffStage = "browser_start";
                       armHandoffDeadline();
-                      await withAbort(fallbackRuntime.physicalSettlement, operationSignal);
-                      return canonicalizeCompactionHandoff(parsed, rawSummary);
-                    } catch (error) {
-                      fallbackRuntime.cancel(error instanceof Error ? error : new Error(String(error)));
-                      // The shared owner retains physical settlement independently of this error.
-                      // Neither a timeout nor operator cancellation can open a competing trace.
-                      throw error;
+                      const fallbackRuntime = startRuntime(
+                        parsed,
+                        manualRequest ? environment : undefined,
+                        freshCompactionTraceId,
+                        turnCapabilities,
+                        {
+                          onCompactionProgress: () => armHandoffDeadline(),
+                          onCompactionSubmitted: () => { handoffPhase = "generating"; suspendHandoffDeadline(); },
+                          onPreparationProgress: (stage, waitUntil) => {
+                            if (handoffPhase === "generating") return;
+                            handoffStage = stage;
+                            // The scheduler owns a bounded, cancellable wait. It must not consume
+                            // preparation's budget, and ordinary helper heartbeats cannot extend it.
+                            armHandoffDeadline(handoffTimeoutMs + Math.min(600_000, Math.max(0, (waitUntil ?? 0) - Date.now())));
+                          },
+                        },
+                      );
+                      retainOwnershipUntil(fallbackRuntime.physicalSettlement);
+                      try {
+                        const rawSummary = await withAbort(fallbackRuntime.browser, operationSignal);
+                        handoffPhase = "cleanup";
+                        handoffStage = "physical_settlement";
+                        armHandoffDeadline();
+                        await withAbort(fallbackRuntime.physicalSettlement, operationSignal);
+                        return canonicalizeCompactionHandoff(parsed, rawSummary);
+                      } catch (error) {
+                        fallbackRuntime.cancel(error instanceof Error ? error : new Error(String(error)));
+                        if (manualRequest || operationSignal.aborted
+                          || freshCompactionAttempts >= MAX_FRESH_COMPACTION_ATTEMPTS
+                          || !isTransientSummaryFailure(error)) throw error;
+                        // The same shared owner performs bounded summary-only recovery. Wait for
+                        // the old helper to release its surface before starting another attempt;
+                        // concurrent HTTP observers never acquire a separate retry budget.
+                        handoffPhase = "cleanup";
+                        handoffStage = "retry_physical_settlement";
+                        armHandoffDeadline();
+                        await withAbort(fallbackRuntime.physicalSettlement, operationSignal);
+                        console.info(`[chatgpt-web] compaction_retry trace=${freshCompactionTraceId} attempt=${freshCompactionAttempts + 1} reason=${error instanceof ChatGptWebAdapterError ? error.code : "browser_preparation"}`);
+                        await recoveryDelay(freshCompactionAttempts, operationSignal);
+                      }
                     }
                   };
                   let source: ChatGptTurnSession | undefined;
@@ -1139,7 +1153,7 @@ export function createChatGptWebAdapter(
                     const retainedKey = source?.conversationKey();
                     if (!retainedKey) throw error;
                     const canRebuildFailedThinking = !manualRequest
-                      && error instanceof ChatGptWebAdapterError && error.code === "chatgpt_failed_thinking"
+                      && (isRecoverableResponseFailure(error) || isTransientBrowserPreparationFailure(error))
                       && !operationSignal.aborted && !source!.wasCancelled() && !source!.supersededError
                       && source!.runtime.submission?.phase === "accepted"
                       && hasCompleteCompactionHistory(parsed, source!);
@@ -1165,8 +1179,8 @@ export function createChatGptWebAdapter(
                       return await runFreshCompaction("source_disappeared_before_handoff");
                     }
                     if (canRebuildFailedThinking && handoffError === error) {
-                      // One summary-only rebuild after a proven ChatGPT failure. This is inside
-                      // the shared exact-request owner; failure of this fresh summary is terminal.
+                      // A verified native history may rebuild only the summary. Fresh attempts
+                      // remain bounded inside the same shared compaction owner.
                       return await runFreshCompaction("failed_thinking_with_verified_history");
                     }
                     throw handoffError;
@@ -1197,8 +1211,8 @@ export function createChatGptWebAdapter(
                 status: upstreamError?.status ?? 409,
                 errorType: upstreamError?.errorType ?? "invalid_request_error",
                 code: upstreamError?.code ?? "compaction_handoff_failed",
-                // Compaction retry remains an explicit operator decision even when its source
-                // failure was retryable; preserve the cause without opening a new retry loop.
+                // Automatic summary-only attempts are owned and bounded above. A native
+                // reconnect must not replenish an exhausted or deterministic failure.
                 retryable: false,
               });
               return;
@@ -1500,14 +1514,20 @@ export function createChatGptWebAdapter(
             // owned DOM observer can continue proving the same accepted ChatGPT submission.
             throw error;
           }
+          const sharedPreparation = preparedBrowserRecovery(session);
+          if (sharedPreparation) {
+            await withAbort(sharedPreparation, incoming.abortSignal);
+            await runChatGptWebTurn();
+            return;
+          }
           const sharedRecovery = failedThinkingRecoveryPolicy.entry(recoveryKey);
-          if (error instanceof ChatGptWebAdapterError && error.code === "chatgpt_failed_thinking"
+          if (isRecoverableResponseFailure(error)
             && !incoming.abortSignal?.aborted && sharedRecovery?.source.deref() === session) {
             await withAbort(sharedRecovery.ready, incoming.abortSignal);
             await runChatGptWebTurn();
             return;
           }
-          const recoverable = error instanceof ChatGptWebAdapterError && error.code === "chatgpt_failed_thinking"
+          const recoverable = isRecoverableResponseFailure(error)
             && !manualRequest && !parsed._compactionRequest && parsed.modelId !== CHATGPT_WEB_LUNA_MODEL_ID
             && !incoming.abortSignal?.aborted && !session.wasCancelled() && !session.supersededError
             && Boolean(nativeIdentity.threadId) && !recoveryInterruption() && !hasActiveStructuredCompaction(ownerKey)
@@ -1541,12 +1561,48 @@ export function createChatGptWebAdapter(
               return;
             }
           }
-          const turnError = submittedTurnFailure(session, error);
+          const safePreparationRetry = !manualRequest && !incoming.abortSignal?.aborted
+            && !session.wasCancelled() && !session.supersededError
+            && session.runtime.submission?.phase === "prepared"
+            && isTransientBrowserPreparationFailure(error);
+          const unsafeSubmittedRetry = error instanceof ChatGptWebAdapterError
+            && error.code === "upstream_server_error" && error.retryable
+            && session.runtime.submission?.phase !== "prepared";
+          const turnError = safePreparationRetry
+            ? new ChatGptWebAdapterError("ChatGPT browser preparation temporarily failed.", {
+              status: 502, errorType: "server_error", code: "chatgpt_browser_preparation_failed", retryable: true, cause: error,
+            })
+            : unsafeSubmittedRetry
+              ? new ChatGptWebAdapterError(error.message, {
+                status: error.status, errorType: error.errorType, code: error.code, retryable: false, cause: error,
+              })
+            : submittedTurnFailure(session, error);
           const handledError = turnError instanceof ChatGptWebAdapterError && turnError.retryable
             ? chatGptWebTurnRetryPolicy.recordRetryableFailure(retryKey, turnError)
             : turnError;
           if (!(turnError instanceof ChatGptWebAdapterError && turnError.retryable)) {
             chatGptWebTurnRetryPolicy.clear(retryKey);
+          }
+          if (safePreparationRetry && handledError instanceof ChatGptWebAdapterError && handledError.retryable) {
+            const ready = sharePreparedBrowserRecovery(session, async () => {
+              await session.physicalSettlement;
+              await session.runtime.retireCapability?.();
+              await recoveryDelay(1);
+              const interrupted = recoveryInterruption();
+              if (interrupted || session.wasCancelled() || session.supersededError
+                || chatGptTurnSessions.find(executionKey) !== session) {
+                throw interrupted ?? session.supersededError ?? new ChatGptWebAdapterError(
+                  "The ChatGPT task was stopped before preparation recovery completed.",
+                  { status: 499, errorType: "client_closed_request", code: "client_cancelled", retryable: false },
+                );
+              }
+              // Keep the failed session registered during cleanup/backoff so every HTTP
+              // reconnect joins this recovery rather than starting a parallel submission.
+              chatGptTurnSessions.retire(executionKey, session);
+            });
+            await withAbort(ready, incoming.abortSignal);
+            await runChatGptWebTurn();
+            return;
           }
           if (handledError instanceof ChatGptWebAdapterError && !handledError.retryable) {
             // A deterministic request failure remains replayable so a native reconnect cannot burn

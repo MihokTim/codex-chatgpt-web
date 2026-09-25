@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ChatGptBrowserWorker, type BrowserTurn } from "../src/adapters/chatgpt-web/browser-worker";
-import { chatGptFailedThinkingError, chatGptStoppedThinkingError, chatGptTurnSupersededError } from "../src/adapters/chatgpt-web/adapter-error";
+import { ChatGptWebAdapterError, chatGptFailedThinkingError, chatGptStoppedThinkingError, chatGptTurnSupersededError } from "../src/adapters/chatgpt-web/adapter-error";
 import { cancelStructuredCompactionNativeTurn, runStructuredCompactionOnce } from "../src/adapters/chatgpt-web/compaction-handoff";
 import { createChatGptWebAdapter, chatGptWebExecutionNamespace, chatGptWebTraceId } from "../src/adapters/chatgpt-web/index";
 import { failedThinkingRecoveryPolicy } from "../src/adapters/chatgpt-web/failed-thinking-recovery";
@@ -46,7 +46,7 @@ function completedRequest(request: CodexParsedRequest, call: ToolCall, command: 
   return parseRequest(raw);
 }
 
-async function scenario(options: { accepted?: boolean; afterResult?: () => void; secondTool?: boolean; secondFailure?: boolean; partial?: boolean; otherError?: boolean } = {}) {
+async function scenario(options: { accepted?: boolean; afterResult?: () => void; secondTool?: boolean; secondFailure?: boolean; partial?: boolean; otherError?: boolean; serverError?: boolean } = {}) {
   const id = randomUUID();
   const socket = process.platform === "win32" ? defaultBrokerEndpoint(join(root, id), "win32") : join(root, `${id}.sock`);
   const provider: CodexProviderConfig = {
@@ -68,7 +68,9 @@ async function scenario(options: { accepted?: boolean; afterResult?: () => void;
   const turns: BrowserTurn[] = [];
   const oldResult = deferred();
   const allowFailure = deferred();
-  const failure = options.otherError ? chatGptStoppedThinkingError() : chatGptFailedThinkingError();
+  const failure = options.serverError
+    ? new ChatGptWebAdapterError("Something went wrong", { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: true })
+    : options.otherError ? chatGptStoppedThinkingError() : chatGptFailedThinkingError();
   worker.run = async turn => {
     const index = turns.push(turn);
     const prepared = await turn.prepare();
@@ -134,8 +136,8 @@ test("failed-thinking recovery rejects changed arguments for an issued tool", as
   } finally { await s.close(); }
 });
 
-test("failed-thinking adapter continues once, keeps completed tools and shares concurrent reconnects", async () => {
-  const s = await scenario({ secondTool: true });
+test.each([false, true])("response recovery keeps completed tools and shares concurrent reconnects (serverError=%s)", async serverError => {
+  const s = await scenario({ secondTool: true, serverError });
   try {
     const one = s.run(s.next);
     const two = s.run(s.next);
@@ -179,8 +181,8 @@ test("failed-thinking adapter stops at the second failure even after new complet
 });
 
 for (const blocked of ["partial-final", "unaccepted", "other-error", "missing-history", "superseded", "native-cancel", "compaction-active"] as const) {
-  test(`failed-thinking adapter refuses unsafe recovery: ${blocked}`, async () => {
-    const s = await scenario({ partial: blocked === "partial-final", accepted: blocked !== "unaccepted", otherError: blocked === "other-error" });
+  test.each([false, true])(`response recovery refuses unsafe recovery: ${blocked} (serverError=%s)`, async serverError => {
+    const s = await scenario({ partial: blocked === "partial-final", accepted: blocked !== "unaccepted", otherError: blocked === "other-error", serverError: blocked === "other-error" ? false : serverError });
     const finishCompaction = deferred();
     let compaction: Promise<string> | undefined;
     try {

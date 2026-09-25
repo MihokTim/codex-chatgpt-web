@@ -305,7 +305,7 @@ test("launcher liveness verification checks only owned process and loopback CDP 
     expect(request.url).toBe("/json/version");
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({
-      webSocketDebuggerUrl: "ws://127.0.0.1:39120/devtools/browser/test",
+      webSocketDebuggerUrl: `ws://${request.headers.host}/devtools/browser/test`,
     }));
   });
   await new Promise<void>((resolve, reject) => {

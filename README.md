@@ -4,9 +4,9 @@ This is an unofficial fork of [miuuyy/codex-chatgpt-web](https://github.com/miuu
 
 **Native and Web models use the same Codex application and configuration home.** Setup adds Web routes to the native catalog; native requests retain upstream's native passthrough. Production uses `CODEX_HOME`, or `~/.codex` when unset. The bridge keeps its own settings and browser profile in `~/.codex-chatgpt-web`. Only the upstream development profile uses a separate test home.
 
-The current fork identity is **6.1.0-fork.1**, with application version **6.1.0**. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now the 6.1.0 release commit `293341084ac7a1ddd2de12fede3706023f5b6474`.
+The current fork identity is **6.1.0-fork.2**, with application version **6.1.0**. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now the 6.1.0 release commit `293341084ac7a1ddd2de12fede3706023f5b6474`.
 
-The [6.1.0 integration notes](docs/upstream-6.1.0-integration.md) describe the combined UI contracts. This revision adopts the upstream browser, Billing, announcement, logging, installer, and launcher changes while preserving the fork's response ownership, localized model verification, focus recovery, shared request pacing, and compaction protections.
+The [6.1.0 integration notes](docs/upstream-6.1.0-integration.md) describe the combined UI contracts. This revision adopts the upstream browser, Billing, announcement, logging, installer, and launcher changes while preserving the fork's response ownership, localized model verification, focus recovery, shared request pacing, and compaction protections. The [browser and handoff resilience notes](docs/browser-handoff-resilience.md) describe the fork.2 connection isolation and bounded automatic recovery.
 
 ## Changes in this fork
 
@@ -17,8 +17,9 @@ The [6.1.0 integration notes](docs/upstream-6.1.0-integration.md) describe the c
 | Browser responses | Answers remain anchored to the submitted user turn even when older assistant messages are remounted. |
 | Model controls | Selection verifies the live effort state, recovers bounded focus/menu hydration failures, and preserves typed terminal errors. |
 | Continuation | Refreshed environments, grouped compaction preambles and native app deliveries are checked against the current native rollout. |
-| Failure recovery | A recognized failed-thinking response can continue once from verified completed tool history. Cancellation, partial answers and incomplete history prevent automatic recovery. |
-| Compaction | A completed native tool boundary can retire the source before summarizing in a fresh context. Failed summary replay is bounded. |
+| Failure recovery | Failed-thinking and transient server-error responses can continue once from verified completed tool history. Preparation failures retry internally. Cancellation, partial answers and incomplete history prevent replay of submitted work. |
+| Compaction | A completed native tool boundary can retire the source before summarizing in a fresh context. Transient summary-only failures share up to three attempts inside one owner. |
+| Browser connections | Each connection attaches only to its descriptor-owned target, including cancellation during the initial handshake. Unrelated paused tabs do not block acquisition. |
 | Helper compatibility | Older helpers cannot silently ignore pinned model families or six-part context. |
 | Distribution | Build provenance is recorded, and upstream automatic installation cannot overwrite the fork's patches. |
 

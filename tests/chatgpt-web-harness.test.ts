@@ -1200,7 +1200,7 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
-  test("an unclassified browser failure retires its session before the next native retry", async () => {
+  test("a browser acquisition timeout recovers inside the same native request", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h4-error-retry-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
@@ -1218,21 +1218,17 @@ describe("ChatGPT outer-native harness v4", () => {
       return answer;
     };
     try {
-      await expect(
-        createChatGptWebAdapter(provider).runTurn!(
-          rawWireRequest(environmentXml),
-          { headers: new Headers() },
-          () => {},
-        ),
-      ).rejects.toThrow("stage timed out");
-
       const events: AdapterEvent[] = [];
-      await createChatGptWebAdapter(provider).runTurn!(
+      const secondEvents: AdapterEvent[] = [];
+      await Promise.all([events, secondEvents].map(target => createChatGptWebAdapter(provider).runTurn!(
         rawWireRequest(environmentXml),
         { headers: new Headers() },
-        event => events.push(event),
-      );
+        event => target.push(event),
+      )));
       expect(browserStarts).toBe(2);
+      expect(secondEvents.at(-1)).toMatchObject({ type: "done", endTurn: true });
+      expect(secondEvents.some(event => event.type === "error")).toBeFalse();
+      expect(events.some(event => event.type === "error")).toBeFalse();
       expect(events.at(-1)).toMatchObject({ type: "done", stopReason: "stop", endTurn: true });
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
@@ -1271,7 +1267,7 @@ describe("ChatGPT outer-native harness v4", () => {
     }
   });
 
-  test("caps automatic transient-server-error browser sends at three retries for one native turn", async () => {
+  test.each(["prepared", "send_activated", "accepted"] as const)("server-error retries preserve the submission boundary: %s", async phase => {
     const socketPath = brokerTestEndpoint(`cgw-h4-retry-budget-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
       adapter: "chatgpt-web",
@@ -1283,7 +1279,8 @@ describe("ChatGPT outer-native harness v4", () => {
     let browserStarts = 0;
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = async turn => {
       browserStarts += 1;
-      turn.onSendActivated?.();
+      if (phase !== "prepared") turn.onSendActivated?.();
+      if (phase === "accepted") turn.onSubmitted?.();
       throw new ChatGptWebAdapterError("ChatGPT is temporarily unavailable. Try again in a few minutes.", {
         status: 502,
         errorType: "server_error",
@@ -1300,15 +1297,15 @@ describe("ChatGPT outer-native harness v4", () => {
           event => events.push(event),
         );
         const error = events.at(-1);
-        expect(error).toMatchObject({ type: "error", code: "upstream_server_error" });
+        expect(error).toMatchObject({ type: "error", code: phase === "prepared" ? "chatgpt_browser_preparation_failed" : "upstream_server_error" });
         expect((error as Extract<AdapterEvent, { type: "error" }>).retryable)
-          .toBe(attempt < MAX_CHATGPT_WEB_TURN_RETRIES);
-        if (attempt === MAX_CHATGPT_WEB_TURN_RETRIES) {
+          .toBeFalse();
+        if (phase !== "prepared") {
           expect((error as Extract<AdapterEvent, { type: "error" }>).message)
             .toContain("Try again in a few minutes.");
         }
       }
-      expect(browserStarts).toBe(MAX_CHATGPT_WEB_TURN_RETRIES + 1);
+      expect(browserStarts).toBe(phase === "prepared" ? MAX_CHATGPT_WEB_TURN_RETRIES + 1 : 1);
     } finally {
       (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = originalRun;
       await TurnBroker.forSocket(socketPath).close();

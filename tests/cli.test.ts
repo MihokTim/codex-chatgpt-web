@@ -441,7 +441,7 @@ test("browser check uses metadata-only launcher liveness in Zero Risk", async ()
     expect(request.url).toBe("/json/version");
     response.writeHead(200, { "content-type": "application/json" });
     response.end(JSON.stringify({
-      webSocketDebuggerUrl: "ws://127.0.0.1:48142/devtools/browser/manual-check",
+      webSocketDebuggerUrl: `ws://${request.headers.host}/devtools/browser/manual-check`,
     }));
   });
   await new Promise<void>((resolveListen, rejectListen) => {

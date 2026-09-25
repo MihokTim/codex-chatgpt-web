@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import { expandUserPath } from "./config";
 import { processRunning } from "./process";
+import { LauncherOwnedCdpTransport } from "./launcher-owned-cdp";
 
 export const LAUNCHER_BROWSER_HOST_KIND = "codex-web-gpt-launcher";
 export const LAUNCHER_BROWSER_IDLE_URL = "data:text/html;charset=utf-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%3Ctitle%3ECodex%20Web%20GPT%3C%2Ftitle%3E%3C%2Fhead%3E%3Cbody%3E%3C%2Fbody%3E%3C%2Fhtml%3E#codex-web-gpt-browser-host";
@@ -173,16 +174,24 @@ export function readLauncherBrowserHostDescriptor(configuredPath: string): Launc
   return descriptor;
 }
 
-async function assertCdpReady(descriptor: LauncherBrowserHostDescriptor, timeoutMs: number): Promise<void> {
+async function assertCdpReady(descriptor: LauncherBrowserHostDescriptor, timeoutMs: number, signal?: AbortSignal): Promise<string> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${descriptor.endpoint}/json/version`, { signal: controller.signal });
+    const response = await fetch(`${descriptor.endpoint}/json/version`, {
+      signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const body = await response.json() as Record<string, unknown>;
     if (typeof body.webSocketDebuggerUrl !== "string" || !body.webSocketDebuggerUrl.startsWith("ws://127.0.0.1:")) {
       throw new Error("CDP metadata did not expose a loopback WebSocket endpoint");
     }
+    const endpoint = new URL(body.webSocketDebuggerUrl);
+    if (endpoint.port !== new URL(descriptor.endpoint).port || endpoint.username || endpoint.password
+      || !endpoint.pathname.startsWith("/devtools/browser/")) {
+      throw new Error("CDP metadata did not match the launcher browser endpoint");
+    }
+    return endpoint.href;
   } catch (error) {
     throw new Error(`Launcher browser CDP endpoint is not ready: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
@@ -261,32 +270,38 @@ export async function connectLauncherBrowserHost(
     throw new DOMException("Launcher browser connection aborted", "AbortError");
   }
   const descriptor = readLauncherBrowserHostDescriptor(descriptorPath);
-  await assertCdpReady(descriptor, Math.min(timeoutMs, 5_000));
-  let browser: Browser;
+  const targetId = descriptor.surfaceTargets[surfaceId ?? descriptor.surfaceId];
+  if (!targetId) throw new Error("Launcher browser surface is no longer registered with its native target");
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(new Error("Launcher browser connection timed out")), timeoutMs);
+  const signal = abortSignal ? AbortSignal.any([deadline.signal, abortSignal]) : deadline.signal;
+  let transport: LauncherOwnedCdpTransport | undefined;
+  let browser: Browser | undefined;
+  const closeOnAbort = () => transport?.close();
+  signal.addEventListener("abort", closeOnAbort, { once: true });
   try {
-    browser = await chromium.connectOverCDP(descriptor.endpoint, { timeout: timeoutMs });
-  } catch (error) {
-    throw new Error(`Could not connect Playwright to the launcher browser: ${error instanceof Error ? error.message : String(error)}`);
-  }
-  const closeOnAbort = () => { void browser.close().catch(() => {}); };
-  abortSignal?.addEventListener("abort", closeOnAbort, { once: true });
-  try {
-    if (abortSignal?.aborted) {
-      throw new DOMException("Launcher browser connection aborted", "AbortError");
-    }
+    const endpoint = await assertCdpReady(descriptor, Math.min(timeoutMs, 5_000), signal);
+    signal.throwIfAborted();
+    transport = new LauncherOwnedCdpTransport(endpoint, targetId);
+    browser = await chromium.connectOverCDP(transport, { timeout: timeoutMs, noDefaults: true });
+    signal.throwIfAborted();
     const { context, page } = await selectLauncherPage(
       browser,
       descriptor,
       timeoutMs,
       surfaceId,
-      abortSignal,
+      signal,
     );
     return { descriptor, browser, context, page };
   } catch (error) {
-    await browser.close().catch(() => {});
+    transport?.close();
+    await browser?.close().catch(() => {});
+    if (abortSignal?.aborted) throw new DOMException("Launcher browser connection aborted", "AbortError");
+    if (deadline.signal.aborted) throw new Error("Launcher browser connection timed out");
     throw error;
   } finally {
-    abortSignal?.removeEventListener("abort", closeOnAbort);
+    clearTimeout(timer);
+    signal.removeEventListener("abort", closeOnAbort);
   }
 }
 
