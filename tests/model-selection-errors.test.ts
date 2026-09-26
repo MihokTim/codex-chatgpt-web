@@ -23,13 +23,19 @@ test("selection normalization preserves authentication, ownership, rate-limit an
   expect(normalizeChatGptModelSelectionError(abort, context)).toBe(abort);
 });
 
-test("new chat preparation reports a typed composer failure, not authentication or capacity", async () => {
+test("new chat preparation preserves a typed composer failure from discovery without leaking its cause", async () => {
   const cause = new Error("raw browser diagnostic");
   const absent: any = { last() { return this; }, filter() { return this; }, isVisible: async () => false };
   const page = { url: () => "https://chatgpt.com/?temporary-chat=true", locator: () => absent };
-  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), { activeComposer: async () => { throw cause; } });
+  // Discovery owns the distinction between a missing composer and a failed page
+  // observation. Preparation must retain that decision and its original cause.
+  const discovered = new ChatGptWebAdapterError("ChatGPT composer is unavailable. Reload ChatGPT and retry the task.", {
+    status: 502, errorType: "server_error", code: "chatgpt_composer_unavailable", retryable: false, cause,
+  });
+  const worker = Object.assign(Object.create(ChatGptBrowserWorker.prototype), { activeComposer: async () => { throw discovered; } });
   const failure = await worker.prepareChatSurface(page).catch((error: unknown) => error);
   expect(failure).toBeInstanceOf(ChatGptWebAdapterError);
+  expect(failure).toBe(discovered);
   expect(failure).toMatchObject({ status: 502, code: "chatgpt_composer_unavailable", retryable: false, cause });
   expect(failure.message).not.toContain(cause.message);
   expect(httpStatusFromTerminalError({ type: failure.errorType, code: failure.code, message: failure.message })).toBe(502);

@@ -35,9 +35,17 @@ class RequestCoordinator {
     const store = global ? this.cooldowns : this.localCooldowns;
     const key = global ? evidence.category : owner;
     const previous = store.get(key);
-    const strikes = previous && previous.until + 300_000 > now ? previous.strikes + 1 : 1;
+    // Concurrent requests can all fail before the existing pause takes effect. They
+    // belong to one backoff round, not separate failed retries. Only a rejection
+    // after that window expires advances the exponential fallback.
+    const activeWindow = previous && previous.until > now;
+    const strikes = activeWindow ? previous.strikes
+      : previous && previous.until + 300_000 > now ? previous.strikes + 1 : 1;
     const fallback = Math.min(30_000 * 2 ** Math.min(strikes - 1, 4), 300_000);
-    const until = Math.max(previous?.until ?? 0, now + (evidence.retryAfterMs ?? fallback));
+    // An explicit server deadline may extend a pause; headerless notifications must
+    // not keep moving it forward while every helper is already waiting.
+    const until = activeWindow && evidence.retryAfterMs === undefined ? previous.until
+      : Math.max(previous?.until ?? 0, now + (evidence.retryAfterMs ?? fallback));
     store.set(key, { until, strikes });
     this.reports.set(reportKey, { until, expiresAt: Math.max(until, now + 600_000) });
     return until;

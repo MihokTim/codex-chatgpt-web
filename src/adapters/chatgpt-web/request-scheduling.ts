@@ -42,15 +42,29 @@ export class LauncherRequestScheduler {
   }
 
   async acquire(intent: "send" | "open" | "authentication"): Promise<void> {
-    const deadline = Date.now() + 10 * 60_000;
+    const startedAt = Date.now();
+    const deadline = startedAt + 10 * 60_000;
     let announced = 0;
     for (;;) {
       this.signal?.throwIfAborted();
       const body = await this.request("acquire", { intent });
-      if (body.granted === true) return;
+      if (body.granted === true) {
+        if (announced) console.info(`[chatgpt-web] request_resumed ${JSON.stringify({
+          traceId: this.owner.traceId, intent, waitedMs: Date.now() - startedAt,
+        })}`);
+        return;
+      }
       if (body.granted !== false || !Number.isSafeInteger(body.retryAt)) throw new Error("Invalid launcher request scheduling response");
       const retryAt = body.retryAt as number;
-      if (retryAt !== announced) { await this.onWaiting?.(retryAt); announced = retryAt; }
+      if (retryAt !== announced) {
+        await this.onWaiting?.(retryAt);
+        announced = retryAt;
+        console.info(`[chatgpt-web] request_scheduled_wait ${JSON.stringify({
+          traceId: this.owner.traceId, intent, retryAt,
+          remainingMs: Math.max(0, retryAt - Date.now()),
+          reason: body.reason === "send-spacing" ? "send-spacing" : body.reason === "rate-limit" ? "rate-limit" : "unknown",
+        })}`);
+      }
       if (Date.now() >= deadline || retryAt > deadline) throw new ChatGptWebAdapterError(
         `ChatGPT requests remain paused until ${new Date(retryAt).toISOString()}. Already accepted context parts were not resent.`,
         { status: 429, errorType: "rate_limit_error", code: "request_cooldown_pending", retryable: false },

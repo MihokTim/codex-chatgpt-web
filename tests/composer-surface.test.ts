@@ -86,11 +86,27 @@ test("current app mentions require matching app links and preserve exact prompt 
   } finally { await page.close(); }
 });
 
+test("exhausted composer discovery has a typed error rather than an overload or login guess", async () => {
+  const page = await browser.newPage();
+  try {
+    await page.setContent('<main>No composer in this fixture</main>');
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as {
+      activeComposer(page: Page, timeoutMs: number): Promise<unknown>;
+    };
+    // Enter the exhausted-discovery branch without making a tiny IPC deadline the
+    // subject of the test; observation timeouts are independently preserved.
+    await expect(worker.activeComposer(page, 0)).rejects.toMatchObject({
+      status: 502, code: "chatgpt_composer_unavailable", retryable: false,
+    });
+  } finally { await page.close(); }
+});
+
 test("current power ticks respect locks and reject disabled or incomplete controls", async () => {
   const page = await browser.newPage();
   try {
     await page.setContent('<div role="menuitem" data-reasoning-slider="true"><div data-model-picker-power-slider><span data-orientation="horizontal" aria-disabled="false">'
-      + Array.from({length:5},(_,index)=>`<span data-selected="${index<3}" ${index===4?'data-locked="true"':''}></span>`).join('')+'</span></div></div>');
+      + Array.from({length:5},(_,index)=>`<span data-selected="${index<3}" ${index===4?'data-locked="true"':''}></span>`).join('')
+      + '<span role="slider" aria-valuemin="0" aria-valuemax="4" aria-valuenow="2"></span></span></div></div>');
     const container=page.locator('[data-reasoning-slider]');
     const state={min:0,max:4,value:2};
     expect(await readChatGptEffortAvailability(container,state)).toEqual([true,true,true,true,false]);

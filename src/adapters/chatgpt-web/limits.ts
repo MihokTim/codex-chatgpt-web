@@ -58,6 +58,11 @@ export async function readCachedChatGptUsageAccount(page: Page): Promise<UsageAc
   }, () => readChatGptUsageAccount(page));
 }
 
+/** Session eligibility only; the current Billing heading determines the allowance. */
+export function supportsChatGptUsageTracking(account: { personal: boolean; planType: string }): boolean {
+  return account.personal && ["pro", "prolite"].includes(account.planType);
+}
+
 /** Only stable account identity leaves the page; never export session credentials. */
 export async function readChatGptUsageAccount(page: Page): Promise<{
   accountKey: string;
@@ -108,7 +113,7 @@ export function chatGptLimitsPlanFromHeadings(headings: readonly string[]): "pro
 
 export async function detectChatGptLimitsPlan(page: Page): Promise<{ accountKey: string; plan: ChatGptLimitsPlan }> {
   const before = await readChatGptUsageAccount(page);
-  if (!before.personal || before.planType !== "pro") return { accountKey: before.accountKey, plan: "unsupported" };
+  if (!supportsChatGptUsageTracking(before)) return { accountKey: before.accountKey, plan: "unsupported" };
   if (before.needsAttention) {
     throw new Error("ChatGPT reports a subscription payment problem. Check your plan in ChatGPT settings before enabling Limits.");
   }
@@ -159,7 +164,8 @@ export async function detectChatGptLimitsPlan(page: Page): Promise<{ accountKey:
     }
     const plan = chatGptLimitsPlanFromHeadings(headings);
     const after = await readChatGptUsageAccount(page);
-    if (after.accountKey !== before.accountKey || after.planType !== "pro" || !after.personal || after.needsAttention) {
+    if (after.accountKey !== before.accountKey || after.planType !== before.planType
+      || !supportsChatGptUsageTracking(after) || after.needsAttention) {
       throw new Error("The ChatGPT account or subscription changed during Limits setup. Retry the check.");
     }
     return { accountKey: after.accountKey, plan };

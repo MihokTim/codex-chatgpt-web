@@ -63,6 +63,54 @@ test("known conversation limits pause new sends across helpers without replaying
   assert.equal(coordinator.acquire("next-part", "send").granted, true);
 });
 
+test("one burst of auxiliary 429s consumes one backoff round without sliding its deadline", () => {
+  let now = 1_000;
+  const coordinator = new RequestCoordinator({ now: () => now, spacingMs: 0 });
+  for (let index = 0; index < 20; index += 1) {
+    assert.equal(coordinator.report(`helper-${index % 3}`, {
+      id: `history-burst-${index}`, source: "http", category: "conversation", status: 429,
+    }), 31_000);
+    now += 1_000;
+  }
+  assert.equal(coordinator.acquire("final-part", "send").retryAt, 31_000);
+  now = 31_000;
+  assert.equal(coordinator.acquire("final-part", "send").granted, true);
+  // An actual failed retry after the first window is a new round and still backs off.
+  assert.equal(coordinator.report("helper-A", {
+    id: "history-next-round", source: "http", category: "conversation", status: 429,
+  }), 91_000);
+});
+
+test("explicit Retry-After may extend a current window without multiplying fallback strikes", () => {
+  let now = 1_000;
+  const coordinator = new RequestCoordinator({ now: () => now, spacingMs: 0 });
+  const report = (id, retryAfterMs) => coordinator.report("owner", {
+    id, source: "http", category: "generation", status: 429,
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+  });
+  assert.equal(report("first-rejection"), 31_000);
+  now = 2_000;
+  assert.equal(report("server-retry-after", 120_000), 122_000);
+  now = 20_000;
+  assert.equal(report("late-no-header"), 122_000);
+  assert.equal(report("shorter-server-delay", 5_000), 122_000);
+  now = 122_000;
+  assert.equal(report("failed-next-attempt"), 182_000);
+});
+
+test("repeated unknown dialogs keep one owner window and do not block unrelated owners", () => {
+  let now = 1_000;
+  const coordinator = new RequestCoordinator({ now: () => now, spacingMs: 0 });
+  for (let index = 0; index < 5; index += 1) {
+    assert.equal(coordinator.report("owner", {
+      id: `dialog-repeat-${index}`, source: "dialog", category: "unknown",
+    }), 31_000);
+    now += 1_000;
+  }
+  assert.equal(coordinator.acquire("other-owner", "send").granted, true);
+  assert.equal(coordinator.acquire("owner", "send").retryAt, 31_000);
+});
+
 test("control traffic and tab metadata require the exact owned tab and valid fields", async () => {
   const tab = { id: "tab", traceId: "owner-trace", helperPid: process.pid, status: "running" };
   const host = Object.assign(Object.create(BrowserHost.prototype), {

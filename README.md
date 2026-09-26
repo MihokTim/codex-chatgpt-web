@@ -4,7 +4,9 @@ This is an unofficial fork of [miuuyy/codex-chatgpt-web](https://github.com/miuu
 
 **Native and Web models use the same Codex application and configuration home.** Setup adds Web routes to the native catalog; native requests retain upstream's native passthrough. Production uses `CODEX_HOME`, or `~/.codex` when unset. The bridge keeps its own settings and browser profile in `~/.codex-chatgpt-web`. Only the upstream development profile uses a separate test home.
 
-The current fork identity is **6.1.0-fork.5**, with application version **6.1.0**. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now the 6.1.0 release commit `293341084ac7a1ddd2de12fede3706023f5b6474`.
+The current fork identity is **6.1.1-fork.1**, with application version **6.1.1**. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now the 6.1.1 release commit `a13cd09950969f43e3b7e25c71fa43efaf5446c5`.
+
+The [6.1.1 integration and send-wait repair](docs/upstream-6.1.1-integration.md) adopts the updated Activity renderer, atomic model state, account detection, limits and compaction fixes. Concurrent limit reports now share one active backoff round; explicit server retry deadlines remain enforced. The fork retains its proven submitted-user boundary instead of binding an optimistic assistant-only group.
 
 Fork.5 contains the [model-menu and shared-helper cancellation fixes](docs/model-controls-repair.md). Model selection waits for menu dismissal and recovers one unapplied model-view activation. Cancelling a turn observes outstanding promise rejections so it cannot crash the shared Node helper and stop unrelated tasks.
 
