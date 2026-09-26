@@ -19,7 +19,7 @@ import {
   LEGACY_CHATGPT_CONNECTOR_NAMES,
 } from "../../config";
 import { browserViewportUnavailable, recoverOwnedBrowserPage } from "./browser-observation-recovery";
-import { focusChatGptEffortControl, normalizeChatGptModelSelectionError, type ChatGptModelSelectionContext } from "./browser-model-controls";
+import { closeChatGptModelMenu, focusChatGptEffortControl, normalizeChatGptModelSelectionError, type ChatGptModelSelectionContext } from "./browser-model-controls";
 import { estimateTokens } from "../../lib/token-estimate";
 import { CHATGPT_FAILED_THINKING_LABELS, CHATGPT_STOPPED_THINKING_LABELS } from "./ui-labels";
 import type { CodexProviderConfig } from "../../types";
@@ -1240,13 +1240,22 @@ function throwIfPromptAttachmentAborted(signal?: AbortSignal): void {
 
 function withBrowserTurnAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(new DOMException("ChatGPT web turn aborted", "AbortError"));
   return new Promise<T>((resolvePromise, rejectPromise) => {
-    const onAbort = () => rejectPromise(new DOMException("ChatGPT web turn aborted", "AbortError"));
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(resolvePromise, rejectPromise).finally(() => {
+    const onAbort = () => {
       signal.removeEventListener("abort", onAbort);
+      rejectPromise(new DOMException("ChatGPT web turn aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    // The operation already exists when this wrapper is entered. Observe both outcomes even
+    // when cancellation won earlier, or its late rejection terminates the shared Node helper.
+    void promise.then(value => {
+      signal.removeEventListener("abort", onAbort);
+      resolvePromise(value);
+    }, error => {
+      signal.removeEventListener("abort", onAbort);
+      rejectPromise(error);
     });
+    if (signal.aborted) onAbort();
   });
 }
 
@@ -2659,6 +2668,7 @@ export class ChatGptBrowserWorker {
     let activation = await activateChatGptEffortMenu(page, currentEffort);
     if (modelFamily) activation = await selectChatGptModelFamily(
       page, activation, modelFamily, () => activateChatGptEffortMenu(page, currentEffort),
+      () => closeChatGptModelMenu(page, currentEffort, context.signal), context.signal,
     );
     if (activation.method === "pointerdown") {
       await captureDiagnostic?.("effort-menu-pointerdown-fallback");
@@ -2786,8 +2796,8 @@ export class ChatGptBrowserWorker {
       throw controlError("effort-verification", "ChatGPT effort changed during final model family verification");
     }
     await captureDiagnostic?.("effort-selected");
-    await page.keyboard.press("Escape");
-    await settleChatGptUi();
+    context.stage = "effort-dismiss";
+    await closeChatGptModelMenu(page, currentEffort, context.signal);
     // While open, the trigger reads "Thinking effort", not the selected value. Read its
     // closed label and reopen the menu once to prove the selection survived the commit.
     const selectedMode: SelectedChatGptWebModelMode = {
@@ -2799,14 +2809,14 @@ export class ChatGptBrowserWorker {
         sliderRange: { min: selectedState.min, max: selectedState.max },
       },
     };
-    await this.assertSelectedEffort(page, selectedMode, trackUsage);
+    await this.assertSelectedEffort(page, selectedMode, trackUsage, context.signal);
     await captureDiagnostic?.("effort-selection-confirmed");
     return selectedMode;
   }
 
-  private async assertSelectedEffort(page: Page, mode: SelectedChatGptWebModelMode, trackUsage = false): Promise<void> {
+  private async assertSelectedEffort(page: Page, mode: SelectedChatGptWebModelMode, trackUsage = false, signal?: AbortSignal): Promise<void> {
     const context: ChatGptModelSelectionContext = {
-      stage: "preflight-surface", family: mode.modelFamily, effort: mode.effort,
+      stage: "preflight-surface", family: mode.modelFamily, effort: mode.effort, signal,
     };
     try {
       await this.verifySelectedEffort(page, mode, context, trackUsage);
@@ -2885,7 +2895,7 @@ export class ChatGptBrowserWorker {
 
     try {
       context.stage = "preflight-restore";
-      await page.keyboard.press("Escape");
+      await closeChatGptModelMenu(page, control, context.signal);
       const deadline = Date.now() + CHATGPT_MODEL_PREFLIGHT_TIMEOUT_MS;
       let restored = false;
       do {

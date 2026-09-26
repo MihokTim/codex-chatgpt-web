@@ -1,4 +1,4 @@
-import type { Locator } from "playwright-core";
+import type { Locator, Page } from "playwright-core";
 import { ChatGptWebAdapterError, chatGptModelSelectionError } from "./adapter-error";
 import { cancellableDelay } from "./request-scheduling";
 
@@ -7,6 +7,41 @@ export interface ChatGptModelSelectionContext {
   family?: string;
   effort?: string;
   signal?: AbortSignal;
+}
+
+/** Escape can be lost during menu hydration or dismiss only the inner model view. */
+export async function closeChatGptModelMenu(page: Page, control: Locator, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  const url = page.url();
+  const origin = await page.evaluate(() => performance.timeOrigin);
+  const deadline = Date.now() + 5_000;
+  const sameDocument = async () => {
+    signal?.throwIfAborted();
+    if (page.url() !== url || !await page.evaluate(value => performance.timeOrigin === value, origin)) {
+      throw chatGptModelSelectionError("stage=menu-dismiss; browser document changed while closing model controls");
+    }
+  };
+  const closed = async () => await control.getAttribute("aria-expanded", { timeout: Math.max(1, deadline - Date.now()) }) === "false"
+    && await control.getAttribute("data-state", { timeout: Math.max(1, deadline - Date.now()) }) !== "open";
+  for (let attempt = 0; attempt < 3 && Date.now() < deadline; attempt++) {
+    await sameDocument();
+    if (!await closed()) {
+      if (attempt === 0) await page.keyboard.press("Escape");
+      else await control.press("Escape", { timeout: Math.max(1, deadline - Date.now()) });
+    }
+    const settleDeadline = Math.min(deadline, Date.now() + (attempt === 2 ? 3_000 : 1_000));
+    do {
+      await sameDocument();
+      if (await closed()) {
+        // Require the dismissal to survive deferred focus and React work before reading its label.
+        await cancellableDelay(100, signal);
+        await sameDocument();
+        if (await closed()) return;
+      }
+      await cancellableDelay(50, signal);
+    } while (Date.now() < settleDeadline);
+  }
+  throw chatGptModelSelectionError("stage=menu-dismiss; ChatGPT did not close its model menu after bounded dismissal attempts");
 }
 
 /** One policy for raw UI failures; never replace typed ownership/auth/rate-limit or abort errors. */

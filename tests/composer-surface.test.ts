@@ -116,3 +116,30 @@ test.each(['simple', 'advanced'])("current model view %s selects and verifies th
     expect(await page.getByRole('menuitemradio',{name:'GPT-5.6 Sol'}).getAttribute('aria-checked')).toBe('true');
   } finally { await page.close(); }
 });
+
+test("model family selection recovers one ignored view activation without clicking inert radio rows", async () => {
+  const page = await browser.newPage();
+  try {
+    await page.setContent(`<div role="menu"><div data-model-picker-view="simple">
+      <div role="menuitem" aria-hidden="false" data-model-picker-view-toggle="true">Models</div>
+      <div id="choices" inert><div role="menuitemradio" aria-checked="true">Latest</div>
+        <div role="menuitemradio" aria-checked="false">GPT-5.6 Sol</div></div>
+    </div></div><script>
+      window.activations=0;window.selections=0;
+      document.querySelector('[data-model-picker-view-toggle]').onpointerdown=()=>{
+        if(++window.activations===1)return;
+        document.querySelector('[data-model-picker-view]').dataset.modelPickerView='advanced';
+        document.querySelector('#choices').inert=false;
+      };
+      document.querySelectorAll('[role=menuitemradio]').forEach(row=>row.onclick=()=>{
+        window.selections++;
+        document.querySelectorAll('[role=menuitemradio]').forEach(e=>e.setAttribute('aria-checked',String(e===row)));
+      });
+    </script>`);
+    const menu: any = { menu: page.getByRole('menu') };
+    await selectChatGptModelFamily(page, menu, '5.6', async () => menu);
+    expect(await page.getByRole('menuitemradio', { name: 'GPT-5.6 Sol' }).getAttribute('aria-checked')).toBe('true');
+    expect(await page.evaluate(() => ({ activations: (window as any).activations, selections: (window as any).selections })))
+      .toEqual({ activations: 2, selections: 1 });
+  } finally { await page.close(); }
+}, 15000);

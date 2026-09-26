@@ -3,12 +3,13 @@ import { activateChatGptEffortMenu, parseChatGptEffortSliderState } from "../../
 import type { ChatGptWebAdapterEffort, ChatGptWebModelFamily } from "../../chatgpt-web-models";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { parseChatGptModelAnnouncement } from "./model-announcement";
+import { cancellableDelay } from "./request-scheduling";
 
 type EffortMenu = Awaited<ReturnType<typeof activateChatGptEffortMenu>>;
 
 function familyError(family: ChatGptWebModelFamily, cause?: unknown): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
-    `ChatGPT model ${family} could not be selected and verified. The pending message was not sent. Check the model in the browser; if ChatGPT uses an unsupported language, select English in Settings → General → Language and reload it.`,
+    `ChatGPT model ${family} could not be selected and verified. The pending message was not sent. The model controls did not confirm the requested family; check the available models and retry after the controls are ready.`,
     { status: 400, errorType: "invalid_request_error", code: "model_version_unavailable", retryable: false, cause },
   );
 }
@@ -29,8 +30,12 @@ export async function selectChatGptModelFamily(
   menu: EffortMenu,
   family: ChatGptWebModelFamily,
   reopen: () => Promise<EffortMenu>,
+  dismiss: () => Promise<void> = () => page.keyboard.press("Escape"),
+  signal?: AbortSignal,
 ): Promise<EffortMenu> {
   try {
+    signal?.throwIfAborted();
+    const selectionUrl = page.url?.();
     const option = familyOption(menu, family);
     if (await option.count() > 1) throw familyError(family);
     if (await option.count() === 1 && await option.getAttribute("aria-checked") === "true") return menu;
@@ -42,6 +47,23 @@ export async function selectChatGptModelFamily(
         const trigger = powerView.locator('[data-model-picker-view-toggle="true"][aria-hidden="false"]');
         if (await trigger.count() !== 1) throw familyError(family);
         await trigger.click({ timeout: 5_000 });
+        // Attached radio rows can look visible while their parent is still inert. Wait for
+        // the actual view transition, then retry only a demonstrably unapplied activation.
+        const opened = async () => {
+          const deadline = Date.now() + 1_000;
+          do {
+            signal?.throwIfAborted();
+            if (page.url() !== selectionUrl) throw familyError(family);
+            if (await powerView.getAttribute("data-model-picker-view") === "advanced") return true;
+            await cancellableDelay(50, signal);
+          } while (Date.now() < deadline);
+          return false;
+        };
+        if (!await opened()) {
+          if (await powerView.getAttribute("data-model-picker-view") !== "simple") throw familyError(family);
+          await trigger.dispatchEvent("pointerdown", { button: 0, buttons: 1, pointerType: "mouse", isPrimary: true });
+          if (!await opened()) throw familyError(family);
+        }
       } else if (view !== "advanced") throw familyError(family);
     } else {
       const trigger = menu.menu.locator('[role="menuitem"][aria-expanded][aria-hidden="false"]');
@@ -50,17 +72,19 @@ export async function selectChatGptModelFamily(
     }
     await option.waitFor({ state: "visible", timeout: 5_000 });
     await option.click({ timeout: 5_000 });
-    await page.keyboard.press("Escape");
+    await dismiss();
     const selected = await reopen();
     const deadline = Date.now() + 1_000;
     do {
       const current = familyOption(selected, family);
       if (await current.count() > 1) throw familyError(family);
       if (await current.count() === 1 && await current.getAttribute("aria-checked") === "true") return selected;
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await cancellableDelay(50, signal);
     } while (Date.now() < deadline);
     throw familyError(family);
   } catch (cause) {
+    signal?.throwIfAborted();
+    if (cause instanceof Error && cause.name === "AbortError") throw cause;
     if (cause instanceof ChatGptWebAdapterError) throw cause;
     throw familyError(family, cause);
   }

@@ -61,7 +61,14 @@ async function fixture(page: Page, scenario: string, family?: "6" | "5.6", annou
       if(!document.querySelector('#owner')){const replacement=ownerTemplate.cloneNode(true);menu.querySelector('[data-model-reasoning-effort-slider]').append(replacement);bind(replacement)}
       menu.hidden=false;button.setAttribute('aria-expanded','true');window.opens++;menu.focus()
     };
-    document.addEventListener('keydown',e=>{if(e.key==='Escape'){menu.hidden=true;button.setAttribute('aria-expanded','false');button.focus()}});
+    window.escapeAttempts=0;
+    document.addEventListener('keydown',e=>{if(e.key==='Escape'){
+      window.escapeAttempts++;
+      if(scenario==='dismiss-ignored-once'&&window.escapeAttempts===1)return;
+      if(scenario==='dismiss-never')return;
+      const close=()=>{menu.hidden=true;button.setAttribute('aria-expanded','false');button.focus()};
+      if(scenario==='dismiss-delayed')setTimeout(close,650);else close();
+    }});
     window.composerFocusAttempts=0;
     document.addEventListener('focusin',e=>{
       if(e.target.id!=='prompt-textarea'||window.opens<2||!menu.hidden)return;
@@ -98,7 +105,7 @@ async function fixture(page: Page, scenario: string, family?: "6" | "5.6", annou
     </script>`);
 }
 
-test.each(["focus-race", "replace-on-focus", "focus-disappears", "reopen", "delayed"])("effort selection survives menu hydration without submitting: %s", async scenario => {
+test.each(["focus-race", "replace-on-focus", "focus-disappears", "reopen", "delayed", "dismiss-ignored-once", "dismiss-delayed"])("effort selection survives menu hydration without submitting: %s", async scenario => {
   const page = await browser.newPage();
   try {
     await fixture(page, scenario);
@@ -148,7 +155,7 @@ test.each(["preflight-focus-race", "preflight-focus-delayed", "preflight-focus-r
   }, 20_000,
 );
 
-test.each(["preflight-focus-blocked", "preflight-focus-surface-drift"])(
+test.each(["preflight-focus-blocked", "preflight-focus-surface-drift", "dismiss-never"])(
   "preflight rejects unresolved focus or changed selection without submitting: %s", async scenario => {
     const page = await browser.newPage();
     try {

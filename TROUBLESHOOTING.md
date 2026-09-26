@@ -126,7 +126,9 @@ missing paid selector on those accounts is not itself a sign-in failure.
 In ChatGPT, open **Settings → General → Language** and choose **English** explicitly, then reload
 ChatGPT inside the launcher and retry once. Some browser controls depend on English labels;
 changing the launcher language does not change the ChatGPT website language.
-The same step applies when a model "could not be selected and verified".
+Model selection errors do not by themselves establish a language problem. The fork recognizes
+Japanese model controls. Fork.5 verifies menu dismissal and retries an unapplied model-view
+activation before reporting selection failure; see [model controls and cancellation](docs/model-controls-repair.md).
 
 ## Full harness or MCP verification fails
 
