@@ -7,9 +7,9 @@ import { cancellableDelay } from "./request-scheduling";
 
 type EffortMenu = Awaited<ReturnType<typeof activateChatGptEffortMenu>>;
 
-function familyError(family: ChatGptWebModelFamily, cause?: unknown): ChatGptWebAdapterError {
+function familyError(family: ChatGptWebModelFamily, cause?: unknown, stage = "family-verification"): ChatGptWebAdapterError {
   return new ChatGptWebAdapterError(
-    `ChatGPT model ${family} could not be selected and verified. The pending message was not sent. The model controls did not confirm the requested family; check the available models and retry after the controls are ready.`,
+    `ChatGPT model ${family} could not be selected and verified. The pending message was not sent. The model controls did not confirm the requested family; check the available models and retry after the controls are ready. [stage=${stage}${cause instanceof Error && cause.name === "TimeoutError" ? "; control-timeout" : ""}]`,
     { status: 400, errorType: "invalid_request_error", code: "model_version_unavailable", retryable: false, cause },
   );
 }
@@ -33,6 +33,7 @@ export async function selectChatGptModelFamily(
   dismiss: () => Promise<void> = () => page.keyboard.press("Escape"),
   signal?: AbortSignal,
 ): Promise<EffortMenu> {
+  let stage = "family-option";
   try {
     signal?.throwIfAborted();
     const selectionUrl = page.url?.();
@@ -41,11 +42,13 @@ export async function selectChatGptModelFamily(
     if (await option.count() === 1 && await option.getAttribute("aria-checked") === "true") return menu;
     // The attached radio rows are inert while this composer-owned advanced view is collapsed.
     const powerView = menu.menu.locator('[data-model-picker-view]');
+    stage = "family-view";
     if (await powerView.count() === 1) {
       const view = await powerView.getAttribute("data-model-picker-view");
       if (view === "simple") {
         const trigger = powerView.locator('[data-model-picker-view-toggle="true"][aria-hidden="false"]');
         if (await trigger.count() !== 1) throw familyError(family);
+        stage = "family-view-activation";
         await trigger.click({ timeout: 5_000 });
         // Attached radio rows can look visible while their parent is still inert. Wait for
         // the actual view transition, then retry only a demonstrably unapplied activation.
@@ -70,9 +73,12 @@ export async function selectChatGptModelFamily(
       if (await powerView.count() !== 0 || await trigger.count() !== 1) throw familyError(family);
       if (await trigger.getAttribute("aria-expanded") === "false") await trigger.click({ timeout: 5_000 });
     }
+    stage = "family-choice";
     await option.waitFor({ state: "visible", timeout: 5_000 });
     await option.click({ timeout: 5_000 });
+    stage = "family-dismiss";
     await dismiss();
+    stage = "family-readback";
     const selected = await reopen();
     const deadline = Date.now() + 1_000;
     do {
@@ -86,7 +92,7 @@ export async function selectChatGptModelFamily(
     signal?.throwIfAborted();
     if (cause instanceof Error && cause.name === "AbortError") throw cause;
     if (cause instanceof ChatGptWebAdapterError) throw cause;
-    throw familyError(family, cause);
+    throw familyError(family, cause, stage);
   }
 }
 

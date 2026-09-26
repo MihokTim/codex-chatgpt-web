@@ -17,6 +17,11 @@ simple viewのradio行は矩形を持ち可視と判定されても、親の`ine
 一度試し、要求familyのchecked状態を再検証する。過去の失敗ログには元例外がないため、
 すべての5.6失敗を同一原因だったと断定するものではない。
 
+実機の追試で5.6の選択が一度失敗したため、family操作のタイムアウトも同じdocumentの
+メニューを一度だけ開き直して回復する対象に追加した。認証・頻度制限は先に独立して検査し、
+family不一致・欠落が確認された場合、URL/documentが変わった場合、二回目の失敗は停止する。
+エラーには固定の操作段階を記録し、元のページ本文やPlaywrightの詳細ログは通知に出さない。
+
 16:27:36 JSTには別タスクの圧縮キャンセルに続き、共有Nodeヘルパーが
 `DOMException [AbortError]: ChatGPT external progress wait aborted`で終了した。
 スタックは`waitForChange → waitForTurnDomOrExternalProgress → waitForNewAssistantTurn`。
@@ -44,6 +49,8 @@ DOM待機開始中の中止、遅れてrejectするDOM操作、external progress
 各ケースで別ターンのprogressが継続できることを確認する。
 `tests/effort-focus.test.ts`と`tests/composer-surface.test.ts`は開閉遅延、無反応、
 inertのradio行、両Pro familyと誤選択拒否を扱う。
+`tests/model-family-recovery.test.ts`では、初回だけ操作不能なモデル切替を再現し、
+再選択が一回だけで、本文を維持し、送信回数がゼロであることを確認する。
 
 実アカウントのコントロール確認、全体検証、ビルド、配備の結果は
 `output/model-controls-repair-20260926/`に保存する。

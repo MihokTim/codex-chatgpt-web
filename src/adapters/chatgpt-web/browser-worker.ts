@@ -2625,8 +2625,8 @@ export class ChatGptBrowserWorker {
       return mode;
     }
     const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
-    let controlsUrl: string;
-    let controlsDocumentOrigin: number;
+    const controlsUrl = page.url();
+    const controlsDocumentOrigin = await page.evaluate(() => performance.timeOrigin);
     // Recover only the controls on this document. In particular, do not replay
     // a Bigger Context preparation message or restart the browser turn.
     const recoverControls = async (): Promise<SelectedChatGptWebModelMode> => {
@@ -2636,8 +2636,7 @@ export class ChatGptBrowserWorker {
         throw controlError("effort-focus", "ChatGPT document changed while selecting model controls");
       }
       await captureDiagnostic?.("effort-controls-reopening");
-      await page.keyboard.press("Escape");
-      await settleChatGptUi();
+      await closeChatGptModelMenu(page, currentEffort, context.signal);
       context.signal?.throwIfAborted();
       return this.selectModelAndEffort(page, modelId, reasoning, capabilities, captureDiagnostic, trackUsage, modelFamily, recoveryAttempt + 1, context.signal);
     };
@@ -2666,10 +2665,26 @@ export class ChatGptBrowserWorker {
     await throwIfChatGptRateLimitDialog(page);
     context.stage = "effort-menu";
     let activation = await activateChatGptEffortMenu(page, currentEffort);
-    if (modelFamily) activation = await selectChatGptModelFamily(
-      page, activation, modelFamily, () => activateChatGptEffortMenu(page, currentEffort),
-      () => closeChatGptModelMenu(page, currentEffort, context.signal), context.signal,
-    );
+    if (modelFamily) {
+      context.stage = "family-selection";
+      try {
+        activation = await selectChatGptModelFamily(
+          page, activation, modelFamily, () => activateChatGptEffortMenu(page, currentEffort),
+          () => closeChatGptModelMenu(page, currentEffort, context.signal), context.signal,
+        );
+      } catch (error) {
+        context.signal?.throwIfAborted();
+        await throwIfChatGptRateLimitDialog(page);
+        await throwIfChatGptSessionFailureAlert(page);
+        // A transient, non-actionable model control can consume Playwright's timeout before
+        // the view-transition fallback runs. Reopen only this document, once, and repeat the
+        // same requested family. A confirmed wrong/absent family has no timeout cause.
+        if (recoveryAttempt === 0 && error instanceof ChatGptWebAdapterError
+          && error.code === "model_version_unavailable" && error.cause instanceof Error
+          && error.cause.name === "TimeoutError") return recoverControls();
+        throw error;
+      }
+    }
     if (activation.method === "pointerdown") {
       await captureDiagnostic?.("effort-menu-pointerdown-fallback");
     }
@@ -2700,8 +2715,6 @@ export class ChatGptBrowserWorker {
       waitAbort.abort();
     }
     const selectionUrl = page.url();
-    controlsUrl = selectionUrl;
-    controlsDocumentOrigin = await page.evaluate(() => performance.timeOrigin);
     let sliderState = parseChatGptEffortSliderState(
       await effortSlider.getAttribute("aria-valuemin"),
       await effortSlider.getAttribute("aria-valuemax"),
