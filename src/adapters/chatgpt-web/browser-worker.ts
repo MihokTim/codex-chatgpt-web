@@ -2625,8 +2625,8 @@ export class ChatGptBrowserWorker {
       return mode;
     }
     const currentEffort = composerForm.locator(CHATGPT_EFFORT_CONTROL_SELECTOR).filter({ visible: true });
-    const controlsUrl = page.url();
-    const controlsDocumentOrigin = await page.evaluate(() => performance.timeOrigin);
+    let controlsUrl: string;
+    let controlsDocumentOrigin: number;
     // Recover only the controls on this document. In particular, do not replay
     // a Bigger Context preparation message or restart the browser turn.
     const recoverControls = async (): Promise<SelectedChatGptWebModelMode> => {
@@ -2663,6 +2663,9 @@ export class ChatGptBrowserWorker {
     await throwIfChatGptRateLimitDialog(page);
     await captureDiagnostic?.("effort-control-ready");
     await throwIfChatGptRateLimitDialog(page);
+    await throwIfChatGptSessionFailureAlert(page);
+    controlsUrl = page.url();
+    controlsDocumentOrigin = await page.evaluate(() => performance.timeOrigin);
     context.stage = "effort-menu";
     let activation = await activateChatGptEffortMenu(page, currentEffort);
     if (modelFamily) {
