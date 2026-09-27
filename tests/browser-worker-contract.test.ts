@@ -2856,6 +2856,12 @@ test("effort readback rejects a changed selection or surface before activating S
   const page = { url: () => state.url };
   const mode = { selection };
   await worker.assertSelectedEffort(page, mode);
+  for (const change of [{ label: "loading" }, { expanded: "true" }, { editable: false }]) {
+    Object.assign(state, change);
+    const timer = setTimeout(() => Object.assign(state, { label: "Alto", expanded: "false", editable: true }), 100);
+    try { await worker.assertSelectedEffort(page, mode); }
+    finally { clearTimeout(timer); }
+  }
   for (const change of [{ label: "Medio" }, { url: "https://chatgpt.com/" }, { expanded: "true" },
     { editable: false }, { count: 2 }]) {
     Object.assign(state, {

@@ -11,7 +11,9 @@ export function browserTaskLabel(tab: BrowserTabState, copy: Copy): string | und
     ingesting: copy.browserIngesting, compacting: copy.browserCompacting,
     generating: copy.browserGenerating, retained: copy.browserRetained,
   })[tab.workStage];
-  return name ? [name, stage].filter(Boolean).join(" · ") : stage ? `${tab.title} · ${stage}` : undefined;
+  const retry = tab.workStage === "waiting" && tab.retryAt
+    ? `${copy.browserNextAttempt} ${new Date(tab.retryAt).toLocaleTimeString()}` : undefined;
+  return name || stage ? [name || tab.title, stage, retry].filter(Boolean).join(" · ") : undefined;
 }
 
 export function browserTaskTooltip(tab: BrowserTabState, copy: Copy): string {

@@ -1,7 +1,7 @@
 import { resolve, toNamespacedPath } from "node:path";
 import type { CodexParsedRequest } from "../../types";
 import {
-  extractChatGptContinuationEnvironmentClaim,
+  extractChatGptContinuationEnvironmentClaims,
   extractChatGptEnvironmentRefreshClaims,
   extractChatGptSteeringEnvironmentClaim,
   extractChatGptThreadSpawnLineage,
@@ -48,7 +48,7 @@ export function planChatGptEnvironmentResolution(parsed: CodexParsedRequest): En
     return {
       kind: "rollout", missingError: error,
       calendarDelta,
-      claims: currentCompaction ? [extractChatGptContinuationEnvironmentClaim(parsed)]
+      claims: currentCompaction ? extractChatGptContinuationEnvironmentClaims(parsed)
         : refreshClaims ?? (steeringClaim ? [steeringClaim] : []),
       conflictLabel: currentCompaction ? "Compaction continuation" : refreshClaims ? "Native refresh" : "Steering",
       ...(historicalEnvironmentMessages ? { historicalEnvironmentMessages } : {}),

@@ -752,7 +752,10 @@ function LauncherShell({
       </AnimatePresence>
 
       <AnimatePresence>
-        {sessionReminderDue && !biggerContextRecommendationOpen ? (
+        {sessionReminderDue && !biggerContextRecommendationOpen
+          && operation?.status !== "running"
+          && !browser?.loading
+          && !["loading", "testing", "running"].includes(browser?.status ?? "") ? (
           <SessionRefreshReminder
             busy={sessionReminderBusy}
             copy={copy}

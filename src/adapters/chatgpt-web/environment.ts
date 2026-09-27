@@ -321,7 +321,7 @@ export function isChatGptCompactionContinuation(parsed: CodexParsedRequest): boo
 }
 
 /** Parse a claim only: the caller must compare it with this turn's native rollout authority. */
-export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRequest): ChatGptTurnEnvironment {
+export function extractChatGptContinuationEnvironmentClaims(parsed: CodexParsedRequest): ChatGptTurnEnvironment[] {
   const turnId = extractChatGptTurnIdentity(parsed).turnId;
   const body = record(parsed._rawBody);
   const updates = (Array.isArray(body?.input) ? body.input : []).flatMap(value => {
@@ -339,13 +339,28 @@ export function extractChatGptContinuationEnvironmentClaim(parsed: CodexParsedRe
       return /^<environment_context>[\s\S]*<\/environment_context>$/.test(text) ? [text] : [];
     });
   });
-  // Replaying the same envelope does not create a second authority. Distinct claims remain
-  // ambiguous and must not be resolved by arbitrarily trusting the first or last message.
+  // Dates and subagent lists can change without changing filesystem authority. The caller
+  // authenticates EVERY parsed claim against the current native rollout.
   const claims = [...new Set(updates)];
-  if (claims.length !== 1) {
-    throw new Error(`Compaction continuation requires one current native environment claim (found ${claims.length} distinct claims in ${updates.length} envelopes)`);
+  if (claims.length === 0) {
+    throw new Error("Compaction continuation requires a current native environment claim");
   }
-  return parseChatGptEnvironmentText(parsed, claims[0]!);
+  const full = claims.filter(text => /<\/?cwd\b/i.test(text));
+  if (!full.length) throw new Error("Compaction continuation requires a full native environment claim");
+  const environments = full.map(text => parseChatGptEnvironmentText(parsed, text));
+  const escapeXml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  for (const text of claims.filter(text => !full.includes(text))) {
+    // Only the exact native calendar/profile delta may inherit omitted cwd/roots.
+    // Unknown fields and malformed cwd remain errors, never neutral updates.
+    if (!/^<environment_context>\s*<current_date>\d{4}-\d{2}-\d{2}<\/current_date>\s*(?:<timezone>[^<>]+<\/timezone>\s*)?<filesystem>\s*(?:<workspace_roots>\s*(?:<root>[^<>]+<\/root>\s*)+<\/workspace_roots>\s*)?<permission_profile type="disabled">\s*<file_system type="unrestricted"\s*\/>\s*<\/permission_profile>\s*<\/filesystem>\s*<\/environment_context>$/.test(text)) {
+      throw new Error("Compaction continuation has an unsupported partial environment claim");
+    }
+    const initial = environments[0]!;
+    const inherited = `<cwd>${escapeXml(initial.cwd)}</cwd>` + (text.includes("<workspace_roots>") ? ""
+      : `<workspace_roots>${initial.roots.map(root => `<root>${escapeXml(root)}</root>`).join("")}</workspace_roots>`);
+    environments.push(parseChatGptEnvironmentText(parsed, text.replace("<environment_context>", `<environment_context>${inherited}`)));
+  }
+  return environments;
 }
 
 /**

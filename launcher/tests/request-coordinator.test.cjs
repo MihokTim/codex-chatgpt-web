@@ -46,14 +46,14 @@ test("an unattributed dialog on a maintenance or other page does not globally th
   assert.equal(coordinator.acquire("healthy-task", "send").granted, true);
 });
 
-test("known conversation limits pause new sends across helpers without replaying or stopping accepted work", () => {
+test("history limits delay page opening without starving prepared sends across helpers", () => {
   let now = 1_000;
   const coordinator = new RequestCoordinator({ now: () => now, spacingMs: 0 });
   assert.equal(coordinator.acquire("already-generating", "send").granted, true);
   const evidence = { id: "conversation-limit", source: "http", category: "conversation", status: 429, retryAfterMs: 60_000 };
   assert.equal(coordinator.report("helper-A", evidence), 61_000);
   for (const owner of ["helper-A", "new-helper-B", "compaction-C"]) {
-    assert.deepEqual(coordinator.acquire(owner, "send"), { granted: false, retryAt: 61_000, reason: "rate-limit" });
+    assert.deepEqual(coordinator.acquire(owner, "send"), { granted: true });
     assert.equal(coordinator.acquire(owner, "open").granted, false);
     assert.equal(coordinator.acquire(owner, "authentication").granted, true);
   }
@@ -72,7 +72,8 @@ test("one burst of auxiliary 429s consumes one backoff round without sliding its
     }), 31_000);
     now += 1_000;
   }
-  assert.equal(coordinator.acquire("final-part", "send").retryAt, 31_000);
+  assert.equal(coordinator.acquire("final-part", "send").granted, true);
+  assert.equal(coordinator.acquire("new-page", "open").retryAt, 31_000);
   now = 31_000;
   assert.equal(coordinator.acquire("final-part", "send").granted, true);
   // An actual failed retry after the first window is a new round and still backs off.
@@ -96,6 +97,27 @@ test("explicit Retry-After may extend a current window without multiplying fallb
   assert.equal(report("shorter-server-delay", 5_000), 122_000);
   now = 122_000;
   assert.equal(report("failed-next-attempt"), 182_000);
+});
+
+test("repeated background history failures reach five-minute backoff without blocking Send", () => {
+  let now = 1_000;
+  const coordinator = new RequestCoordinator({ now: () => now, spacingMs: 1_500 });
+  for (const [index, delay] of [30_000, 60_000, 120_000, 240_000, 300_000].entries()) {
+    const until = coordinator.report("background-helper", {
+      id: `history-round-${index}`, source: "http", category: "conversation", status: 429,
+    });
+    assert.equal(until, now + delay);
+    assert.equal(coordinator.acquire("prepared-agent", "send").granted, true);
+    assert.equal(coordinator.acquire("second-agent", "send").reason, "send-spacing");
+    assert.equal(coordinator.acquire("new-page", "open").retryAt, until);
+    now = until;
+  }
+  coordinator.report("prepared-agent", {
+    id: "real-send-rejected", source: "http", category: "generation", status: 429, retryAfterMs: 90_000,
+  });
+  assert.deepEqual(coordinator.acquire("second-agent", "send"), {
+    granted: false, retryAt: now + 90_000, reason: "rate-limit",
+  });
 });
 
 test("repeated unknown dialogs keep one owner window and do not block unrelated owners", () => {

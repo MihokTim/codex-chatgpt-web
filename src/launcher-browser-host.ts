@@ -292,6 +292,13 @@ export async function connectLauncherBrowserHost(
       surfaceId,
       signal,
     );
+    // noDefaults deliberately avoids browser-wide overrides, including Playwright's
+    // focus emulation. Restore it only for this descriptor-owned automatic surface:
+    // offscreen Electron views otherwise stop rAF and freeze model-menu transitions.
+    // Keep the session attached until browser.close() releases this connection.
+    const focusSession = await context.newCDPSession(page);
+    await focusSession.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    signal.throwIfAborted();
     return { descriptor, browser, context, page };
   } catch (error) {
     transport?.close();

@@ -1309,6 +1309,23 @@ describe("trusted Codex task environment continuity", () => {
     body.input.unshift(structuredClone(current));
     expect(store.resolve(request).cwd).toBe(root);
     body.input.shift();
+    // Native date/subagent refreshes differ as XML but carry identical authority.
+    const refreshedCopy = structuredClone(current);
+    refreshedCopy.content = [{ type: "input_text", text: environmentXml.replace("</environment_context>",
+      "<current_date>2026-09-27</current_date><subagents><agent>new agent</agent></subagents></environment_context>") }];
+    body.input.unshift(refreshedCopy);
+    expect(store.resolve(request).cwd).toBe(root);
+    body.input.shift();
+    const calendarCopy = structuredClone(current);
+    calendarCopy.content = [{ type: "input_text", text: '<environment_context><current_date>2026-09-27</current_date>'
+      + '<timezone>Asia/Tokyo</timezone><filesystem><permission_profile type="disabled"><file_system type="unrestricted" />'
+      + '</permission_profile></filesystem></environment_context>' }];
+    body.input.push(calendarCopy);
+    expect(store.resolve(request).cwd).toBe(root);
+    calendarCopy.content[0]!.text = calendarCopy.content[0]!.text.replace('<filesystem>',
+      `<filesystem><workspace_roots><root>${resolve(root, "conflicting-workspace")}</root></workspace_roots>`);
+    expect(() => store.resolve(request)).toThrow();
+    body.input.pop();
     const conflictingCopy = structuredClone(current);
     conflictingCopy.content = [{ type: "input_text", text: environmentXml.replaceAll(root, resolve(root, "conflicting-workspace")) }];
     body.input.unshift(conflictingCopy);

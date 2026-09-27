@@ -941,6 +941,10 @@ describe("ChatGPT outer-native harness v4", () => {
     });
     expect(failure.message).toBe("A newer Codex instruction superseded this ChatGPT response.");
     expect(failure.message).not.toContain("ChatGPT stopped responding");
+    session.supersededError = undefined;
+    session.cancel();
+    expect(submittedTurnFailure(session, new DOMException("ChatGPT prompt attachment aborted", "AbortError")))
+      .toMatchObject({ status: 499, code: "client_cancelled", retryable: false });
     sessions.clear();
   });
 

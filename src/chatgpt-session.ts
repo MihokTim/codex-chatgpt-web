@@ -329,12 +329,12 @@ export async function detectChatGptAccountCapabilities(
     }
     await new Promise(resolveSleep => setTimeout(resolveSleep, 100));
   }
-  const menu = page.locator(CHATGPT_EFFORT_MENU_SELECTOR).last();
-  const menuVisible = await menu.isVisible().catch(() => false);
-  const menuExpanded = await effortButton.getAttribute("aria-expanded").catch(() => null);
-  if (!menuVisible && menuExpanded !== "true") await effortButton.press("Enter");
   try {
-    const { sliderContainer, slider } = chatGptEffortSlider(page);
+    // Inspection must use the same verified activation as model selection. Some
+    // picker revisions ignore Enter or retain an outgoing menu after closing.
+    const { sliderContainer, slider } = await activateChatGptEffortMenu(page, effortButton, {
+      settleMs: Math.min(options.selectorTimeoutMs ?? 3_000, 3_000),
+    });
     const timeout = options.selectorTimeoutMs ?? 70_000;
     // Model radio rows can hydrate before the effort control. They carry no evidence
     // of the account's reasoning range, so an absent slider must fail, not cache false.

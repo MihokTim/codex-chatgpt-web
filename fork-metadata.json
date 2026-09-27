@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "distribution": "MihokTim/codex-chatgpt-web",
-  "buildId": "6.1.1-fork.1",
+  "buildId": "6.1.1-fork.7",
   "baseVersion": "6.1.1",
   "upstream": {
     "repository": "https://github.com/miuuyy/codex-chatgpt-web",

@@ -22,6 +22,7 @@ import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
 import { ChatGptWebAdapterError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
+import { requestPreparationProgress } from "./request-progress";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import { chatGptReadOnlyContextWarning, compileChatGptWebPrompt } from "./prompt";
@@ -307,6 +308,10 @@ export function submittedTurnFailure(session: ChatGptTurnSession, error: unknown
   if (session.supersededError) return session.supersededError;
   const normalized = error instanceof Error ? error : new Error(String(error));
   if (normalized instanceof ChatGptWebAdapterError) return normalized;
+  if (session.wasCancelled()) return new ChatGptWebAdapterError(
+    "The Codex turn was cancelled after submission. Completed work was not replayed.",
+    { status: 499, errorType: "client_closed_request", code: "client_cancelled", retryable: false, cause: normalized },
+  );
   const phase = session.runtime.submission?.phase;
   if (!phase || phase === "prepared") return normalized;
   const ambiguous = phase === "send_activated";
@@ -541,9 +546,12 @@ export function createChatGptWebAdapter(
         (hooks.onCompactionSubmitted ?? hooks.onCompactionProgress)?.();
       },
     };
-    const multipartProgressLifecycle = hooks.onCompactionProgress
-      ? { onMultipartStageAcknowledged: hooks.onCompactionProgress, onPreparationProgress: hooks.onPreparationProgress }
-      : {};
+    const multipartProgressLifecycle = {
+      ...(hooks.onCompactionProgress ? { onMultipartStageAcknowledged: hooks.onCompactionProgress } : {}),
+      onPreparationProgress: requestPreparationProgress(
+        text => trace.push({ kind: "commentary", text }), hooks.onPreparationProgress,
+      ),
+    };
     if (manualRequest) {
       if (!environment) throw new Error("ChatGPT Zero Risk requires a trusted Codex environment");
       if (!retainedLauncherDescriptor) throw new Error("ChatGPT Zero Risk requires the Launcher browser host");
@@ -1400,10 +1408,17 @@ export function createChatGptWebAdapter(
                       // while its same-tab observer is still recovering. Keep the causal barrier —
                       // tools are not emitted until the browser captures their text boundary — but
                       // let browser settlement or request cancellation end the wait.
-                      await externalProgress.waitForToolBatchObservation(
-                        revision,
-                        toolWaitAbort.signal,
-                      );
+                      const boundaryStarted = Date.now();
+                      try {
+                        await externalProgress.waitForToolBatchObservation(revision, toolWaitAbort.signal);
+                      } finally {
+                        // No prompts, arguments or capability tokens: retain only the phase and
+                        // elapsed wait so a broker timeout can be distinguished from tool runtime.
+                        const waitMs = Date.now() - boundaryStarted;
+                        if (waitMs >= 2_000) console.info(`[chatgpt-web] tool_boundary_wait ${JSON.stringify({
+                          traceId: baseTraceId, revision, waitMs, cancelled: toolWaitAbort.signal.aborted,
+                        })}`);
+                      }
                     }
                     externalProgress.assertToolBatchActive(revision);
                   }

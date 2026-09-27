@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { chromium, type Browser, type Locator, type Page } from "playwright-core";
-import { ChatGptBrowserWorker, ChatGptCompletionTracker } from "../src/adapters/chatgpt-web/browser-worker";
+import { ChatGptBrowserWorker, ChatGptCompletionTracker, revealChatGptResponseCompletion } from "../src/adapters/chatgpt-web/browser-worker";
 import { defaultChromeExecutable } from "../src/config";
 
 type Baseline = { initialTurnIdentities: string[]; submittedUserIdentity?: string; domCache: Record<string, unknown> };
@@ -29,6 +29,33 @@ const current = (ack: string, answer: string, mountUser = true) => section("prep
   + section(answer, "assistant", "Actual final answer");
 const render = (page: Page, html: string) => page.evaluate(value => { document.body.innerHTML = value; }, html);
 const observer = () => Object.create(ChatGptBrowserWorker.prototype) as Observer;
+
+test("revealing a bound long answer mounts its lazy footer without adopting a historical footer", async () => {
+  const page = await browser.newPage();
+  try {
+    await render(page, section('old-answer', 'assistant', 'Old answer')
+      + '<div style="height:3000px"></div>'
+      + '<section data-turn-id="current"><div class="markdown">Current answer</div><div id="footer"></div></section>');
+    await page.evaluate(() => {
+      const footer = document.getElementById('footer')!;
+      const observer = new IntersectionObserver(entries => {
+        if (entries.some(entry => entry.isIntersecting)) {
+          footer.innerHTML = '<button data-testid="copy-turn-action-button">Copy</button>';
+          observer.disconnect();
+        }
+      });
+      observer.observe(footer);
+    });
+    const worker = observer(), locator = page.locator('[data-turn-id="current"]');
+    expect((await worker.responseDomSnapshot(locator, {})).completionActionVisible).toBeFalse();
+    await revealChatGptResponseCompletion(locator);
+    await locator.getByTestId('copy-turn-action-button').waitFor({ timeout: 2_000 });
+    const completed = await worker.responseDomSnapshot(locator, {});
+    expect(completed.visibleText).toBe('Current answer');
+    expect(completed.completionActionVisible).toBeTrue();
+    expect(await page.locator('[data-turn-id="old-answer"]').count()).toBe(1);
+  } finally { await page.close(); }
+});
 
 test("a post-send client sentinel does not shift the submitted user boundary", async () => {
   const page = await browser.newPage();

@@ -294,4 +294,8 @@ test("task tabs use trusted metadata and distinguish generation, retained state 
   expect(browserTaskTooltip(retained, copy)).toContain("child-id");
   expect(browserTabsOverview([tab, retained], copy)).toContain("稼働中 1・完了保持 1");
   expect(browserTabsOverview([tab, retained], copy)).toContain("ネイティブ担当");
+  const waiting: BrowserTabState = { ...tab, workStage: "waiting", retryAt: 301_000 };
+  expect(browserTaskLabel(waiting, copy)).toContain(copy.browserNextAttempt);
+  expect(browserTaskLabel(waiting, copy)).toContain(new Date(301_000).toLocaleTimeString());
+  expect(browserTaskLabel({ ...waiting, workStage: "sending" }, copy)).not.toContain(copy.browserNextAttempt);
 });
