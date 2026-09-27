@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
@@ -7,6 +7,7 @@ import {
   MANAGED_MULTI_AGENT_LINE,
   MANAGED_REMOTE_COMPACTION_LINE,
   managedAgentMaxDepthLine,
+  getCodexHooksPath,
 } from "./codex-integration-shared";
 import type {
   CodexIntegrationJournal,
@@ -27,6 +28,9 @@ import {
   restoreCodexInterruptHook,
   verifyCodexInterruptHook,
   verifyCodexInterruptHookRestored,
+  verifyCodexInterruptHookJson,
+  verifyCodexInterruptHookRestoredJson,
+  verifyCodexInterruptHookTrust,
 } from "./codex-interrupt-hook";
 import {
   assignments,
@@ -170,6 +174,13 @@ export function verifyManagedJournalState(text: string, journal: ManagedRouteJou
   // provider now bypasses the bridge. That installation must remain removable.
   if (journal.version === 3 || journal.active) verifyOwnedInstalledRoute(text, journal);
   else verifyRestoredRoute(text, journal);
+  if (journal.version === 10 && journal.interruptHook.format === "json") {
+    if (journal.active) verifyCodexInterruptHookTrust(text, journal.interruptHook);
+    if (!existsSync(getCodexHooksPath())) throw new Error("Codex hooks.json is missing");
+    const hooks = readFileSync(getCodexHooksPath(), "utf8");
+    if (journal.active) verifyCodexInterruptHookJson(hooks, journal.interruptHook);
+    else verifyCodexInterruptHookRestoredJson(hooks, journal.interruptHook);
+  }
 }
 
 export function assertBuiltinModelProvider(text: string): void {
@@ -296,6 +307,11 @@ export function installRoute(
 
 export function verifyInstalledRoute(text: string, journal: ManagedRouteJournal): void {
   verifyOwnedInstalledRoute(text, journal);
+  if (journal.version === 10 && journal.interruptHook.format === "json") {
+    verifyCodexInterruptHookTrust(text, journal.interruptHook);
+    if (!existsSync(getCodexHooksPath())) throw new Error("Codex hooks.json is missing");
+    verifyCodexInterruptHookJson(readFileSync(getCodexHooksPath(), "utf8"), journal.interruptHook);
+  }
   assertBuiltinModelProvider(text);
 }
 
@@ -319,7 +335,7 @@ function verifyOwnedInstalledRoute(text: string, journal: ManagedRouteJournal): 
       throw new Error("Codex realtime WebRTC call route changed after setup; refusing to overwrite the user's newer value");
     }
   }
-  if (journal.version === 10) verifyCodexInterruptHook(text, journal.interruptHook);
+  if (journal.version === 10 && journal.interruptHook.format !== "json") verifyCodexInterruptHook(text, journal.interruptHook);
   if (journal.version === 8 || journal.version === 9 || journal.version === 10) {
     const evidence = compatibilityV1Evidence(journal);
     if (evidence) {
@@ -373,7 +389,13 @@ export function verifyRestoredRoute(
       );
     }
   }
-  if (journal.version === 10) verifyCodexInterruptHookRestored(text);
+  if (journal.version === 10 && journal.interruptHook.format !== "json") verifyCodexInterruptHookRestored(text);
+  if (journal.version === 10 && journal.interruptHook.format === "json") {
+    const trustHeader = `[hooks.state.${JSON.stringify(journal.interruptHook.stateKey)}]`;
+    if (text.includes(trustHeader)) throw new Error("Managed Codex JSON interrupt trust is still present while the bridge is disconnected");
+    if (!existsSync(getCodexHooksPath())) throw new Error("Codex hooks.json is missing");
+    verifyCodexInterruptHookRestoredJson(readFileSync(getCodexHooksPath(), "utf8"), journal.interruptHook);
+  }
   if (journal.version === 5 || journal.version === 6) {
     const previousFeatures: Array<readonly [string, PreviousFeatureAssignment]> = [
       ["remote_compaction_v2", journal.previousRemoteCompactionV2],
@@ -450,7 +472,7 @@ export function assertPreservedPreviousRealtimeAssignment(
 
 export function restoreManagedRoute(text: string, journal: ManagedRouteJournal): string {
   verifyOwnedInstalledRoute(text, journal);
-  const withoutHook = journal.version === 10
+  const withoutHook = journal.version === 10 && journal.interruptHook.format !== "json"
     ? restoreCodexInterruptHook(text, journal.interruptHook)
     : text;
   const document = parseDocument(withoutHook);

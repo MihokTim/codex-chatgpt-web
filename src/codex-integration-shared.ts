@@ -48,6 +48,12 @@ export interface InstalledCodexInterruptHook {
   stateKey: string;
   trustedHash: string;
   fragment: string;
+  /** The Codex hook document containing the command (config.toml by default). */
+  filePath?: string;
+  /** Native Codex hook document format; legacy journals omit this and mean TOML. */
+  format?: "toml" | "json";
+  /** Exact hooks.json bytes before setup, used only for uninstall compensation. */
+  previousText?: string;
 }
 
 export interface CodexIntegrationJournal {
@@ -251,6 +257,10 @@ export function getCodexConfigPath(): string {
   return join(getCodexHome(), "config.toml");
 }
 
+export function getCodexHooksPath(): string {
+  return join(getCodexHome(), "hooks.json");
+}
+
 export function getCodexModelsCachePath(): string {
   return join(getCodexHome(), "models_cache.json");
 }
@@ -351,6 +361,7 @@ export function writeIntegrationState(
   journal: AnyCodexIntegrationJournal,
   configWrite?: { path: string; data: string },
   removals: string[] = [],
+  additionalWrites: Array<{ path: string; data: string; followSymlink?: boolean }> = [],
 ): void {
   const data = serializeJournal(journal);
   // The recovery copy records intent and the primary copy records commit. If the process stops
@@ -358,6 +369,7 @@ export function writeIntegrationState(
   writeFilesWithCompensation([
     { path: getCodexJournalRecoveryPath(), data },
     ...(configWrite ? [{ ...configWrite, followSymlink: true }] : []),
+    ...additionalWrites,
     { path: getCodexJournalPath(), data },
   ], removals);
 }

@@ -563,6 +563,7 @@ export function createChatGptWebAdapter(
       let activeToken: string | undefined;
       let launcherStarted = false;
       let launcherEnded = false;
+      let manualFailure: Error | undefined;
       const finishLauncher = async (status: LauncherManualTurnEnd["status"]): Promise<void> => {
         if (!launcherStarted || launcherEnded) return;
         await zeroRiskManualControl.end(retainedLauncherDescriptor, {
@@ -670,6 +671,7 @@ export function createChatGptWebAdapter(
           return answer;
         } catch (error) {
           const normalized = safeManualAdapterError(error);
+          manualFailure = normalized;
           // Capture the causal state before our own cleanup revokes the broker capability. The
           // retirement observer also aborts browserAbort, but that self-induced abort must not turn
           // an ordinary launcher/runtime failure into a user cancellation.
@@ -700,7 +702,7 @@ export function createChatGptWebAdapter(
         trace,
         text,
         usageInput: checkpointInput.parsed,
-        manualControl: { surfaceNonce },
+        manualControl: { surfaceNonce, failure: () => manualFailure },
         ...(conversationKey ? { conversationKey } : {}),
         ...(releaseRetainedConversation ? { releaseRetainedConversation } : {}),
         retireCapability: async () => {
@@ -1363,7 +1365,17 @@ export function createChatGptWebAdapter(
                 } finally { traceWait.abort(); }
               }
               if (!environment) throw new Error("Tool-capable ChatGPT web runtime lost its trusted environment");
-              await broker.updateEnvironment(turnToken, environment);
+              try {
+                await broker.updateEnvironment(turnToken, environment);
+              } catch (error) {
+                // Manual startup can fail and revoke its token while the outer observer is
+                // still attaching. Preserve that causal failure after its cleanup settles.
+                if (session.runtime.manualControl?.failure?.()) {
+                  const outcome = await withAbort(session.browserOutcome, incoming.abortSignal);
+                  if (outcome.type === "error") throw outcome.error;
+                }
+                throw error;
+              }
 
               const outstanding = session.outstanding();
               if (outstanding.length > 0) {

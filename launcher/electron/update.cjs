@@ -119,9 +119,16 @@ async function downloadText(url, maxBytes = 2 * 1024 * 1024) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-async function downloadFile(url, destination) {
+async function downloadFile(url, destination, onProgress) {
   const response = await request(url);
+  const parsedTotal = Number(response.headers["content-length"]);
+  const totalBytes = Number.isSafeInteger(parsedTotal) && parsedTotal >= 0 ? parsedTotal : null;
+  let receivedBytes = 0;
+  const report = (complete = false) => onProgress?.({ receivedBytes, totalBytes, complete });
+  report();
+  response.on("data", (chunk) => { receivedBytes += chunk.length; report(); });
   await pipeline(response, fs.createWriteStream(destination, { flags: "wx", mode: 0o600 }));
+  report(true);
 }
 
 function sha256(filePath) {
@@ -344,7 +351,14 @@ function createUpdateController({
         const checksums = await deps.downloadText(available.checksumsUrl);
         const expected = expectedChecksum(checksums, available.assetName);
         const assetPath = path.join(tempRoot, available.assetName);
-        await deps.downloadFile(available.assetUrl, assetPath);
+        await deps.downloadFile(available.assetUrl, assetPath, (progress) => {
+          const receivedBytes = Number.isSafeInteger(progress?.receivedBytes) && progress.receivedBytes >= 0
+            ? progress.receivedBytes : 0;
+          const totalBytes = Number.isSafeInteger(progress?.totalBytes) && progress.totalBytes > 0
+            ? progress.totalBytes : null;
+          transition({ status: "downloading", version: available.version,
+            progress: { receivedBytes, totalBytes, complete: progress?.complete === true } });
+        });
         const actual = deps.sha256(assetPath);
         if (actual !== expected) throw new Error(`SHA-256 verification failed for ${available.assetName}`);
 

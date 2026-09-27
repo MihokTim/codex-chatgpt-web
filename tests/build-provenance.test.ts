@@ -141,6 +141,7 @@ test.each([
   "src/adapters/chatgpt-web/browser-helper-main.ts", "scripts/builder-helper.ts",
   "scripts/generate-third-party-notices.ts", "package.json", "bun.lock", "launcher/package.json",
   "LICENSE", "LICENSES/dependency.txt", "fork-metadata.json", "tsconfig.json", "bunfig.toml", "launcher/bun.lock",
+  "launcher/src/App.tsx", "launcher/electron/main.cjs", "launcher/assets/icon.png", "launcher/scripts/package.cjs",
 ])("tracks consumed recipe, config and copied input: %s", path => {
   const f = fixture();
   const before = f.read();

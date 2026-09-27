@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "distribution": "MihokTim/codex-chatgpt-web",
-  "buildId": "6.1.1-fork.8",
-  "baseVersion": "6.1.1",
+  "buildId": "6.1.2-fork.9",
+  "baseVersion": "6.1.2",
   "upstream": {
     "repository": "https://github.com/miuuyy/codex-chatgpt-web",
-    "commit": "a13cd09950969f43e3b7e25c71fa43efaf5446c5"
+    "commit": "2d73f626290a5062825bb595dabb89aaf88d16c5"
   },
   "support": "https://github.com/MihokTim/codex-chatgpt-web/issues"
 }

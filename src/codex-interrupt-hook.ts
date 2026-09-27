@@ -140,8 +140,115 @@ export function installCodexInterruptHookCommand(
   }
   return {
     text: installedText,
-    installed: { command, groupIndex, stateKey, trustedHash, fragment },
+    installed: { command, groupIndex, stateKey, trustedHash, fragment, filePath: canonicalConfigPath(configPath), format: "toml" },
   };
+}
+
+/**
+ * Install the same Interrupt command in Codex's native hooks.json document.
+ * The TOML journal remains the authority for trust_hash; JSON only owns the event
+ * group.  This deliberately preserves every non-Interrupt event and every hook
+ * item supplied by Orca or another integration.
+ */
+export function installCodexInterruptHookJson(
+  text: string,
+  hooksPath: string,
+  configPath: string,
+  command: string,
+): { text: string; installed: InstalledCodexInterruptHook } {
+  let document: Record<string, any>;
+  try { document = text.trim() ? JSON.parse(text) : {}; } catch { throw new Error("Codex hooks.json is invalid JSON"); }
+  if (!document || typeof document !== "object" || Array.isArray(document)) throw new Error("Codex hooks.json root must be an object");
+  const root = document.hooks ?? (document.hooks = {});
+  if (!root || typeof root !== "object" || Array.isArray(root)) throw new Error("Codex hooks.json hooks must be an object");
+  const groups = root.Interrupt ?? (root.Interrupt = []);
+  if (!Array.isArray(groups)) throw new Error("Codex hooks.json Interrupt hooks must be an array");
+  const expected = { hooks: [{ type: "command", command, timeout: 3 }] };
+  const groupIndex = groups.length;
+  groups.push(expected);
+  const stateKey = `${canonicalConfigPath(hooksPath)}:interrupt:${groupIndex}:0`;
+  const trustedHash = codexInterruptHookHash(command);
+  const fragment = JSON.stringify({ hooks: { Interrupt: [{ hooks: [{ type: "command", command, timeout: 3 }] }] } });
+  return {
+    text: `${JSON.stringify(document, null, 2)}\n`,
+    installed: { command, groupIndex, stateKey, trustedHash, fragment, filePath: canonicalConfigPath(hooksPath), format: "json", previousText: text },
+  };
+}
+
+/** Add only the trust record to config.toml when the event itself lives in hooks.json. */
+export function installCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHook): string {
+  const ending = lineEnding(text);
+  const section = `[hooks.state.${JSON.stringify(installed.stateKey)}]${ending}trusted_hash = ${JSON.stringify(installed.trustedHash)}${ending}`;
+  if (text.includes(`[hooks.state.${JSON.stringify(installed.stateKey)}]`)) {
+    const header = `[hooks.state.${JSON.stringify(installed.stateKey)}]`;
+    const start = text.indexOf(header);
+    const next = text.indexOf(`${ending}[`, start + header.length);
+    const block = text.slice(start, next < 0 ? text.length : next);
+    if (block.includes(`trusted_hash = ${JSON.stringify(installed.trustedHash)}`)) return text;
+    throw new Error("Codex interrupt hook trust state already exists");
+  }
+  return `${text}${text.length > 0 && !text.endsWith(ending) ? ending : ""}${section}`;
+}
+
+export function restoreCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHook): string {
+  verifyCodexInterruptHookTrust(text, installed);
+  const ending = lineEnding(text);
+  const header = `[hooks.state.${JSON.stringify(installed.stateKey)}]`;
+  const start = text.indexOf(header);
+  if (start < 0) throw new Error("Codex interrupt hook trust state is missing");
+  const next = text.indexOf(`${ending}[`, start + header.length);
+  const end = next < 0 ? text.length : next + ending.length;
+  const block = text.slice(start, next < 0 ? text.length : next);
+  if (!block.includes(`trusted_hash = ${JSON.stringify(installed.trustedHash)}`)) throw new Error("Codex interrupt hook trust state changed after setup");
+  return text.slice(0, start) + text.slice(end);
+}
+
+export function verifyCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHook): void {
+  const state = parseHookDocument(text).hooks?.state?.[installed.stateKey];
+  if (JSON.stringify(canonicalJson(state)) !== JSON.stringify({ trusted_hash: installed.trustedHash })) {
+    throw new Error("Codex interrupt hook trust state changed after setup");
+  }
+  const ending = lineEnding(text);
+  const header = `[hooks.state.${JSON.stringify(installed.stateKey)}]`;
+  const start = text.indexOf(header);
+  if (start < 0) throw new Error("Codex interrupt hook trust state is missing");
+  const next = text.indexOf(`${ending}[`, start + header.length);
+  const block = text.slice(start, next < 0 ? text.length : next);
+  if (!block.includes(`trusted_hash = ${JSON.stringify(installed.trustedHash)}`)) {
+    throw new Error("Codex interrupt hook trust state changed after setup");
+  }
+}
+
+/** Verify the exact managed JSON event without accepting a moved or duplicated group. */
+export function verifyCodexInterruptHookJson(text: string, installed: InstalledCodexInterruptHook): void {
+  if (installed.format !== "json") throw new Error("Codex interrupt hook journal format is not JSON");
+  if (codexInterruptHookHash(installed.command) !== installed.trustedHash) throw new Error("Codex interrupt lifecycle hook journal hash is invalid");
+  let document: any;
+  try { document = JSON.parse(text); } catch { throw new Error("Codex hooks.json is invalid JSON"); }
+  const groups = document?.hooks?.Interrupt;
+  const expected = { hooks: [{ type: "command", command: installed.command, timeout: 3 }] };
+  const equal = JSON.stringify(canonicalJson(groups?.[installed.groupIndex])) === JSON.stringify(canonicalJson(expected));
+  if (!Array.isArray(groups) || !equal) throw new Error("Codex interrupt lifecycle hook changed after setup; refusing to overwrite it");
+}
+
+/** Remove only the journal-owned JSON event, retaining all other Orca/user hooks. */
+export function restoreCodexInterruptHookJson(text: string, installed: InstalledCodexInterruptHook): string {
+  verifyCodexInterruptHookJson(text, installed);
+  const document = JSON.parse(text) as Record<string, any>;
+  document.hooks.Interrupt.splice(installed.groupIndex, 1);
+  if (document.hooks.Interrupt.length === 0) delete document.hooks.Interrupt;
+  if (Object.keys(document.hooks).length === 0) delete document.hooks;
+  return `${JSON.stringify(document, null, 2)}\n`;
+}
+
+export function verifyCodexInterruptHookRestoredJson(text: string, installed: InstalledCodexInterruptHook): void {
+  if (installed.format !== "json") throw new Error("Codex interrupt hook journal format is not JSON");
+  let document: any;
+  try { document = JSON.parse(text); } catch { throw new Error("Codex hooks.json is invalid JSON"); }
+  const groups = document?.hooks?.Interrupt;
+  if (Array.isArray(groups) && groups.some(group => JSON.stringify(canonicalJson(group)) === JSON.stringify(canonicalJson({ hooks: [{ type: "command", command: installed.command, timeout: 3 }] })))) {
+    throw new Error("Managed Codex JSON interrupt hook is still present while the bridge is disconnected");
+  }
 }
 
 type SourceRange = { start: number; end: number };

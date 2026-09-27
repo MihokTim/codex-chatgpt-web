@@ -325,7 +325,7 @@ test("an unbounded broker call fails when the broker closes without answering", 
   }
 }, 10_000);
 
-test("bounded broker calls preserve server-owned closure before advancing the lifecycle", async () => {
+test("bounded broker calls settle a complete frame without waiting for delayed peer closure", async () => {
   let peer!: Socket;
   let finishFrame!: () => void;
   const frameWritten = new Promise<void>(resolve => { finishFrame = resolve; });
@@ -347,7 +347,8 @@ test("bounded broker calls preserve server-owned closure before advancing the li
     });
     await frameWritten;
     await Bun.sleep(25);
-    expect(settled).toBeFalse();
+    expect(settled).toBeTrue();
+    // Cleanup still belongs to the peer/grace timer, independently of the RPC result.
     peer.end();
     await expect(call).resolves.toEqual({ ready: true });
   } finally {

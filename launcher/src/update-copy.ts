@@ -1,6 +1,7 @@
 import type { Language } from "./types";
 
 const en = {
+  download: "Downloading update", verifying: "Download complete; verifying update", progress: "Download progress", received: "received",
   title: "Updates", installed: "Installed build", release: "Latest published release",
   published: "Published", integrated: "Integrated upstream revision", source: "Upstream source",
   checking: "Checking…", check: "Check now", unknown: "Not checked", current: "Matches the published version",
@@ -16,6 +17,7 @@ const en = {
   actionError: "Could not open the update page", notice: "Upstream changes", errorNotice: "Update check failed",
 };
 const ja: typeof en = {
+  download: "更新をダウンロード中", verifying: "ダウンロード完了・整合性を検証中", progress: "ダウンロードの進捗", received: "受信済み",
   title: "更新情報", installed: "インストール済みビルド", release: "最新の公開リリース",
   published: "公開日時", integrated: "取り込み済みの上流リビジョン", source: "上流ソース",
   checking: "確認中…", check: "今すぐ確認", unknown: "未確認", current: "公開版と同じバージョンです",

@@ -4,6 +4,7 @@ import { atomicWriteFile, stripUtf8Bom } from "./config";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
   getCodexConfigPath,
+  getCodexHooksPath,
   getCodexJournalPath,
   getCodexJournalRecoveryPath,
   serializeJournal,
@@ -34,6 +35,15 @@ function isPreviousAssignment(value: unknown): boolean {
 function isInstalledInterruptHook(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const hook = value as Record<string, unknown>;
+  const format = hook.format;
+  if (format !== undefined && format !== "toml" && format !== "json") return false;
+  if (format === "json") {
+    if (typeof hook.filePath !== "string" || resolve(hook.filePath) !== resolve(getCodexHooksPath())) return false;
+    if (typeof hook.previousText !== "string") return false;
+  } else if (format === "toml") {
+    if (typeof hook.filePath !== "string" || resolve(hook.filePath) !== resolve(getCodexConfigPath())) return false;
+    if (hook.previousText !== undefined) return false;
+  } else if (hook.filePath !== undefined || hook.previousText !== undefined) return false;
   return typeof hook.command === "string" && hook.command.length > 0
     && Number.isSafeInteger(hook.groupIndex) && (hook.groupIndex as number) >= 0
     && typeof hook.stateKey === "string" && hook.stateKey.length > 0

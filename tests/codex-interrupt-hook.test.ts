@@ -8,10 +8,36 @@ import {
   codexInterruptHookHash,
   installCodexInterruptHook,
   installCodexInterruptHookCommand,
+  installCodexInterruptHookJson,
   restoreCodexInterruptHook,
+  restoreCodexInterruptHookJson,
   verifyCodexInterruptHook,
+  verifyCodexInterruptHookJson,
   verifyCodexInterruptHookRestored,
 } from "../src/codex-interrupt-hook";
+
+test("native hooks.json preserves Orca events and removes only the owned Interrupt group", () => {
+  const original = JSON.stringify({ hooks: {
+    SessionStart: [{ hooks: [{ type: "command", command: "orca-hook", timeout: 10 }] }],
+    Interrupt: [{ hooks: [{ type: "command", command: "user-interrupt", timeout: 3 }] }],
+  } });
+  const installed = installCodexInterruptHookJson(
+    original,
+    "C:\\Users\\test\\.codex\\hooks.json",
+    "C:\\Users\\test\\.codex\\config.toml",
+    "C:\\Program Files\\Codex\\runtime.exe hook interrupt",
+  );
+  expect(installed.installed.format).toBe("json");
+  expect(installed.installed.groupIndex).toBe(1);
+  expect(installed.installed.stateKey).toContain("hooks.json:interrupt:1:0");
+  verifyCodexInterruptHookJson(installed.text, installed.installed);
+  const restored = restoreCodexInterruptHookJson(installed.text, installed.installed);
+  expect(JSON.parse(restored)).toEqual(JSON.parse(original));
+  expect(() => restoreCodexInterruptHookJson(
+    installed.text.replace(JSON.stringify(installed.installed.command), JSON.stringify("changed")),
+    installed.installed,
+  )).toThrow();
+});
 
 test("preserves hook ownership across native TOML command quoting and inline array serialization", () => {
   const original = 'model = "example"\n\n[mcp_servers.notes]\ncommand = "user-mcp"\n';

@@ -103,6 +103,11 @@ export function readBuildSource(root: string): BuildSource {
     readInput(join(canonicalRoot, file), true);
   }
   visitDirectory(join(canonicalRoot, "LICENSES"));
+  // The launcher and runtime ship together; renderer/electron drift must invalidate the build too.
+  for (const directory of ["launcher/src", "launcher/electron", "launcher/assets", "launcher/scripts"]) {
+    const input = join(canonicalRoot, directory);
+    if (existsSync(input)) visitDirectory(input);
+  }
 
   const git = (args: string[]) => {
     const result = spawnSync("git", ["-C", canonicalRoot, ...args], { encoding: "utf8", windowsHide: true });

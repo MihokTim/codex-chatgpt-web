@@ -27,6 +27,16 @@ export function UpdatesPanel({ update, version, language, api }: {
   const source = info?.source;
   const sourceText = !source ? copy.unknown : source.status === "identical" ? copy.sourceCurrent
     : source.status === "ahead" ? `${source.aheadBy} ${copy.sourceAhead}` : copy.sourceChanged;
+  const progress = update.status === "downloading" ? update.progress : undefined;
+  const percent = progress?.totalBytes && progress.totalBytes > 0
+    ? Math.min(100, Math.max(0, Math.round(progress.receivedBytes / progress.totalBytes * 100))) : null;
+  const formatBytes = (value: number) => {
+    if (value < 1024) return `${value} B`;
+    const units = ["KB", "MB", "GB"];
+    let scaled = value; let unit = -1;
+    while (scaled >= 1024 && unit < units.length - 1) { scaled /= 1024; unit += 1; }
+    return `${scaled.toFixed(scaled >= 10 ? 0 : 1)} ${units[unit]}`;
+  };
 
   return <section className="updates-panel" aria-labelledby="updates-title">
     <header className="updates-heading">
@@ -51,6 +61,11 @@ export function UpdatesPanel({ update, version, language, api }: {
     </dl>
     <div role="status" aria-live="polite">
       {checking && <p>{copy.checking}</p>}
+      {update.status === "downloading" && progress && <div className="updates-download" aria-label={copy.progress}>
+        <p>{progress.complete ? copy.verifying : copy.download}
+          {percent !== null ? `: ${percent}%` : `: ${formatBytes(progress.receivedBytes)} ${copy.received}`}</p>
+        <progress max={100} value={percent ?? undefined} aria-label={copy.progress} />
+      </div>}
       {update.status === "disabled" && <p>{copy.disabled}</p>}
       {(error || update.status === "error") && <div className="updates-error" role="alert">
         <p>{error || copy.failed}</p>

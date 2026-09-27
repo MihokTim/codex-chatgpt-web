@@ -211,6 +211,43 @@ test("preview and draft releases stay hidden until promoted, regardless of the v
   }
 });
 
+test("verified downloads publish byte progress without treating completion as installation success", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "launcher-progress-test-"));
+  const body = Buffer.from("verified update payload");
+  const hash = require("node:crypto").createHash("sha256").update(body).digest("hex");
+  const states = [];
+  try {
+    const controller = createUpdateController({
+      currentVersion: "1.1.4", platform: "win32", arch: "x64", packaged: true,
+      executablePath: path.join(root, "launcher.exe"), runtimeExecutable: "/durable/bun",
+      logsDirectory: root,
+      publish: state => states.push(state),
+      dependencies: {
+        fetchRelease: async () => ({ tag_name: "v1.2.0", assets: [
+          { name: "codex-web-gpt-1.2.0-win-x64.exe", browser_download_url: "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/codex-web-gpt-1.2.0-win-x64.exe" },
+          { name: "checksums.txt", browser_download_url: "https://github.com/miuuyy/codex-chatgpt-web/releases/download/v1.2.0/checksums.txt" },
+        ]}),
+        downloadText: async () => `${hash}  codex-web-gpt-1.2.0-win-x64.exe\n`,
+        downloadFile: async (_url, destination, onProgress) => {
+          onProgress({ receivedBytes: 0, totalBytes: body.length });
+          fs.writeFileSync(destination, body);
+          onProgress({ receivedBytes: body.length, totalBytes: body.length, complete: true });
+        },
+        sha256: filePath => require("node:crypto").createHash("sha256").update(fs.readFileSync(filePath)).digest("hex"),
+        spawnWorker: () => ({ pid: 123, unref() {}, kill() {} }),
+      },
+    });
+    await controller.checkOnce();
+    await controller.beginInstall();
+    const downloading = states.filter(state => state.status === "downloading");
+    assert.equal(downloading.length, 3);
+    assert.deepEqual(downloading.at(-1).progress, { receivedBytes: body.length, totalBytes: body.length, complete: true });
+    assert.equal(states.at(-1).status, "installing");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 for (const arch of ["x64", "arm64"]) {
   test(`verified Linux ${arch} update is handed to one detached worker`, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "launcher-update-test-"));

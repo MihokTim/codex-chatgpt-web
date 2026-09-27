@@ -104,9 +104,16 @@ export interface UpdateInformation {
   source: { aheadBy: number; status: "identical" | "ahead" | "behind" | "diverged"; head: string; url: string } | null;
 }
 
+export interface UpdateDownloadProgress {
+  receivedBytes: number;
+  totalBytes: number | null;
+  complete: boolean;
+}
+
 export type UpdateState = (
   | { status: "disabled" | "idle" | "checking" | "up-to-date" }
-  | { status: "available" | "downloading" | "installing"; version: string }
+  | { status: "available" | "installing"; version: string }
+  | { status: "downloading"; version: string; progress?: UpdateDownloadProgress }
   | { status: "upstream-available" }
   | { status: "error"; message: string }
 ) & { information?: UpdateInformation };

@@ -8,4 +8,7 @@
 .updates-panel p { margin: 12px 0 0; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .updates-links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
 .updates-error { border-left: 3px solid currentColor; padding-left: 12px; }
+.updates-download { margin-top: 12px; }
+.updates-download p { margin: 0 0 8px; }
+.updates-download progress { display: block; width: 100%; height: 8px; }
 @media (max-width: 560px) { .updates-facts { grid-template-columns: 1fr; gap: 6px; } .updates-facts dd { margin-bottom: 8px; } }

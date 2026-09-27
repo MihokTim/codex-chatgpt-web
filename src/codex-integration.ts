@@ -2,10 +2,11 @@ import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import type { AppConfig } from "./config";
 import { getConfigPath, loadConfig, saveConfig } from "./config";
-import { installCodexInterruptHook, installCodexInterruptHookCommand } from "./codex-interrupt-hook";
+import { codexInterruptHookCommand, installCodexInterruptHook, installCodexInterruptHookCommand, installCodexInterruptHookJson, installCodexInterruptHookTrust, restoreCodexInterruptHookJson, restoreCodexInterruptHookTrust, verifyCodexInterruptHookJson } from "./codex-interrupt-hook";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
   getCodexConfigPath,
+  getCodexHooksPath,
   getCodexJournalPath,
   getCodexJournalRecoveryPath,
   getCodexModelsCachePath,
@@ -58,6 +59,7 @@ function installConfiguredRoute(
   ),
   replaceExistingRoute: boolean,
   replaceExistingRealtimeRoute: boolean,
+  hooksJsonBaseline?: string,
 ): {
   text: string;
   previous: CodexIntegrationJournal["previous"];
@@ -67,6 +69,7 @@ function installConfiguredRoute(
   previousAgentMaxDepth?: CodexIntegrationJournal["previousAgentMaxDepth"];
   installedAgentMaxDepth?: number;
   interruptHook: CodexIntegrationJournal["interruptHook"];
+  hooksJsonWrite?: { path: string; data: string };
 } {
   const route = installRoute(
     baseline,
@@ -88,6 +91,14 @@ function installConfiguredRoute(
         };
       })()
     : route;
+  const hooksPath = getCodexHooksPath();
+  if (existsSync(hooksPath)) {
+    const hook = installCodexInterruptHookJson(
+      hooksJsonBaseline ?? readFileSync(hooksPath, "utf8"), hooksPath, getCodexConfigPath(),
+      "interruptHookCommand" in config ? config.interruptHookCommand : codexInterruptHookCommand(config),
+    );
+    return { ...configured, text: installCodexInterruptHookTrust(configured.text, hook.installed), interruptHook: hook.installed, hooksJsonWrite: { path: hooksPath, data: hook.text } };
+  }
   const hook = "interruptHookCommand" in config
     ? installCodexInterruptHookCommand(configured.text, getCodexConfigPath(), config.interruptHookCommand)
     : installCodexInterruptHook(configured.text, getCodexConfigPath(), config);
@@ -103,6 +114,7 @@ function journalProtocol(journal: Exclude<AnyCodexIntegrationJournal, { version:
 export {
   getCodexConfigPath,
   getCodexHome,
+  getCodexHooksPath,
   getCodexJournalPath,
   getCodexJournalRecoveryPath,
   getCodexModelsCachePath,
@@ -141,6 +153,7 @@ export function setCodexSubagentProtocol(
   const snapshots = [
     getConfigPath(),
     getCodexConfigPath(),
+    getCodexHooksPath(),
     getCodexModelsCachePath(),
     getCodexJournalPath(),
     getCodexJournalRecoveryPath(),
@@ -249,12 +262,17 @@ export function installCodexIntegration(
 
   if (hasManagedJournal && existing && existing.version !== 2) {
     let baseline: string;
+    let hooksJsonBaseline: string | undefined;
     let preservePrevious = true;
     try {
       verifyManagedJournalState(currentText, existing);
       baseline = managedJournalIsActive(existing)
         ? restoreManagedRoute(currentText, existing)
         : currentText;
+      if (existing.version === 10 && existing.active && existing.interruptHook.format === "json") {
+        baseline = restoreCodexInterruptHookTrust(baseline, existing.interruptHook);
+        hooksJsonBaseline = restoreCodexInterruptHookJson(readFileSync(getCodexHooksPath(), "utf8"), existing.interruptHook);
+      }
     } catch (error) {
       if (options.replaceExistingRoute !== true) throw error;
       baseline = replacementBaseline(currentText, configExists, existing);
@@ -266,6 +284,7 @@ export function installCodexIntegration(
       config,
       true,
       !preservePrevious || existing.version === 9 || existing.version === 10 || options.replaceExistingRoute === true,
+      hooksJsonBaseline,
     );
     if (preservePrevious) {
       assertPreservedPreviousAssignments(patched.previous, existing.previous);
@@ -300,7 +319,7 @@ export function installCodexIntegration(
       } : {}),
       ...(existing.format ? { format: existing.format } : {}),
     };
-    writeIntegrationState(updated, { path: configPath, data: patched.text }, [getCodexModelsCachePath()]);
+    writeIntegrationState(updated, { path: configPath, data: patched.text }, [getCodexModelsCachePath()], patched.hooksJsonWrite ? [patched.hooksJsonWrite] : []);
     return updated;
   }
 
@@ -340,7 +359,7 @@ export function installCodexIntegration(
     } : {}),
     format: textFormat(baseline),
   };
-  writeIntegrationState(journal, { path: configPath, data: patched.text }, [getCodexModelsCachePath()]);
+  writeIntegrationState(journal, { path: configPath, data: patched.text }, [getCodexModelsCachePath()], patched.hooksJsonWrite ? [patched.hooksJsonWrite] : []);
   if (existing?.version === 2 && existsSync(existing.catalogPath)) rmSync(existing.catalogPath);
   return journal;
 }
@@ -358,7 +377,14 @@ export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
     verifyRestoredRoute(current, existing);
     return { changed: false, active: false };
   }
-  const restored = restoreManagedRoute(current, existing);
+  let hooksJsonWrite: { path: string; data: string } | undefined;
+  if (existing.version === 10 && existing.interruptHook.format === "json") {
+    const hooksPath = existing.interruptHook.filePath ?? getCodexHooksPath();
+    if (!existsSync(hooksPath)) throw new Error(`Codex hooks file is missing: ${hooksPath}`);
+    hooksJsonWrite = { path: hooksPath, data: restoreCodexInterruptHookJson(readFileSync(hooksPath, "utf8"), existing.interruptHook) };
+  }
+  let restored = restoreManagedRoute(current, existing);
+  if (existing.version === 10 && existing.interruptHook.format === "json") restored = restoreCodexInterruptHookTrust(restored, existing.interruptHook);
   const disconnected:
     | CodexIntegrationJournal
     | LegacyCodexIntegrationJournalV9
@@ -370,7 +396,7 @@ export function deactivateCodexIntegration(): SetCodexIntegrationActiveResult {
       || existing.version === 7 || existing.version === 8 || existing.version === 9 || existing.version === 10
       ? { ...existing, active: false }
       : { ...existing, version: 4, active: false };
-  writeIntegrationState(disconnected, { path: existing.configPath, data: restored }, [getCodexModelsCachePath()]);
+  writeIntegrationState(disconnected, { path: existing.configPath, data: restored }, [getCodexModelsCachePath()], hooksJsonWrite ? [hooksJsonWrite] : []);
   return { changed: true, active: false };
 }
 
@@ -437,7 +463,7 @@ export function activateCodexIntegration(): SetCodexIntegrationActiveResult {
     } : {}),
     ...(existing.format ? { format: existing.format } : {}),
   };
-  writeIntegrationState(connected, { path: existing.configPath, data: route.text }, [getCodexModelsCachePath()]);
+  writeIntegrationState(connected, { path: existing.configPath, data: route.text }, [getCodexModelsCachePath()], route.hooksJsonWrite ? [route.hooksJsonWrite] : []);
   return { changed: true, active: true };
 }
 
@@ -457,21 +483,36 @@ export function uninstallCodexIntegration(): UninstallCodexIntegrationResult {
     restored = current;
   } else {
     restored = restoreManagedRoute(current, journal);
+    if (journal.version === 10 && journal.interruptHook.format === "json" && journal.active) {
+      restored = restoreCodexInterruptHookTrust(restored, journal.interruptHook);
+    }
   }
   const configSnapshot = snapshotFile(journal.configPath, { followSymlink: true });
   const catalogSnapshot = journal.version === 2 ? snapshotFile(journal.catalogPath) : undefined;
   const modelsCacheSnapshot = snapshotFile(getCodexModelsCachePath());
   const journalSnapshot = snapshotFile(getCodexJournalPath());
   const recoverySnapshot = snapshotFile(getCodexJournalRecoveryPath());
+  const hooksPath = journal.version === 10 && journal.interruptHook.format === "json"
+    ? (journal.interruptHook.filePath ?? getCodexHooksPath()) : undefined;
+  const hooksSnapshot = hooksPath ? snapshotFile(hooksPath) : undefined;
+  let restoredHooks: string | undefined;
+  if (hooksPath && journal.version === 10 && journal.active) {
+    if (!existsSync(hooksPath)) throw new Error(`Codex hooks file is missing: ${hooksPath}`);
+    const currentHooks = readFileSync(hooksPath, "utf8");
+    verifyCodexInterruptHookJson(currentHooks, journal.interruptHook);
+    // Remove only the journal-owned group; hooks added after setup must survive uninstall.
+    restoredHooks = restoreCodexInterruptHookJson(currentHooks, journal.interruptHook);
+  }
   try {
     writeFileSnapshot(configSnapshot, restored);
+    if (hooksPath && restoredHooks !== undefined) writeFileSnapshot(hooksSnapshot!, restoredHooks);
     if (catalogSnapshot?.exists) rmSync(catalogSnapshot.path);
     rmSync(modelsCacheSnapshot.path, { force: true });
     rmSync(getCodexJournalPath(), { force: true });
     rmSync(getCodexJournalRecoveryPath(), { force: true });
   } catch (error) {
     const rollbackFailures: string[] = [];
-    for (const snapshot of [recoverySnapshot, journalSnapshot, modelsCacheSnapshot, catalogSnapshot, configSnapshot]) {
+    for (const snapshot of [recoverySnapshot, journalSnapshot, modelsCacheSnapshot, catalogSnapshot, hooksSnapshot, configSnapshot]) {
       if (!snapshot) continue;
       try {
         restoreFileSnapshot(snapshot);

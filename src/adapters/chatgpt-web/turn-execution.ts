@@ -153,7 +153,7 @@ interface ChatGptTurnRuntimeBase {
   retireCapability?: () => void | Promise<void>;
   submission?: { phase: "prepared" | "send_activated" | "accepted" };
   /** Present only when the visible ChatGPT tab is driven manually through the Codex Zero Risk MCP contract. */
-  manualControl?: { surfaceNonce: string };
+  manualControl?: { surfaceNonce: string; failure?: () => Error | undefined };
   cancel: (reason?: Error) => void;
 }
 

@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import * as configModule from "../src/config";
 import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +8,7 @@ import {
   activateCodexIntegration,
   deactivateCodexIntegration,
   getCodexHome,
+  getCodexHooksPath,
   getCodexJournalPath,
   getCodexJournalRecoveryPath,
   getCodexModelsCachePath,
@@ -64,6 +66,110 @@ afterEach(() => {
 });
 
 describe("reversible native Codex route integration", () => {
+  test("JSON hooks migrate from TOML and replace the old runtime command on upgrade", () => {
+    const { codexHome } = fixture();
+    writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5.6-sol"\n');
+    const config = nativeConfig("browser-only");
+    installCodexIntegration(config);
+    writeFileSync(getCodexHooksPath(), '{"hooks":{}}\n');
+    expect(installCodexIntegration(config).interruptHook.format).toBe("json");
+    config.runtimeCommand = [join(codexHome, "new-runtime.exe")];
+    installCodexIntegration(config);
+    const groups = JSON.parse(readFileSync(getCodexHooksPath(), "utf8")).hooks.Interrupt;
+    expect(groups).toHaveLength(1);
+    expect(groups[0].hooks[0].command).toContain("new-runtime.exe");
+    deactivateCodexIntegration();
+    preflightCodexIntegration(config);
+    expect(installCodexIntegration(config).active).toBe(true);
+  });
+
+  test("a JSON hook write failure rolls back config, hooks and integration journals", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const hooksPath = getCodexHooksPath();
+    writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
+    writeFileSync(hooksPath, '{"hooks":{}}\n');
+    const config = nativeConfig("browser-only");
+    installCodexIntegration(config);
+    const paths = [configPath, hooksPath, getCodexJournalPath(), getCodexJournalRecoveryPath()];
+    const before = paths.map(path => readFileSync(path, "utf8"));
+    config.runtimeCommand = [join(codexHome, "new-runtime.exe")];
+    const original = configModule.atomicWriteFile;
+    let injected = false;
+    const fault = spyOn(configModule, "atomicWriteFile").mockImplementation((path, data, options) => {
+      if (path === hooksPath && !injected) { injected = true; throw new Error("synthetic hooks write failure"); }
+      return original(path, data, options);
+    });
+    try {
+      expect(() => installCodexIntegration(config)).toThrow("synthetic hooks write failure");
+      expect(injected).toBe(true);
+      expect(paths.map(path => readFileSync(path, "utf8"))).toEqual(before);
+    } finally { fault.mockRestore(); }
+  });
+
+  test("JSON lifecycle is idempotent, side-effect free in preflight, and preserves later hooks", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const hooksPath = getCodexHooksPath();
+    const originalConfig = 'model = "gpt-5.6-sol"\n';
+    writeFileSync(configPath, originalConfig);
+    writeFileSync(hooksPath, `${JSON.stringify({ hooks: {} }, null, 2)}\n`);
+    const config = nativeConfig("browser-only");
+    const before = { config: readFileSync(configPath, "utf8"), hooks: readFileSync(hooksPath, "utf8") };
+    preflightCodexIntegration(config);
+    expect(readFileSync(configPath, "utf8")).toBe(before.config);
+    expect(readFileSync(hooksPath, "utf8")).toBe(before.hooks);
+    installCodexIntegration(config);
+    const once = readFileSync(hooksPath, "utf8");
+    installCodexIntegration(config);
+    expect(readFileSync(hooksPath, "utf8")).toBe(once);
+    deactivateCodexIntegration();
+    expect(deactivateCodexIntegration()).toEqual({ changed: false, active: false });
+    activateCodexIntegration();
+    expect(activateCodexIntegration()).toEqual({ changed: false, active: true });
+    const hooks = JSON.parse(readFileSync(hooksPath, "utf8"));
+    hooks.hooks.Interrupt.push({ hooks: [{ type: "command", command: "later-hook", timeout: 9 }] });
+    writeFileSync(hooksPath, `${JSON.stringify(hooks, null, 2)}\n`);
+    uninstallCodexIntegration();
+    const remaining = JSON.parse(readFileSync(hooksPath, "utf8"));
+    expect(remaining.hooks.Interrupt).toEqual([{ hooks: [{ type: "command", command: "later-hook", timeout: 9 }] }]);
+    expect(readFileSync(configPath, "utf8")).toBe(originalConfig);
+  });
+
+  test("JSON trust drift is rejected before lifecycle writes", () => {
+    const { codexHome } = fixture();
+    writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5.6-sol"\n');
+    writeFileSync(getCodexHooksPath(), `${JSON.stringify({ hooks: {} }, null, 2)}\n`);
+    installCodexIntegration(nativeConfig("browser-only"));
+    const configPath = join(codexHome, "config.toml");
+    const beforeConfig = readFileSync(configPath, "utf8");
+    writeFileSync(configPath, `${beforeConfig.replace(/trusted_hash = "[^"]+"/, 'trusted_hash = "sha256:' + "0".repeat(64) + '"')}\n`);
+    expect(() => preflightCodexIntegration(nativeConfig("browser-only"))).toThrow();
+    expect(readFileSync(getCodexHooksPath(), "utf8")).toContain("Interrupt");
+  });
+
+  test("uses existing hooks.json, preserves Orca hooks, and restores it across disconnect/reconnect/uninstall", () => {
+    const { codexHome } = fixture();
+    const originalConfig = 'model = "gpt-5.6-sol"\n';
+    const originalHooks = JSON.stringify({ hooks: {
+      SessionStart: [{ hooks: [{ type: "command", command: "orca-hook", timeout: 10 }] }],
+    } }, null, 2) + "\n";
+    writeFileSync(join(codexHome, "config.toml"), originalConfig);
+    writeFileSync(getCodexHooksPath(), originalHooks);
+    const config = nativeConfig("browser-only");
+    const journal = installCodexIntegration(config);
+    expect(journal.interruptHook.format).toBe("json");
+    expect(JSON.parse(readFileSync(getCodexHooksPath(), "utf8")).hooks.Interrupt).toHaveLength(1);
+    expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toContain("trusted_hash");
+    deactivateCodexIntegration();
+    expect(JSON.parse(readFileSync(getCodexHooksPath(), "utf8"))).toEqual(JSON.parse(originalHooks));
+    expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(originalConfig);
+    activateCodexIntegration();
+    expect(JSON.parse(readFileSync(getCodexHooksPath(), "utf8")).hooks.Interrupt).toHaveLength(1);
+    uninstallCodexIntegration();
+    expect(readFileSync(getCodexHooksPath(), "utf8")).toBe(originalHooks);
+    expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(originalConfig);
+  });
   test.skipIf(!fileSymlinksAvailable)("route install, update, switching and removal preserve a symlinked shared Codex config", () => {
     const { root, codexHome } = fixture();
     const shared = join(root, "shared");

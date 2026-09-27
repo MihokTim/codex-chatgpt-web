@@ -30,6 +30,7 @@ test("a blocked sign-in replaces an opaque navigation abort with a non-retryable
   let needsSignIn: unknown = true;
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
     const activity = await req.json() as { phase: string };
+    if (new URL(req.url).pathname.startsWith("/v1/traffic/")) return Response.json({ granted: true });
     return Response.json(activity.phase === "start"
       ? { surfaceId: "a".repeat(32), reused: false, connectorBound: false }
       : { cancelledByUser: false, authenticationRequired: needsSignIn });
