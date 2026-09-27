@@ -262,6 +262,7 @@ export class TurnBroker implements TurnBrokerOwner {
   private server?: Server;
   private readonly socketClosures = new Set<Promise<void>>();
   private startPromise?: Promise<void>;
+  private socketIdentity?: { dev: number; ino: number };
 
   private constructor(readonly socketPath: string) {}
 
@@ -741,7 +742,7 @@ export class TurnBroker implements TurnBrokerOwner {
     const server = this.server;
     this.server = undefined;
     this.startPromise = undefined;
-    brokers.delete(this.socketPath);
+    if (brokers.get(this.socketPath) === this) brokers.delete(this.socketPath);
     // RPC results can now reach callers before their pipes physically close. In Bun on Windows,
     // closing the listening server while a response write is in flight can crash the process.
     // Keep shutdown behind the accepted sockets' close events, not behind RPC settlement.
@@ -752,9 +753,14 @@ export class TurnBroker implements TurnBrokerOwner {
         else rejectClose(error);
       }));
     }
-    if (!isWindowsPipeEndpoint(this.socketPath)
-      && existsSync(this.socketPath)
-      && lstatSync(this.socketPath).isSocket()) unlinkSync(this.socketPath);
+    const identity = this.socketIdentity;
+    this.socketIdentity = undefined;
+    if (identity && existsSync(this.socketPath)) {
+      const current = lstatSync(this.socketPath);
+      if (current.isSocket() && current.dev === identity.dev && current.ino === identity.ino) {
+        unlinkSync(this.socketPath);
+      }
+    }
   }
 
   private start(): Promise<void> {
@@ -786,7 +792,11 @@ export class TurnBroker implements TurnBrokerOwner {
         });
         server.listen(this.socketPath, () => {
           server.off("error", rejectStart);
-          if (!windowsPipe) chmodSync(this.socketPath, 0o600);
+          if (!windowsPipe) {
+            const { dev, ino } = lstatSync(this.socketPath);
+            this.socketIdentity = { dev, ino };
+            chmodSync(this.socketPath, 0o600);
+          }
           resolveStart();
         });
       };
@@ -1317,8 +1327,9 @@ export async function callTurnBroker<T>(
         return;
       }
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
-        || (parsed.error !== undefined && typeof parsed.error !== "string")) {
-        finishError(new Error("ChatGPT web turn broker returned an invalid response"));
+        || ("result" in parsed) === ("error" in parsed)
+        || ("error" in parsed && (typeof parsed.error !== "string" || !parsed.error))) {
+        finishError(new Error("ChatGPT web turn broker returned an invalid response frame"));
         return;
       }
       if (parsed.id !== id) {
