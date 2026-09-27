@@ -280,6 +280,7 @@ export class ChatGptTurnSession {
   private readonly deliveredResultProofs = new Map<string, string>();
   private readonly issuedCallProofs = new Map<string, string>();
   private cancellationRequested = false;
+  private observers = 0;
   private outstandingReasoning: string[] = [];
   private finalReasoning: string[] = [];
   private outstandingPrelude: AdapterEvent[] = [];
@@ -421,6 +422,15 @@ export class ChatGptTurnSession {
   }
 
   wasCancelled(): boolean { return this.cancellationRequested; }
+
+  attachObserver(): () => number {
+    this.observers++;
+    let attached = true;
+    return () => {
+      if (attached) { attached = false; this.observers--; }
+      return this.observers;
+    };
+  }
 
   eventsForOutstandingReplay(): AdapterEvent[] {
     return [...this.outstandingPrelude];

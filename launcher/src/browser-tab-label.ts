@@ -3,7 +3,8 @@ import type { Copy } from "./i18n";
 
 export function browserTaskLabel(tab: BrowserTabState, copy: Copy): string | undefined {
   const identity = tab.taskIdentity;
-  const name = identity?.agentName || (identity?.threadId
+  // Native child sessions may also report /root; it is a path, not a unique agent name.
+  const name = (identity?.agentName !== "/root" ? identity?.agentName : undefined) || (identity?.threadId
     ? identity.parentThreadId ? `${copy.browserAgent} ${identity.threadId.slice(-6)}` : copy.browserParentTask
     : undefined);
   const stage = tab.workStage && ({

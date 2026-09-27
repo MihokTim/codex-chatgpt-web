@@ -1049,6 +1049,99 @@ describe("ChatGPT outer-native harness v4", () => {
     sessions.clear();
   });
 
+  test("tool-capable preparation reports its wait before registering a tool token and cancels before late startup", async () => {
+    const socketPath = brokerTestEndpoint(`cgw-preparation-wait-${process.pid}-${Date.now()}`);
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web", baseUrl: `browser://preparation-wait-${Date.now()}`,
+      chatgptWeb: { brokerSocketPath: socketPath, ...toolCapabilities },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const original = worker.run;
+    const disconnect = new AbortController();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    let sent = false;
+    let browserSignal: AbortSignal | undefined;
+    worker.run = async turn => {
+      browserSignal = turn.abortSignal;
+      await turn.onPreparationProgress?.("request_wait", Date.now() + 60_000);
+      entered();
+      await gate;
+      turn.abortSignal?.throwIfAborted();
+      await turn.prepare();
+      sent = true;
+      turn.onSendActivated?.();
+      turn.onSubmitted?.();
+      turn.onTextDelta("late");
+      return "late";
+    };
+    const events: AdapterEvent[] = [];
+    const pending = createChatGptWebAdapter(provider).runTurn!(rawWireRequest(environmentXml),
+      { headers: new Headers(), abortSignal: disconnect.signal }, event => events.push(event));
+    const outcome = pending.catch(error => error);
+    try {
+      await started;
+      await Bun.sleep(20);
+      expect(events.some(event => event.type === "text_delta" && event.phase === "commentary"
+        && event.text.includes("通信制限"))).toBeTrue();
+      disconnect.abort();
+      expect(await outcome).toMatchObject({ name: "AbortError" });
+      expect(browserSignal?.aborted).toBeTrue();
+      release();
+      await Bun.sleep(20);
+      expect(sent).toBeFalse();
+    } finally {
+      disconnect.abort();
+      release();
+      await outcome;
+      worker.run = original;
+      await TurnBroker.forSocket(socketPath).close();
+    }
+  });
+
+  test("a reconnect already observing preparation keeps the shared browser alive", async () => {
+    const provider: CodexProviderConfig = {
+      adapter: "chatgpt-web", baseUrl: `browser://shared-preparation-${Date.now()}`,
+      chatgptWeb: { ...browserOnlyCapabilities },
+    };
+    const worker = ChatGptBrowserWorker.forProvider(provider);
+    const original = worker.run;
+    const disconnect = new AbortController();
+    let finish!: () => void;
+    let browserSignal: AbortSignal | undefined;
+    let starts = 0;
+    worker.run = turn => {
+      starts++;
+      browserSignal = turn.abortSignal;
+      return new Promise(resolve => { finish = () => {
+        turn.abortSignal?.throwIfAborted();
+        turn.onSendActivated?.();
+        turn.onSubmitted?.();
+        turn.onTextDelta("shared");
+        resolve("shared");
+      }; });
+    };
+    const request = rawWireRequest(environmentXml);
+    const adapter = createChatGptWebAdapter(provider);
+    const first = adapter.runTurn!(request, { headers: new Headers(), abortSignal: disconnect.signal }, () => {})
+      .catch(error => error);
+    await Bun.sleep(10);
+    const events: AdapterEvent[] = [];
+    const second = adapter.runTurn!(request, { headers: new Headers() }, event => events.push(event));
+    try {
+      await Bun.sleep(10);
+      disconnect.abort();
+      expect(await first).toMatchObject({ name: "AbortError" });
+      expect(browserSignal?.aborted).toBeFalse();
+      finish();
+      await second;
+      expect(starts).toBe(1);
+      expect(events.at(-1)).toMatchObject({ type: "done", endTurn: true });
+    } finally { worker.run = original; }
+  });
+
   test("a client disconnect detaches only its stream and the same round reconnects without another browser submission", async () => {
     const socketPath = brokerTestEndpoint(`cgw-h4-abort-retry-${process.pid}-${Date.now()}`);
     const provider: CodexProviderConfig = {
@@ -1064,6 +1157,8 @@ describe("ChatGPT outer-native harness v4", () => {
     const started = new Promise<void>(resolve => { browserStarted = resolve; });
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = turn => {
       browserStarts += 1;
+      turn.onSendActivated?.();
+      turn.onSubmitted?.();
       turn.onTextDelta("Recovered ");
       browserStarted();
       return new Promise<string>(resolve => {
@@ -1121,6 +1216,8 @@ describe("ChatGPT outer-native harness v4", () => {
     let finishBrowser!: () => void;
     (worker as unknown as { run: (turn: BrowserTurn) => Promise<string> }).run = turn => {
       browserStarts += 1;
+      turn.onSendActivated?.();
+      turn.onSubmitted?.();
       turn.onTextDelta("batch-one ");
       turn.onTextDelta("batch-two ");
       return new Promise<string>(resolve => {

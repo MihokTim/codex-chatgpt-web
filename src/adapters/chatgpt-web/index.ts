@@ -1272,6 +1272,7 @@ export function createChatGptWebAdapter(
           chatGptInstructionLineage(parsed),
         );
         const roundKey = chatGptTurnRoundKey(parsed);
+        const detachObserver = session.attachObserver();
         const emitRoundEvents = (events: readonly AdapterEvent[]): void => {
           // Journal the complete synchronous event batch before touching the HTTP observer. If the
           // observer disconnects midway through emission, an exact reconnect can replay the entire
@@ -1345,7 +1346,22 @@ export function createChatGptWebAdapter(
 
             let turnToken: string | undefined;
             if (session.runtime.mode === "tools") {
-              turnToken = await withAbort(session.runtime.token, incoming.abortSignal);
+              // A launcher cooldown precedes token registration. Stream its trace now rather
+              // than hiding the wait until a browser tab has finally been leased/prepared.
+              const tokenReady = session.runtime.token.then(token => ({ token }));
+              for (;;) {
+                const trace = session.runtime.trace.drain();
+                session.appendRoundReasoning(roundKey, trace.map(event => event.text));
+                emitRoundBatch(buffer => emitTraceEvents(trace, buffer));
+                const traceWait = new AbortController();
+                try {
+                  const next = await withAbort(Promise.race([
+                    tokenReady,
+                    session.runtime.trace.wait(traceWait.signal).then(() => null),
+                  ]), incoming.abortSignal);
+                  if (next) { turnToken = next.token; break; }
+                } finally { traceWait.abort(); }
+              }
               if (!environment) throw new Error("Tool-capable ChatGPT web runtime lost its trusted environment");
               await broker.updateEnvironment(turnToken, environment);
 
@@ -1518,15 +1534,16 @@ export function createChatGptWebAdapter(
           });
         } catch (error) {
           if (incoming.abortSignal?.aborted && error instanceof DOMException && error.name === "AbortError") {
-            if (session.runtime.manualControl) {
+            if (session.runtime.manualControl
+              || (detachObserver() === 0 && session.runtime.submission?.phase === "prepared")) {
               // Zero Risk is user-driven and has no DOM observer that can distinguish continued
               // work from a stopped native turn. A closed Responses stream is therefore terminal:
               // revoke the MCP capability and release the Launcher tab instead of leaving a task
               // that Codex already shows as stopped waiting forever.
               chatGptTurnSessions.retire(executionKey, session);
             }
-            // Automatic browser turns keep their exact execution and journal for reconnect. Their
-            // owned DOM observer can continue proving the same accepted ChatGPT submission.
+            // Only a potentially submitted automatic turn survives a disconnected observer.
+            // An unsubmitted cooldown must not later launch a task with no client to receive it.
             throw error;
           }
           const sharedPreparation = preparedBrowserRecovery(session);
@@ -1646,6 +1663,8 @@ export function createChatGptWebAdapter(
           session.failRound(roundKey, turnError);
           chatGptWebTurnRetryPolicy.clear(retryKey);
           throw turnError;
+        } finally {
+          detachObserver();
         }
       };
 

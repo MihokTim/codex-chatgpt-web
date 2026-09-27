@@ -291,6 +291,12 @@ test("task tabs use trusted metadata and distinguish generation, retained state 
   const retained: BrowserTabState = { ...tab, id: "retained", status: "ready", workStage: "retained",
     taskIdentity: { threadId: "child-id", parentThreadId: "parent-id", agentName: "TestAgent" } };
   expect(browserTaskLabel(retained, copy)).toBe("TestAgent · 完了保持");
+  expect(browserTaskLabel({ ...retained, taskIdentity: {
+    threadId: "child-123456", parentThreadId: "parent-id", agentName: "/root",
+  } }, copy)).toBe(`${copy.browserAgent} 123456 · 完了保持`);
+  expect(browserTaskLabel({ ...tab, taskIdentity: {
+    threadId: "parent-id", agentName: "/root",
+  } }, copy)).toBe("親タスク · 圧縮中");
   expect(browserTaskTooltip(retained, copy)).toContain("child-id");
   expect(browserTabsOverview([tab, retained], copy)).toContain("稼働中 1・完了保持 1");
   expect(browserTabsOverview([tab, retained], copy)).toContain("ネイティブ担当");
