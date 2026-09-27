@@ -9,12 +9,40 @@ import {
   installCodexInterruptHook,
   installCodexInterruptHookCommand,
   installCodexInterruptHookJson,
+  installCodexInterruptHookTrust,
+  restoreCodexInterruptHookTrust,
+  verifyCodexInterruptHookTrust,
   restoreCodexInterruptHook,
   restoreCodexInterruptHookJson,
   verifyCodexInterruptHook,
   verifyCodexInterruptHookJson,
   verifyCodexInterruptHookRestored,
 } from "../src/codex-interrupt-hook";
+
+test("JSON hook trust survives Orca literal quoting, reordered tables and comments", () => {
+  const { installed } = installCodexInterruptHookJson("{}", "hooks.json", "config.toml", "bridge interrupt");
+  for (const ending of ["\n", "\r\n", "\r"]) {
+    const text = [
+      "model = 'example'",
+      `[ hooks . state . '${installed.stateKey}' ] # Orca rewrote this`,
+      `trusted_hash='${installed.trustedHash}' # approved command`,
+      "[hooks.state.'foreign']",
+      "trusted_hash='sha256:foreign'",
+      "[unrelated]",
+      "enabled=true", "",
+    ].join(ending);
+    verifyCodexInterruptHookTrust(text, installed);
+    expect(installCodexInterruptHookTrust(text, installed)).toBe(text);
+    const restored = restoreCodexInterruptHookTrust(text, installed);
+    const parsed = Bun.TOML.parse(restored.replace(/\r\n?/g, "\n")) as any;
+    expect(parsed).toEqual({ model: "example", hooks: { state: { foreign: { trusted_hash: "sha256:foreign" } } }, unrelated: { enabled: true } });
+    expect(restored).toContain("[hooks.state.'foreign']");
+    for (const changed of [text.replace(installed.trustedHash, "sha256:changed"), text.replace("# approved command", `${ending}extra=true`)]) {
+      expect(() => restoreCodexInterruptHookTrust(changed, installed)).toThrow();
+      expect(() => installCodexInterruptHookTrust(changed, installed)).toThrow();
+    }
+  }
+});
 
 test("native hooks.json preserves Orca events and removes only the owned Interrupt group", () => {
   const original = JSON.stringify({ hooks: {

@@ -179,42 +179,35 @@ export function installCodexInterruptHookJson(
 export function installCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHook): string {
   const ending = lineEnding(text);
   const section = `[hooks.state.${JSON.stringify(installed.stateKey)}]${ending}trusted_hash = ${JSON.stringify(installed.trustedHash)}${ending}`;
-  if (text.includes(`[hooks.state.${JSON.stringify(installed.stateKey)}]`)) {
-    const header = `[hooks.state.${JSON.stringify(installed.stateKey)}]`;
-    const start = text.indexOf(header);
-    const next = text.indexOf(`${ending}[`, start + header.length);
-    const block = text.slice(start, next < 0 ? text.length : next);
-    if (block.includes(`trusted_hash = ${JSON.stringify(installed.trustedHash)}`)) return text;
-    throw new Error("Codex interrupt hook trust state already exists");
+  if (Object.hasOwn(parseHookDocument(text).hooks?.state ?? {}, installed.stateKey)) {
+    verifyCodexInterruptHookTrust(text, installed);
+    return text;
   }
   return `${text}${text.length > 0 && !text.endsWith(ending) ? ending : ""}${section}`;
 }
 
 export function restoreCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHook): string {
   verifyCodexInterruptHookTrust(text, installed);
-  const ending = lineEnding(text);
-  const header = `[hooks.state.${JSON.stringify(installed.stateKey)}]`;
-  const start = text.indexOf(header);
-  if (start < 0) throw new Error("Codex interrupt hook trust state is missing");
-  const next = text.indexOf(`${ending}[`, start + header.length);
-  const end = next < 0 ? text.length : next + ending.length;
-  const block = text.slice(start, next < 0 ? text.length : next);
-  if (!block.includes(`trusted_hash = ${JSON.stringify(installed.trustedHash)}`)) throw new Error("Codex interrupt hook trust state changed after setup");
-  return text.slice(0, start) + text.slice(end);
+  const ast = parseTOML(text.replace(/\r(?!\n)/g, "\n"), { tomlVersion: "1.0" });
+  const path = ["hooks", "state", installed.stateKey];
+  // Orca/native Codex may rewrite quoting, whitespace and table order. Locate the
+  // parsed table, never a textual header or hash that could occur in a comment.
+  const table = ast.body[0].body.find(node => node.type === "TOMLTable"
+    && JSON.stringify(node.resolvedKey) === JSON.stringify(path));
+  if (!table) throw new Error("Codex interrupt hook trust state uses an unsupported layout; refusing to overwrite it");
+  const end = table.range[1] + (/^[ \t]*(?:\r\n|\n|\r)/.exec(text.slice(table.range[1]))?.[0].length ?? 0);
+  const restored = text.slice(0, table.range[0]) + text.slice(end);
+  const expected = parseHookDocument(text);
+  delete expected.hooks!.state![installed.stateKey];
+  if (JSON.stringify(withoutEmptyHookContainers(parseHookDocument(restored))) !== JSON.stringify(withoutEmptyHookContainers(expected))) {
+    throw new Error("Codex interrupt hook trust removal would change unrelated settings");
+  }
+  return restored;
 }
 
 export function verifyCodexInterruptHookTrust(text: string, installed: InstalledCodexInterruptHook): void {
   const state = parseHookDocument(text).hooks?.state?.[installed.stateKey];
   if (JSON.stringify(canonicalJson(state)) !== JSON.stringify({ trusted_hash: installed.trustedHash })) {
-    throw new Error("Codex interrupt hook trust state changed after setup");
-  }
-  const ending = lineEnding(text);
-  const header = `[hooks.state.${JSON.stringify(installed.stateKey)}]`;
-  const start = text.indexOf(header);
-  if (start < 0) throw new Error("Codex interrupt hook trust state is missing");
-  const next = text.indexOf(`${ending}[`, start + header.length);
-  const block = text.slice(start, next < 0 ? text.length : next);
-  if (!block.includes(`trusted_hash = ${JSON.stringify(installed.trustedHash)}`)) {
     throw new Error("Codex interrupt hook trust state changed after setup");
   }
 }
