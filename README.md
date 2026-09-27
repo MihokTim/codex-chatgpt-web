@@ -4,7 +4,7 @@ This is an unofficial fork of [miuuyy/codex-chatgpt-web](https://github.com/miuu
 
 **Native and Web models use the same Codex application and configuration home.** Setup adds Web routes to the native catalog; native requests retain upstream's native passthrough. Production uses `CODEX_HOME`, or `~/.codex` when unset. The bridge keeps its own settings and browser profile in `~/.codex-chatgpt-web`. Only the upstream development profile uses a separate test home.
 
-The current fork identity is **6.1.1-fork.7**, with application version **6.1.1**. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now the 6.1.1 release commit `a13cd09950969f43e3b7e25c71fa43efaf5446c5`.
+The current fork identity is **6.1.1-fork.8**, with application version **6.1.1**. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now the 6.1.1 release commit `a13cd09950969f43e3b7e25c71fa43efaf5446c5`.
 
 The [6.1.1 integration and send-wait repair](docs/upstream-6.1.1-integration.md) adopts the updated Activity renderer, atomic model state, account detection, limits and compaction fixes. Concurrent limit reports now share one active backoff round; explicit server retry deadlines remain enforced. The fork retains its proven submitted-user boundary instead of binding an optimistic assistant-only group.
 
@@ -46,6 +46,8 @@ Fork.7 adds request-category diagnostics, shared send pacing and bounded rate-li
 Fork.6 integrates the upstream hook and login fixes, handles an already-expanded current model picker, and retains unattributed human XML through compaction. **Settings → Updates** always shows the installed build and the last fetched published release, with a separate upstream-source comparison, errors, timestamps and a **Check now** button. See [fork.6 changes and update behavior](docs/fork6-updates.md).
 
 The shared catalog priority also controls an unspecified parent model. The five-model policy applies only when it can retain the original native default; incomplete catalogs and future defaults outside this set keep their original priorities. Explicit model choices and user configuration are not rewritten.
+
+Fork.8 repairs bounded broker response settlement and Windows pipe shutdown. See [the broker repair](docs/broker-response-repair.md) and [the staged Orca integration procedure](docs/orca-integration.md).
 
 ## Build and install
 

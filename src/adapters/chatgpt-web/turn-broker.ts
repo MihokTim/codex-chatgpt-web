@@ -140,6 +140,7 @@ interface BrokerResponse {
 
 const brokers = new Map<string, TurnBroker>();
 const MAX_BROKER_LINE_CHARS = 67_108_864;
+const BROKER_RESPONSE_CLOSE_GRACE_MS = 1_000;
 const MAX_RETIRED_TURN_HANDLES = 64;
 
 export async function closeTurnBrokers(): Promise<void> {
@@ -259,6 +260,7 @@ export class TurnBroker implements TurnBrokerOwner {
   private readonly retiredTokens = new Map<string, string>();
   private acceptingExternalOwners = true;
   private server?: Server;
+  private readonly socketClosures = new Set<Promise<void>>();
   private startPromise?: Promise<void>;
 
   private constructor(readonly socketPath: string) {}
@@ -740,6 +742,10 @@ export class TurnBroker implements TurnBrokerOwner {
     this.server = undefined;
     this.startPromise = undefined;
     brokers.delete(this.socketPath);
+    // RPC results can now reach callers before their pipes physically close. In Bun on Windows,
+    // closing the listening server while a response write is in flight can crash the process.
+    // Keep shutdown behind the accepted sockets' close events, not behind RPC settlement.
+    while (this.socketClosures.size > 0) await Promise.all([...this.socketClosures]);
     if (server?.listening) {
       await new Promise<void>((resolveClose, rejectClose) => server.close(error => {
         if (!error || (error as NodeJS.ErrnoException).code === "ERR_SERVER_NOT_RUNNING") resolveClose();
@@ -848,9 +854,14 @@ export class TurnBroker implements TurnBrokerOwner {
     let buffered = "";
     let handled = false;
     const disconnected = new AbortController();
+    const closed = new Promise<void>(resolveClose => socket.once("close", () => {
+      disconnected.abort();
+      this.socketClosures.delete(closed);
+      resolveClose();
+    }));
+    this.socketClosures.add(closed);
     socket.setEncoding("utf8");
     socket.on("error", () => {});
-    socket.once("close", () => disconnected.abort());
     socket.on("data", chunk => {
       if (handled) return;
       buffered += chunk;
@@ -1231,7 +1242,6 @@ export async function callTurnBroker<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   const id = opaqueId("request");
-  const settleOnResponseFrame = timeoutMs === null;
   // The wire protocol requires a client-owned activity identity. Most callers never need to see
   // it; the MCP server supplies its own so it can retire an ambiguously delivered claim, while
   // lower-level diagnostics receive an equally client-generated identity here.
@@ -1243,6 +1253,7 @@ export async function callTurnBroker<T>(
     let buffered = "";
     let settled = false;
     let response: BrokerResponse | undefined;
+    let responseCloseTimer: ReturnType<typeof setTimeout> | undefined;
     const onAbort = () => finishError(new DOMException("ChatGPT web turn broker call aborted", "AbortError"));
     const cleanup = () => signal?.removeEventListener("abort", onAbort);
     const finishError = (error: Error) => {
@@ -1262,8 +1273,15 @@ export async function callTurnBroker<T>(
       settled = true;
       clearTimeout(timer);
       cleanup();
-      if (response.error) rejectCall(new Error(response.error));
-      else resolveCall(response.result as T);
+      const accepted = response;
+      const complete = () => {
+        if (accepted.error) rejectCall(new Error(accepted.error));
+        else resolveCall(accepted.result as T);
+      };
+      // Preserve the established long-poll delivery order. Bounded calls leave Bun's pipe
+      // callback before callers can synchronously retire its owner.
+      if (timeoutMs === null) complete();
+      else setImmediate(complete);
     };
     const timer = timeoutMs === null
       ? undefined
@@ -1275,9 +1293,12 @@ export async function callTurnBroker<T>(
     }
     socket.setEncoding("utf8");
     socket.once("error", error => finishError(new Error(`ChatGPT web turn broker unavailable: ${error.message}`)));
-    // The server owns response termination. Waiting for the pipe/socket to close before resolving
-    // prevents callers from retiring the broker while Bun still has a named-pipe write in flight.
-    socket.once("close", finishResponse);
+    // EOF proves an incomplete frame can never finish; a named pipe may delay close after EOF.
+    socket.once("end", finishResponse);
+    socket.once("close", () => {
+      clearTimeout(responseCloseTimer);
+      finishResponse();
+    });
     socket.once("connect", () => socket.write(`${JSON.stringify({ id, ...wireRequest })}\n`));
     socket.on("data", chunk => {
       if (settled || response) return;
@@ -1295,17 +1316,28 @@ export async function callTurnBroker<T>(
         finishError(new Error(`ChatGPT web turn broker returned invalid JSON: ${errorOf(error).message}`));
         return;
       }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+        || (parsed.error !== undefined && typeof parsed.error !== "string")) {
+        finishError(new Error("ChatGPT web turn broker returned an invalid response"));
+        return;
+      }
       if (parsed.id !== id) {
         finishError(new Error("ChatGPT web turn broker response id mismatch"));
         return;
       }
       response = parsed;
-      if (settleOnResponseFrame) {
-        // A long-poll keeps its request half open while the server waits. Its complete response
-        // frame is therefore the terminal boundary; ordinary calls still wait for physical close.
+      if (timeoutMs === null) {
+        // Keep the existing long-poll termination behavior and ordering.
         finishResponse();
         socket.destroy();
+        return;
       }
+      // The complete, matching frame ends the RPC, even if Windows delays the pipe close.
+      // Let the server finish socket.end() before closing our side: ending both sides at once
+      // can race Bun's named-pipe write. Bound cleanup independently if the peer never closes.
+      responseCloseTimer = setTimeout(() => socket.destroy(), BROKER_RESPONSE_CLOSE_GRACE_MS);
+      responseCloseTimer.unref();
+      finishResponse();
     });
   });
 }
