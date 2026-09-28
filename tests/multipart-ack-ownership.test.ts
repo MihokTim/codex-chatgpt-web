@@ -42,6 +42,49 @@ test("multipart ACK survives removal of the proven user container and permits th
   } finally { await page.close(); }
 }, 30_000);
 
+test.each([true, false])("an ACK whose user was never mounted requires physical submission evidence: %s", async accepted => {
+  const page = await context.newPage();
+  try {
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    await page.setContent('<main></main>');
+    const baseline = await worker.captureSubmissionBaseline(page, stage.text);
+    if (accepted) {
+      // This is the observed failure: generation starts, but no user turn is ever mounted.
+      await page.locator("main").evaluate(node => {
+        node.innerHTML = '<button data-testid="stop-button">Stop</button>';
+      });
+      expect(await worker.waitForSubmissionAcceptedWithRecovery(page, baseline)).toBe("generation_running");
+    }
+    await page.locator("main").evaluate((node, html) => { node.innerHTML = html; }, assistant("ack", stage.acknowledgement));
+    const pending = worker.waitForNewAssistantTurn(page, baseline, undefined, undefined, undefined, 150,
+      undefined, undefined, stage.acknowledgement);
+    if (!accepted) { await expect(pending).rejects.toThrow(); return; }
+    const binding = await pending;
+    expect(binding.identity).toBe("ack");
+    expect(binding.userIdentity).toBeUndefined();
+    await worker.waitForMultipartAcknowledgement(page, binding, baseline, stage, Date.now() + 1_000,
+      undefined, undefined, new ChatGptCompletionTracker(0));
+  } finally { await page.close(); }
+}, 30_000);
+
+test.each(["ordinary", "wrong-transaction", "new-user", "duplicate"])("unmounted users do not bypass %s ownership checks", async scenario => {
+  const page = await context.newPage();
+  try {
+    const worker = Object.create(ChatGptBrowserWorker.prototype) as any;
+    await page.setContent('<main></main>');
+    const baseline = await worker.captureSubmissionBaseline(page, stage.text);
+    baseline.submissionAccepted = true;
+    const text = scenario === "wrong-transaction" ? stage.acknowledgement.replace("ctx_", "ctx_old_") : stage.acknowledgement;
+    const markup = (scenario === "new-user" ? user : "") + assistant("ack", text)
+      + (scenario === "duplicate" ? assistant("duplicate", text) : "");
+    // The foreign user is not at the submitted boundary.
+    if (scenario === "new-user") baseline.initialTurnIdentities = ["missing-previous-turn"];
+    await page.locator("main").evaluate((node, html) => { node.innerHTML = html; }, markup);
+    await expect(worker.waitForNewAssistantTurn(page, baseline, undefined, undefined, undefined, 150,
+      undefined, undefined, scenario === "ordinary" ? undefined : stage.acknowledgement)).rejects.toThrow();
+  } finally { await page.close(); }
+}, 30_000);
+
 test.each(["ordinary", "wrong-transaction", "wrong-part", "wrong-hash", "extra-text", "quoted-user", "new-user"])("detached user never grants ownership to %s", async scenario => {
   const page = await context.newPage();
   try {

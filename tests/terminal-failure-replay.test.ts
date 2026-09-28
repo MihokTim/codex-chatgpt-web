@@ -45,7 +45,7 @@ const request = (value: unknown) => new Request("http://127.0.0.1/v1/responses",
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(value),
 });
 
-test.each(["submitted", "selection", "identity"])("production adapter stops retries after a %s failure without resubmitting", async kind => {
+test.each(["submitted", "selection", "identity", "observation", "ack", "response"])("production adapter stops retries after a %s failure without resubmitting", async kind => {
   const config = defaultConfig("browser-only");
   config.proAvailable = true;
   const worker = ChatGptBrowserWorker.forProvider(providerConfig(config));
@@ -56,6 +56,9 @@ test.each(["submitted", "selection", "identity"])("production adapter stops retr
     if (kind === "selection") throw new ChatGptWebAdapterError("Model controls are unavailable", { status: 502, errorType: "server_error", code: "upstream_server_error", retryable: false });
     await turn.onSendActivated?.();
     turn.onSubmitted?.();
+    if (kind === "observation") throw new Error("ChatGPT browser stage timed out: response_page_rebind_2");
+    if (kind === "ack") throw new Error("ChatGPT browser stage timed out: multipart_stage_1_acknowledgement");
+    if (kind === "response") throw new Error("ChatGPT accepted the message but did not expose its assistant turn in the DOM");
     if (kind === "identity") chatGptAssistantIdentityAfterUser({
       turnIdentities: ["submitted-user", "remounted-answer", "replacement-answer"],
       userIdentities: ["submitted-user"],
@@ -70,7 +73,10 @@ test.each(["submitted", "selection", "identity"])("production adapter stops retr
     const sse = await first.text();
     expect(sse).toContain("response.failed");
     expect(sse).not.toContain("response.completed");
-    const code = kind === "submitted" ? "chatgpt_submitted_turn_failed"
+    const code = kind === "observation" ? "chatgpt_observation_connection_failed"
+      : kind === "ack" ? "chatgpt_multipart_acknowledgement_timeout"
+      : kind === "response" ? "chatgpt_submitted_response_unavailable"
+      : kind === "submitted" ? "chatgpt_submitted_turn_failed"
       : kind === "selection" ? "upstream_server_error" : "chatgpt_turn_identity_conflict";
     expect(sse).toContain(code);
     const replay = await responseRequest(request(input), config, () => { throw new Error("Replay must stop before adapter construction"); });

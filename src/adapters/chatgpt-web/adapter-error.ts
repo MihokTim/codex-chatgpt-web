@@ -27,6 +27,31 @@ export class ChatGptWebAdapterError extends Error {
   }
 }
 
+/** Fixed classifications survive helper IPC without exposing raw DOM, prompts, URLs or tool text. */
+export function chatGptSubmittedObservationError(cause: Error): ChatGptWebAdapterError | undefined {
+  let code: string;
+  let message: string;
+  if (/^ChatGPT browser stage timed out: response_page_rebind_\d+$/.test(cause.message)
+    || /^Launcher browser connection timed out(?: \(phase=(?:metadata|attach|owned-page|focus)\))?$/.test(cause.message)
+    || /^ChatGPT (?:browser|submission) DOM remained unresponsive after \d+ same-page rebinds$/.test(cause.message)
+    || /^ChatGPT accepted the message, but its DOM remained unresponsive after \d+ same-page rebinds$/.test(cause.message)) {
+    code = "chatgpt_observation_connection_failed";
+    message = "The connection used to observe the submitted ChatGPT response could not be restored. "
+      + "This does not establish whether ChatGPT itself stopped. Check the existing tab and completed tool work before continuing.";
+  } else if (/^ChatGPT browser stage timed out: multipart_stage_\d+_acknowledgement$/.test(cause.message)) {
+    code = "chatgpt_multipart_acknowledgement_timeout";
+    message = "ChatGPT did not provide a verifiable acknowledgement for a context part before the deadline. "
+      + "The next part was not sent. Check the existing tab before continuing.";
+  } else if (cause.message === "ChatGPT accepted the message but did not expose its assistant turn in the DOM") {
+    code = "chatgpt_submitted_response_unavailable";
+    message = "ChatGPT accepted the message, but the response could not be identified in the existing tab. "
+      + "Check that tab and completed tool work before continuing.";
+  } else return undefined;
+  return new ChatGptWebAdapterError(message, {
+    status: 502, errorType: "server_error", code, retryable: false, cause,
+  });
+}
+
 /** Pass only fixed diagnostic labels and selector state, never prompt text or raw browser errors. */
 export function chatGptModelSelectionError(
   diagnostic: string,

@@ -158,7 +158,7 @@ async function control(config: AppConfig, action: "drain" | "resume" | "cancel-t
 export async function interruptActiveTurn(
   config: AppConfig,
   identity: { threadId: string; turnId: string },
-): Promise<{ cancelledHttpTurns: number; cancelledBrowserTurns: number }> {
+): Promise<{ cancelledHttpTurns: number; cancelledBrowserTurns: number; cancelledCompactionRuns: number }> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2_000);
   try {
@@ -175,14 +175,18 @@ export async function interruptActiveTurn(
     const result = await response.json() as Record<string, unknown>;
     const cancelledHttpTurns = result.cancelled_http_turns;
     const cancelledBrowserTurns = result.cancelled_browser_turns;
+    // Older daemons did not report detached compaction ownership in this receipt.
+    const cancelledCompactionRuns = result.cancelled_compaction_runs === undefined ? 0 : result.cancelled_compaction_runs;
     if (result.status !== "ok"
       || !Number.isInteger(cancelledHttpTurns) || (cancelledHttpTurns as number) < 0
-      || !Number.isInteger(cancelledBrowserTurns) || (cancelledBrowserTurns as number) < 0) {
+      || !Number.isInteger(cancelledBrowserTurns) || (cancelledBrowserTurns as number) < 0
+      || !Number.isInteger(cancelledCompactionRuns) || (cancelledCompactionRuns as number) < 0) {
       throw new Error("daemon returned an invalid interrupt acknowledgement");
     }
     return {
       cancelledHttpTurns: cancelledHttpTurns as number,
       cancelledBrowserTurns: cancelledBrowserTurns as number,
+      cancelledCompactionRuns: cancelledCompactionRuns as number,
     };
   } finally {
     clearTimeout(timeout);

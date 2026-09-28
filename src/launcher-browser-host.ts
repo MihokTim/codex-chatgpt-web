@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
 import { expandUserPath } from "./config";
 import { processRunning } from "./process";
-import { LauncherOwnedCdpTransport } from "./launcher-owned-cdp";
+import { LauncherOwnedCdpTransport, type LauncherOwnedCdpDiagnostics } from "./launcher-owned-cdp";
 
 export const LAUNCHER_BROWSER_HOST_KIND = "codex-web-gpt-launcher";
 export const LAUNCHER_BROWSER_IDLE_URL = "data:text/html;charset=utf-8,%3C!doctype%20html%3E%3Chtml%3E%3Chead%3E%3Cmeta%20charset%3D%22utf-8%22%3E%3Ctitle%3ECodex%20Web%20GPT%3C%2Ftitle%3E%3C%2Fhead%3E%3Cbody%3E%3C%2Fbody%3E%3C%2Fhtml%3E#codex-web-gpt-browser-host";
@@ -63,6 +63,13 @@ export interface LauncherBrowserConnection {
   browser: Browser;
   context: BrowserContext;
   page: Page;
+}
+
+const launcherConnectionTransports = new WeakMap<Browser, LauncherOwnedCdpTransport>();
+
+/** Safe protocol metadata for a stalled observation; never includes page data or credentials. */
+export function readLauncherBrowserConnectionDiagnostics(browser: Browser): LauncherOwnedCdpDiagnostics | undefined {
+  return launcherConnectionTransports.get(browser)?.diagnostics();
 }
 
 function assertLoopbackEndpoint(value: unknown, label: string): string {
@@ -277,14 +284,19 @@ export async function connectLauncherBrowserHost(
   const signal = abortSignal ? AbortSignal.any([deadline.signal, abortSignal]) : deadline.signal;
   let transport: LauncherOwnedCdpTransport | undefined;
   let browser: Browser | undefined;
+  let phase: "metadata" | "attach" | "owned-page" | "focus" = "metadata";
+  const startedAt = Date.now();
   const closeOnAbort = () => transport?.close();
   signal.addEventListener("abort", closeOnAbort, { once: true });
   try {
     const endpoint = await assertCdpReady(descriptor, Math.min(timeoutMs, 5_000), signal);
     signal.throwIfAborted();
     transport = new LauncherOwnedCdpTransport(endpoint, targetId);
+    phase = "attach";
     browser = await chromium.connectOverCDP(transport, { timeout: timeoutMs, noDefaults: true });
+    launcherConnectionTransports.set(browser, transport);
     signal.throwIfAborted();
+    phase = "owned-page";
     const { context, page } = await selectLauncherPage(
       browser,
       descriptor,
@@ -296,16 +308,24 @@ export async function connectLauncherBrowserHost(
     // focus emulation. Restore it only for this descriptor-owned automatic surface:
     // offscreen Electron views otherwise stop rAF and freeze model-menu transitions.
     // Keep the session attached until browser.close() releases this connection.
+    phase = "focus";
     const focusSession = await context.newCDPSession(page);
     await focusSession.send("Emulation.setFocusEmulationEnabled", { enabled: true });
     signal.throwIfAborted();
     return { descriptor, browser, context, page };
   } catch (error) {
+    // Log before cleanup: an unresponsive peer may also delay its close handshake.
+    // Keep this fixed-schema record free of endpoint, descriptor, target and page content.
+    console.warn(`[chatgpt-web] launcher_connection_failed ${JSON.stringify({
+      phase, elapsedMs: Date.now() - startedAt,
+      cancelled: abortSignal?.aborted === true, timedOut: deadline.signal.aborted,
+      transport: transport?.diagnostics(),
+    })}`);
     transport?.close();
     await transport?.disconnected;
     await browser?.close().catch(() => {});
     if (abortSignal?.aborted) throw new DOMException("Launcher browser connection aborted", "AbortError");
-    if (deadline.signal.aborted) throw new Error("Launcher browser connection timed out");
+    if (deadline.signal.aborted) throw new Error(`Launcher browser connection timed out (phase=${phase})`);
     if (transport && !browser) {
       throw new Error(`Could not connect Playwright to the launcher browser: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }

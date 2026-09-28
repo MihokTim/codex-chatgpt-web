@@ -518,6 +518,9 @@ export async function responseRequest(
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
   }
+  // Binding can discover an Interrupt that arrived while the body was being read. Never
+  // construct an adapter (or start detached compaction) for an already cancelled observer.
+  if (req.signal.aborted) return new Response(null, { status: 499, statusText: "Client Closed Request" });
   if (typeof requestedModel === "string" && !isChatGptWebModelSlug(requestedModel)) {
     try {
       return await forwardNativeCodexRequest(nativeRequest, "responses", undefined, raw);
@@ -656,8 +659,8 @@ export async function responseRequest(
   const adapter = adapterFactory(provider);
   const queue = new AsyncEventQueue<AdapterEvent>();
   const abort = new AbortController();
-  if (req.signal.aborted) abort.abort();
-  else req.signal.addEventListener("abort", () => abort.abort(), { once: true });
+  if (req.signal.aborted) abort.abort(req.signal.reason);
+  else req.signal.addEventListener("abort", () => abort.abort(req.signal.reason), { once: true });
   const run = async () => {
     try {
       await adapter.runTurn!(parsed, { headers: req.headers, abortSignal: abort.signal }, event => {
@@ -761,6 +764,7 @@ export async function compactRequest(
   } catch (error) {
     return formatErrorResponse(400, "invalid_request_error", error instanceof Error ? error.message : String(error));
   }
+  if (req.signal.aborted) return new Response(null, { status: 499, statusText: "Client Closed Request" });
   if (typeof raw.model !== "string" || !raw.model) {
     return formatErrorResponse(400, "invalid_request_error", "Compaction request requires a model");
   }
@@ -972,12 +976,14 @@ export function startServer(
           );
         }
         const reason = new DOMException("Codex turn interrupted", "AbortError");
-        const browserCancellation = chatGptTurnSessions.cancelNativeTurn(
+        // Revoke detached compaction authority first, before source cancellation can notify
+        // its fallback/recovery callbacks. HTTP disconnection alone does not revoke it.
+        const compactionCancellation = cancelStructuredCompactionNativeTurn(
           identity.threadId,
           identity.turnId,
           reason,
         );
-        const compactionCancellation = cancelStructuredCompactionNativeTurn(
+        const browserCancellation = chatGptTurnSessions.cancelNativeTurn(
           identity.threadId,
           identity.turnId,
           reason,

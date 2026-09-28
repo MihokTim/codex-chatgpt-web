@@ -81,6 +81,7 @@ import {
   LAUNCHER_TURN_HEARTBEAT_INTERVAL_MS,
   LAUNCHER_TURN_HEARTBEAT_TIMEOUT_MS,
   notifyLauncherTurn,
+  readLauncherBrowserConnectionDiagnostics,
 } from "../../launcher-browser-host";
 import {
   CHATGPT_WEB_BIGGER_CONTEXT_MULTIPLIER,
@@ -1315,6 +1316,8 @@ interface ChatGptSubmissionBaseline {
   domCache: ChatGptSubmissionDomCache;
   submittedText?: string;
   acceptedUserIdentity?: string;
+  /** Set only after this physical Send was acknowledged, including generation evidence. */
+  submissionAccepted?: boolean;
 }
 
 interface ChatGptSubmissionObservationRecovery {
@@ -1334,8 +1337,8 @@ interface ChatGptAssistantTurnBinding {
   identity: string;
   locator: Locator;
   acceptedTurnIdentities: readonly string[];
-  /** Proven newly submitted user turn; its outer container survives message virtualization. */
-  userIdentity: string;
+  /** Proven submitted user turn, when observed; nonce-bound staging ACKs may outlive all user DOM. */
+  userIdentity?: string;
 }
 
 interface ChatGptSubmissionDomState {
@@ -3419,9 +3422,10 @@ export class ChatGptBrowserWorker {
         // their short ACK stays mounted. Only this protocol response has a fresh random
         // transaction ID plus part index and SHA-256; ordinary answers still require the
         // user anchor. Never infer ownership from the latest assistant or partial text.
-        if (!identity && userIdentity && multipartAcknowledgement) {
+        if (!identity && multipartAcknowledgement && (userIdentity || observationBaseline.submissionAccepted)) {
           const allowedUsers = new Set([
-            ...observationBaseline.initialUserAnchors.map(anchor => anchor.identity), userIdentity,
+            ...observationBaseline.initialUserAnchors.map(anchor => anchor.identity),
+            ...(userIdentity ? [userIdentity] : []),
           ]);
           if (state.userIdentities.some(candidate => !allowedUsers.has(candidate))) {
             throw new ChatGptWebAdapterError("ChatGPT opened another user turn while awaiting a multipart acknowledgement.", {
@@ -3456,7 +3460,7 @@ export class ChatGptBrowserWorker {
           completionTracker.observeToolBatch(progress.lastToolBatchRevision, boundaryText);
           await externalProgress.acknowledgeToolBatch(progress.lastToolBatchRevision);
         }
-        if (identity && userIdentity) return {
+        if (identity && (userIdentity || (multipartAcknowledgement && observationBaseline.submissionAccepted))) return {
           identity,
           locator: observationPage.locator(chatGptAssistantTurnSelector(identity)),
           acceptedTurnIdentities: state.turnIdentities,
@@ -3533,6 +3537,9 @@ export class ChatGptBrowserWorker {
     if (state.userIdentities.some(identity => !acceptedTurns.has(identity))) {
       throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
     }
+    // A nonce-bound staging ACK may have arrived after its user was virtualized before
+    // the first observation. It cannot authorize rebinding an ordinary answer.
+    if (!binding.userIdentity) return binding;
     const identity = chatGptAssistantIdentityAfterUser(state, binding.userIdentity);
     if (!identity || identity === binding.identity) return binding;
     return {
@@ -3983,6 +3990,7 @@ export class ChatGptBrowserWorker {
           initialToolBatchRevision,
           completionTracker,
         );
+        observationBaseline.submissionAccepted = true;
         return evidence;
       } catch (error) {
         if (!(error instanceof ChatGptBrowserObservationTimeoutError) || !recoverObservation) throw error;
@@ -4063,6 +4071,7 @@ export class ChatGptBrowserWorker {
     );
     const rejected = requestMonitors.get(page)?.failure();
     if (rejected) throw rejected;
+    baseline.submissionAccepted = true;
     await submissionLifecycle?.onSubmitted?.();
     return evidence;
   }
@@ -5268,6 +5277,10 @@ export class ChatGptBrowserWorker {
         callerSignal?: AbortSignal,
       ): Promise<number> => {
         if (!launcherSurfaceId || !this.config.browserHostDescriptorPath) throw cause;
+        if (turnConnection) console.warn(
+          `[chatgpt-web] browser observation connection ${turn.traceId} `
+          + JSON.stringify(readLauncherBrowserConnectionDiagnostics(turnConnection)),
+        );
         console.warn(
           `[chatgpt-web] browser turn ${turn.traceId} is rebinding its existing launcher page after a stalled DOM probe:`
           + ` ${redactChatGptUiDiagnostic(cause.message)}`,

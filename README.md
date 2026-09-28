@@ -4,11 +4,13 @@ This is an unofficial fork of [miuuyy/codex-chatgpt-web](https://github.com/miuu
 
 **Native and Web models use the same Codex application and configuration home.** Setup adds Web routes to the native catalog; native requests retain upstream's native passthrough. Production uses `CODEX_HOME`, or `~/.codex` when unset. The bridge keeps its own settings and browser profile in `~/.codex-chatgpt-web`. Only the upstream development profile uses a separate test home.
 
-The current fork identity is **6.1.2-fork.9**, with application version **6.1.2**. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now the 6.1.2 Windows follow-up commit `2d73f626290a5062825bb595dabb89aaf88d16c5`.
+The current fork identity is **6.1.2-fork.10**, with application version **6.1.2**. Every runtime includes the fork identity, source commit, source tree, working-input hashes and upstream revision. Consult [`fork-metadata.json`](fork-metadata.json) and the packaged `build-source.json` to identify a build. The original release baseline remains v6.0.0; the integrated upstream revision is now the 6.1.2 Windows follow-up commit `2d73f626290a5062825bb595dabb89aaf88d16c5`.
 
 The [6.1.1 integration and send-wait repair](docs/upstream-6.1.1-integration.md) adopts the updated Activity renderer, atomic model state, account detection, limits and compaction fixes. Concurrent limit reports now share one active backoff round; explicit server retry deadlines remain enforced. The fork retains its proven submitted-user boundary instead of binding an optimistic assistant-only group.
 
 Subsequent repairs cover [session startup and hidden model controls](docs/session-startup-repair.md), [prepared-send waits and progress](docs/send-wait-repair.md), and [multipart acknowledgements after the submitted message disappears from the DOM](docs/multipart-ack-repair.md). The multipart exception accepts only the exact acknowledgement for the proven submission and does not change ordinary response ownership.
+
+Fork.10 covers [multipart ACKs without a mounted user element, observation diagnostics, and explicit interruption boundaries](docs/runtime-repair-20260928.md). Synthetic regression results and live deployment acceptance are recorded separately; the diagnostic changes do not establish the cause of every historical browser stall.
 
 Fork.7 adds [bounded response observation and completion-footer recovery](docs/response-observation-repair.md). The installed runtime was verified with a GPT-5.6 Pro request, two sequential fixture tool calls, and a completed answer. File-level regression results total 1,143 passes and 33 skips; the Windows aggregate run required isolated reruns and was not itself a clean pass.
 

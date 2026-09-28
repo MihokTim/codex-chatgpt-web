@@ -11,6 +11,7 @@ import {
 import { MAX_CHATGPT_BROWSER_TABS } from "./concurrency";
 import { issuedToolCallProof } from "./native-tool-proof";
 import type { ChatGptExternalTurnProgress } from "./turn-progress";
+import { NativeTurnInterruptions } from "./native-turn-interruptions";
 
 function awaitWithAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
@@ -540,6 +541,10 @@ export class ChatGptTurnSession {
 
 export class ChatGptTurnSessions {
   private readonly entries = new Map<string, ChatGptTurnSession>();
+  // Explicit native Interrupt is terminal for this exact identity, including work that is
+  // still waiting to acquire a browser. Do not expire it with the response replay cache:
+  // a long compaction/cleanup must not replenish permission to run an interrupted turn.
+  private readonly interruptedNativeTurns: NativeTurnInterruptions;
   private readonly conversationHeads = new Map<string, ChatGptTurnSession>();
   private readonly retirements = new Map<string, Promise<void>>();
   private readonly ownerRetirements = new Map<string, Promise<void>>();
@@ -548,7 +553,10 @@ export class ChatGptTurnSessions {
   constructor(
     private readonly ttlMs = 30 * 60_000,
     private readonly maxEntries = 256,
-  ) {}
+    interruptionCapacity = 4_096,
+  ) {
+    this.interruptedNativeTurns = new NativeTurnInterruptions(interruptionCapacity);
+  }
 
   getOrCreate(
     key: string,
@@ -559,6 +567,7 @@ export class ChatGptTurnSessions {
     nativeThreadId?: string,
     instruction?: string,
   ): ChatGptTurnSession {
+    this.throwIfNativeTurnInterrupted(nativeThreadId, nativeTurnId);
     this.prune();
     const existing = this.entries.get(key);
     if (existing) {
@@ -566,6 +575,9 @@ export class ChatGptTurnSessions {
       existing.touch();
       return existing;
     }
+    const startError = nativeThreadId && nativeTurnId
+      ? this.interruptedNativeTurns.startError(nativeThreadId, nativeTurnId) : undefined;
+    if (startError) throw startError;
     const active = [...this.entries.values()].filter(session => session.isActive()).length;
     if (active >= MAX_CHATGPT_BROWSER_TABS) {
       throw new Error(
@@ -591,6 +603,7 @@ export class ChatGptTurnSessions {
     instruction?: ChatGptInstructionLineage,
   ): Promise<ChatGptTurnSession> {
     for (;;) {
+      this.throwIfNativeTurnInterrupted(nativeThreadId, nativeTurnId);
       if (signal?.aborted) throw new DOMException("ChatGPT web turn aborted", "AbortError");
       const existing = this.entries.get(key);
       if (existing) {
@@ -598,6 +611,10 @@ export class ChatGptTurnSessions {
         existing.touch();
         return existing;
       }
+      // Refuse an inadmissible replacement before retiring its still-live predecessor.
+      const startError = nativeThreadId && nativeTurnId
+        ? this.interruptedNativeTurns.startError(nativeThreadId, nativeTurnId) : undefined;
+      if (startError) throw startError;
       const pending = this.retirements.get(key) ?? this.ownerRetirements.get(ownerKey);
       if (pending) {
         await awaitWithAbort(pending, signal);
@@ -806,6 +823,7 @@ export class ChatGptTurnSessions {
     turnId: string,
     reason: Error,
   ): { cancelled: number; settlement: Promise<void> } {
+    this.interruptedNativeTurns.remember(threadId, turnId, reason);
     const matches = [...this.entries].filter(([, session]) => (
       session.nativeThreadId === threadId
       && session.nativeTurnId === turnId
@@ -847,6 +865,12 @@ export class ChatGptTurnSessions {
       this.entries.delete(key);
       this.forgetConversationHead(session);
     }
+  }
+
+  private throwIfNativeTurnInterrupted(threadId?: string, turnId?: string): void {
+    if (!threadId || !turnId) return;
+    const reason = this.interruptedNativeTurns.interruption(threadId, turnId);
+    if (reason) throw reason;
   }
 
   private forgetConversationHead(session: ChatGptTurnSession): void {

@@ -17,6 +17,7 @@ import {
 import type { BrokerToolResult, TurnBroker, TurnBrokerOwner } from "./turn-broker";
 import type { ChatGptTurnSession } from "./turn-execution";
 import { nativeToolResultProof } from "./failed-thinking-recovery";
+import { NativeTurnInterruptions } from "./native-turn-interruptions";
 
 export const LATEST_USER_PROMPT_MARKER = "CODEX_LATEST_USER_PROMPT_JSON";
 
@@ -143,7 +144,12 @@ function abortReason(signal: AbortSignal): Error {
 
 function withCompactionAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise;
-  if (signal.aborted) return Promise.reject(abortReason(signal));
+  if (signal.aborted) {
+    // The operation may already be in flight. Observe its eventual rejection even when
+    // its cancelled caller must return before token/transaction registration settles.
+    void promise.catch(() => {});
+    return Promise.reject(abortReason(signal));
+  }
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(abortReason(signal));
     signal.addEventListener("abort", onAbort, { once: true });
@@ -183,9 +189,11 @@ export async function settleActiveCompactionSource(
     }
     let token: string | undefined;
     try {
-      token = await source.runtime.token;
+      token = await withCompactionAbort(source.runtime.token, signal);
+      signal?.throwIfAborted();
       broker.requestCompaction(token, interruptedByActiveCompaction());
       for (const request of outstanding) {
+        signal?.throwIfAborted();
         const result = results.get(request.callId)!;
         await broker.completeTool(
           token,
@@ -239,12 +247,14 @@ export async function settleActiveZeroRiskCompactionSource(
     }
     let token: string | undefined;
     try {
-      token = await source.runtime.token;
+      token = await withCompactionAbort(source.runtime.token, signal);
+      signal?.throwIfAborted();
       const interruptedQueued = await broker.requestCompaction(
         token,
         interruptedByZeroRiskCompaction(),
       );
       for (const [index, request] of outstanding.entries()) {
+        signal?.throwIfAborted();
         const result = results.get(request.callId)!;
         const canonical = toolResult(result);
         await broker.completeTool(
@@ -304,6 +314,7 @@ export async function requestRetainedCompactionHandoff(
   if (operationSignal.aborted) abortBrowser();
   else operationSignal.addEventListener("abort", abortBrowser, { once: true });
   try {
+    operationSignal.throwIfAborted();
     const transactionPromise = broker.beginCompactionTransaction(traceId, operationTimeoutMs);
     void transactionPromise.then(lateTransaction => {
       if (operationSignal.aborted && transaction !== lateTransaction) {
@@ -311,6 +322,7 @@ export async function requestRetainedCompactionHandoff(
       }
     }, () => {});
     transaction = await withCompactionAbort(transactionPromise, operationSignal);
+    operationSignal.throwIfAborted();
     const instruction = structuredCompactionHandoffInstruction(transaction);
     const prepare = async () => ({ text: instruction, images: [], release: () => {} });
     browser = worker.run({
@@ -383,11 +395,6 @@ interface CachedCompactionRun {
   settlement: Promise<void>;
 }
 
-interface StructuredCompactionInterruption {
-  createdAt: number;
-  reason: Error;
-}
-
 export interface StructuredCompactionOwner {
   ownerKey: string;
   /** Production requests must not open a fresh browser on a replay of a terminal failure. */
@@ -405,7 +412,9 @@ const structuredCompactionFailures = new Map<string, unknown>();
 const structuredCompactionFailureReservations = new Set<string>();
 const MAX_COMPACTION_FAILURE_FENCES = 512;
 const structuredCompactionOwners = new Map<string, Promise<void>>();
-const structuredCompactionInterruptions = new Map<string, StructuredCompactionInterruption>();
+// Explicit Interrupt survives the result cache TTL. A cancelled native turn cannot gain
+// authority again merely because its compaction or physical cleanup took over 30 minutes.
+const structuredCompactionInterruptions = new NativeTurnInterruptions();
 const STRUCTURED_COMPACTION_RUN_TTL_MS = 30 * 60_000;
 
 export function structuredCompactionFailureCapacity(): { used: number; limit: number; remaining: number } {
@@ -414,31 +423,13 @@ export function structuredCompactionFailureCapacity(): { used: number; limit: nu
     remaining: Math.max(0, MAX_COMPACTION_FAILURE_FENCES - used) };
 }
 
-function nativeTurnIdentityKey(threadId: string, turnId: string): string {
-  if (!threadId.trim() || !turnId.trim()) {
-    throw new Error("Structured compaction requires non-empty native thread and turn ids");
-  }
-  return JSON.stringify([threadId, turnId]);
-}
-
 function rememberStructuredCompactionInterruption(threadId: string, turnId: string, reason: Error): void {
-  const identity = nativeTurnIdentityKey(threadId, turnId);
-  const now = Date.now();
-  pruneStructuredCompactionInterruptions(now);
-  const existing = structuredCompactionInterruptions.get(identity);
-  if (existing) {
-    existing.createdAt = now;
-    return;
-  }
-  structuredCompactionInterruptions.set(identity, { createdAt: now, reason });
+  structuredCompactionInterruptions.remember(threadId, turnId, reason);
 }
 
 function structuredCompactionInterruption(owner: StructuredCompactionOwner): Error | undefined {
   if (owner.nativeThreadId === undefined && owner.nativeTurnId === undefined) return undefined;
-  pruneStructuredCompactionInterruptions();
-  return structuredCompactionInterruptions.get(
-    nativeTurnIdentityKey(owner.nativeThreadId ?? "", owner.nativeTurnId ?? ""),
-  )?.reason;
+  return structuredCompactionInterruptions.startError(owner.nativeThreadId ?? "", owner.nativeTurnId ?? "");
 }
 
 /** Native interruption hooks also protect a pending automatic browser recovery. */
@@ -450,20 +441,12 @@ export function hasActiveStructuredCompaction(ownerKey: string): boolean {
   return structuredCompactionOwners.has(ownerKey);
 }
 
-function pruneStructuredCompactionInterruptions(now = Date.now()): void {
-  const cutoff = now - STRUCTURED_COMPACTION_RUN_TTL_MS;
-  for (const [identity, interruption] of structuredCompactionInterruptions) {
-    if (interruption.createdAt < cutoff) structuredCompactionInterruptions.delete(identity);
-  }
-}
-
 function pruneStructuredCompactionRuns(): void {
   const now = Date.now();
   const cutoff = now - STRUCTURED_COMPACTION_RUN_TTL_MS;
   for (const [candidate, run] of structuredCompactionRuns) {
     if (!run.active && run.createdAt < cutoff) structuredCompactionRuns.delete(candidate);
   }
-  pruneStructuredCompactionInterruptions(now);
 }
 
 /** Return the canonical result of an exact compact request, even after its source was retired. */

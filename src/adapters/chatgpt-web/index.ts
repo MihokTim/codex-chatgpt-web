@@ -20,7 +20,7 @@ import {
 import { namespacedToolName, type AdapterEvent, type CodexContentPart, type CodexParsedRequest, type CodexProviderConfig, type CodexToolResultMessage, type CodexUsage } from "../../types";
 import type { ProviderAdapter } from "../base";
 import { parseDataUrl } from "../image";
-import { ChatGptWebAdapterError } from "./adapter-error";
+import { ChatGptWebAdapterError, chatGptSubmittedObservationError } from "./adapter-error";
 import { ChatGptBrowserWorker } from "./browser-worker";
 import { requestPreparationProgress } from "./request-progress";
 import { extractChatGptTurnEnvironment, extractChatGptTurnIdentity, priorChatGptAbortedTurnIds } from "./environment";
@@ -315,6 +315,8 @@ export function submittedTurnFailure(session: ChatGptTurnSession, error: unknown
   const phase = session.runtime.submission?.phase;
   if (!phase || phase === "prepared") return normalized;
   const ambiguous = phase === "send_activated";
+  const observationError = !ambiguous && chatGptSubmittedObservationError(normalized);
+  if (observationError) return observationError;
   return new ChatGptWebAdapterError(
     ambiguous
       ? "ChatGPT did not confirm that the prompt was sent. Check the ChatGPT tab before continuing."
