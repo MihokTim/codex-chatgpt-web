@@ -20,6 +20,7 @@ import {
 import { extractChatGptTurnIdentity } from "./environment";
 import { CHATGPT_WEB_LUNA_MODEL_ID, resolveChatGptWebModelMode, type ChatGptWebCapabilities } from "./model";
 import type { BrokerToolRequest } from "./turn-broker";
+import { ESTIMATE_RESPONSE_MARKER, withResponseMarker } from "./response-marker";
 
 // The real capability has the same length. Keeping it out of usage accounting would make
 // estimates differ slightly between the prepared browser prompt and later Codex tool rounds.
@@ -57,7 +58,7 @@ export function estimateChatGptWebInputTokens(
         && Boolean(identity.threadId && identity.turnId),
     },
   );
-  return estimateCompiledChatGptWebInputTokens(compiled, parsed.modelId);
+  return estimateCompiledChatGptWebInputTokens(manual ? compiled : withResponseMarker(compiled, ESTIMATE_RESPONSE_MARKER), parsed.modelId);
 }
 
 /**
@@ -83,10 +84,10 @@ export function resolveBiggerContextMultipartParts(
     mode.effort,
     { ...capabilities, experimentalBiggerContext: false },
   );
-  const compile = (parts?: ChatGptWebMultipartPartCount): CompiledChatGptWebPrompt => compileChatGptWebPrompt(
+  const compile = (parts?: ChatGptWebMultipartPartCount): CompiledChatGptWebPrompt => withResponseMarker(compileChatGptWebPrompt(
     parsed, capabilities, mode.localTools ? ESTIMATE_TURN_TOKEN : undefined,
     { experimentalMultipartParts: parts, experimentalSkillAttachments },
-  );
+  ), ESTIMATE_RESPONSE_MARKER);
   const inline = compile();
   const inputTokens = estimateCompiledChatGptWebInputTokens(inline, parsed.modelId);
   const initialParts = biggerContextPartCount(inputTokens, autoCompactTokenLimit, false);

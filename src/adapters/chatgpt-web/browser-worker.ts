@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { hasResponseMarker, responseMarkerTraceText, ResponseMarkerStream, stripResponseMarker, withResponseMarker } from "./response-marker";
 import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { skillFileTokens, validateSkillFiles } from "./skill-attachments";
@@ -26,6 +27,7 @@ import type { CodexProviderConfig } from "../../types";
 import { parseDataUrl } from "../image";
 import {
   ChatGptMarkdownBuffer,
+  chatGptHtmlToMarkdown,
   ChatGptMarkdownConsistencyError,
   type ChatGptMarkdownSegment,
 } from "./markdown";
@@ -1318,6 +1320,7 @@ interface ChatGptSubmissionBaseline {
   acceptedUserIdentity?: string;
   /** Set only after this physical Send was acknowledged, including generation evidence. */
   submissionAccepted?: boolean;
+  responseMarker?: string;
 }
 
 interface ChatGptSubmissionObservationRecovery {
@@ -1334,6 +1337,7 @@ type ChatGptObservationRecovery = (
 ) => Promise<ChatGptSubmissionObservationRecovery>;
 
 interface ChatGptAssistantTurnBinding {
+  receiptBound?: boolean;
   identity: string;
   locator: Locator;
   acceptedTurnIdentities: readonly string[];
@@ -3332,7 +3336,8 @@ export class ChatGptBrowserWorker {
     const identity = userIdentity ? chatGptAssistantIdentityAfterUser(state, userIdentity) : undefined;
     if (!identity) return "";
     const locator = page.locator(chatGptAssistantTurnSelector(identity));
-    return (await this.responseDomSnapshot(locator, {})).visibleText;
+    const text = (await this.responseDomSnapshot(locator, {})).visibleText;
+    return baseline.responseMarker ? stripResponseMarker(text, baseline.responseMarker) : text;
   }
 
   private async captureSubmissionBaseline(page: Page, submittedText?: string): Promise<ChatGptSubmissionBaseline> {
@@ -3418,6 +3423,14 @@ export class ChatGptBrowserWorker {
         let identity = userIdentity
           ? chatGptAssistantIdentityAfterUser(state, userIdentity)
           : undefined;
+        // The current timeline can remove the entire user and replace its UUID key
+        // with fallback-turn-0. That positional key proves nothing. A fresh receipt
+        // at the beginning of exactly one fully observed answer can prove this Send.
+        let receiptBound = false;
+        if (!identity && observationBaseline.responseMarker && observationBaseline.submissionAccepted) {
+          identity = await this.responseIdentityByReceipt(observationPage, observationBaseline, state, signal);
+          receiptBound = identity !== undefined;
+        }
         // Large inert parts can virtualize the submitted user container completely while
         // their short ACK stays mounted. Only this protocol response has a fresh random
         // transaction ID plus part index and SHA-256; ordinary answers still require the
@@ -3462,11 +3475,13 @@ export class ChatGptBrowserWorker {
               {},
             )).visibleText
             : "";
-          completionTracker.observeToolBatch(progress.lastToolBatchRevision, boundaryText);
+          completionTracker.observeToolBatch(progress.lastToolBatchRevision,
+            observationBaseline.responseMarker ? stripResponseMarker(boundaryText, observationBaseline.responseMarker) : boundaryText);
           await externalProgress.acknowledgeToolBatch(progress.lastToolBatchRevision);
         }
-        if (identity && (userIdentity || (multipartAcknowledgement && observationBaseline.submissionAccepted))) return {
+        if (identity && (userIdentity || receiptBound || (multipartAcknowledgement && observationBaseline.submissionAccepted))) return {
           identity,
+          receiptBound,
           locator: observationPage.locator(chatGptAssistantTurnSelector(identity)),
           acceptedTurnIdentities: state.turnIdentities,
           userIdentity,
@@ -3524,6 +3539,35 @@ export class ChatGptBrowserWorker {
     }
   }
 
+  private async responseIdentityByReceipt(page: Page, baseline: ChatGptSubmissionBaseline,
+    state: ChatGptSubmissionDomState, signal?: AbortSignal): Promise<string | undefined> {
+    if (!baseline.responseMarker || !baseline.submissionAccepted) return undefined;
+    const allowedUsers = new Set([...baseline.initialUserAnchors.map(anchor => anchor.identity),
+      baseline.submittedUserIdentity, baseline.acceptedUserIdentity]);
+    if (state.userIdentities.some(identity => !allowedUsers.has(identity))) {
+      throw new ChatGptWebAdapterError("ChatGPT opened another user turn while awaiting the response receipt.", {
+        status: 502, errorType: "server_error", code: "chatgpt_turn_identity_conflict", retryable: false,
+      });
+    }
+    const matches: string[] = [];
+    let observedAll = true;
+    for (const identity of state.responseIdentities) {
+      signal?.throwIfAborted();
+      const snapshot = await this.responseDomSnapshot(page.locator(chatGptAssistantTurnSelector(identity)), {});
+      if (!snapshot.responsePresent) observedAll = false;
+      if (this.responseSnapshotHasReceipt(snapshot, baseline.responseMarker)) matches.push(identity);
+    }
+    if (matches.length > 1) throw new ChatGptWebAdapterError("ChatGPT exposed ambiguous response receipt ownership.", {
+      status: 502, errorType: "server_error", code: "chatgpt_turn_identity_conflict", retryable: false,
+    });
+    return observedAll ? matches[0] : undefined;
+  }
+
+  private responseSnapshotHasReceipt(snapshot: ChatGptResponseDomSnapshot, marker: string): boolean {
+    return snapshot.responsePresent && hasResponseMarker(snapshot.visibleText, marker)
+      && hasResponseMarker(chatGptHtmlToMarkdown(snapshot.fullHtml), marker);
+  }
+
   private async reconcileAssistantTurnBinding(
     page: Page,
     baseline: ChatGptSubmissionBaseline,
@@ -3533,11 +3577,14 @@ export class ChatGptBrowserWorker {
     const boundCount = await withChatGptBrowserObservationTimeout(
       withBrowserTurnAbort(binding.locator.count(), signal),
     );
-    if (boundCount === 1) return binding;
+    if (boundCount === 1 && !binding.receiptBound) return binding;
     if (boundCount > 1) {
       throw new Error(`ChatGPT exposed ${boundCount} DOM nodes for the bound assistant turn`);
     }
     const state = await this.submissionDomState(page, baseline.domCache, signal);
+    const receiptIdentity = await this.responseIdentityByReceipt(page, baseline, state, signal);
+    if (receiptIdentity) return { ...binding, identity: receiptIdentity, receiptBound: true,
+      locator: page.locator(chatGptAssistantTurnSelector(receiptIdentity)), acceptedTurnIdentities: state.turnIdentities };
     const acceptedTurns = new Set(binding.acceptedTurnIdentities);
     if (state.userIdentities.some(identity => !acceptedTurns.has(identity))) {
       throw new Error("ChatGPT opened another user turn while the bound assistant response was detached");
@@ -5120,7 +5167,9 @@ export class ChatGptBrowserWorker {
     const requestedMode = resolveChatGptWebModelMode(turn.modelId, turn.reasoning, browserCapabilities);
     const prepare = reuseConversation ? turn.prepareResume : turn.prepare;
     if (!prepare) throw new Error("The retained ChatGPT conversation has no continuation prompt");
-    const prepared = await prepare();
+    const originalPrepared = await prepare();
+    const responseMarker = `CODEXRESPONSE${randomUUID().replaceAll("-", "")}`;
+    const prepared = withResponseMarker(originalPrepared, responseMarker);
     const diagnostics = new ChatGptBrowserDiagnostics(
       turn.traceId,
       this.config.browserDiagnosticsPath ?? join(getConfigDir(), "diagnostics", "browser-turns"),
@@ -5590,6 +5639,7 @@ export class ChatGptBrowserWorker {
       }
 
       let submissionBaseline = await this.captureSubmissionBaseline(page, finalPrompt);
+      submissionBaseline.responseMarker = responseMarker;
       let catalogRefreshAvailable = mode.localTools && !reuseConversation && !prepared.multipart;
       const connectorAttemptBudget: ChatGptConnectorAttemptBudget = { triggerAttempts: 0 };
       for (;;) {
@@ -5647,6 +5697,7 @@ export class ChatGptBrowserWorker {
                 turn.abortSignal ? AbortSignal.any([stageSignal, turn.abortSignal]) : stageSignal,
               );
               submissionBaseline = await this.captureSubmissionBaseline(page, finalPrompt);
+              submissionBaseline.responseMarker = responseMarker;
             },
           );
           await diagnostics.capture(page, "connector-catalog-refreshed");
@@ -5723,11 +5774,13 @@ export class ChatGptBrowserWorker {
       const sentAt = Date.now();
       const visibleTrace = new ChatGptVisibleTraceTracker();
       const markdownBuffer = new ChatGptMarkdownBuffer();
+      const receiptStream = new ResponseMarkerStream(responseMarker);
       const checkpointStream = turn.captureLunaCheckpoint
         ? new ChatGptLunaCheckpointStream()
         : undefined;
       const emitMarkdownDelta = (delta: string): void => {
-        const visible = checkpointStream ? checkpointStream.push(delta) : delta;
+        const publicDelta = receiptStream.push(delta);
+        const visible = checkpointStream ? checkpointStream.push(publicDelta) : publicDelta;
         if (visible) turn.onTextDelta(visible);
       };
       const throwMarkdownConsistencyError = (error: unknown): never => {
@@ -5791,6 +5844,13 @@ export class ChatGptBrowserWorker {
         }
 
         let snapshot = await this.responseDomSnapshot(responseTurn.locator, responseDomCache);
+        if (responseTurn.receiptBound && snapshot.responsePresent) {
+          const state = await this.submissionDomState(page, submissionBaseline.domCache, turn.abortSignal);
+          const receiptIdentity = await this.responseIdentityByReceipt(page, submissionBaseline, state, turn.abortSignal);
+          if (receiptIdentity !== responseTurn.identity || !this.responseSnapshotHasReceipt(snapshot, responseMarker)) {
+            snapshot = absentResponseDomSnapshot();
+          }
+        }
         if (!snapshot.responsePresent) {
           try {
             const rebound = await withChatGptBrowserObservationTimeout(
@@ -5833,6 +5893,11 @@ export class ChatGptBrowserWorker {
             continue;
           }
         }
+        // Rebinding reads a fresh DOM projection after proving the candidate. Verify
+        // that exact consumed projection too; an outer key may be reused between reads.
+        if (responseTurn.receiptBound && !this.responseSnapshotHasReceipt(snapshot, responseMarker)) {
+          snapshot = absentResponseDomSnapshot();
+        }
         if (snapshot.failedThinkingVisible) throw chatGptFailedThinkingError();
         if (snapshot.stoppedThinkingVisible) throw chatGptStoppedThinkingError();
         // The page was read successfully, so the fault budget is genuinely consecutive even when
@@ -5847,7 +5912,7 @@ export class ChatGptBrowserWorker {
           && completionTracker.needsToolBatchObservation(externalProgressSnapshot.lastToolBatchRevision)) {
           completionTracker.observeToolBatch(
             externalProgressSnapshot.lastToolBatchRevision,
-            snapshot.visibleText,
+            stripResponseMarker(snapshot.visibleText, responseMarker),
           );
           await turn.externalProgress.acknowledgeToolBatch(externalProgressSnapshot.lastToolBatchRevision);
         }
@@ -5893,7 +5958,9 @@ export class ChatGptBrowserWorker {
               return throwMarkdownConsistencyError(error);
             }
           })();
-          for (const trace of visibleTrace.observe(snapshot.traceBlocks, snapshot.completionActionVisible)) {
+          const publicTraceBlocks = snapshot.traceBlocks.map(block => ({ ...block,
+            text: responseMarkerTraceText(block.text, responseMarker, block.complete === true || snapshot.completionActionVisible) }));
+          for (const trace of visibleTrace.observe(publicTraceBlocks, snapshot.completionActionVisible)) {
             if (trace.kind === "commentary") turn.onCommentary?.(trace.text, trace.continuation === true);
             else turn.onReasoningSummary?.(trace.text, trace.continuation === true);
           }
@@ -5901,7 +5968,7 @@ export class ChatGptBrowserWorker {
           const domError = domHealthTracker.update({
             responsePresent: snapshot.responsePresent,
             running,
-            currentText: snapshot.visibleText,
+            currentText: stripResponseMarker(snapshot.visibleText, responseMarker),
             completionActionVisible: snapshot.completionActionVisible,
             externalProgressLive,
           });
@@ -5909,7 +5976,7 @@ export class ChatGptBrowserWorker {
           const completionReady = completionTracker.update({
             responsePresent: snapshot.responsePresent,
             running,
-            currentText: snapshot.visibleText,
+            currentText: stripResponseMarker(snapshot.visibleText, responseMarker),
             currentHtml: snapshot.fullHtml,
             completionActionVisible: snapshot.completionActionVisible,
             externalToolCallsInFlight,
@@ -5954,15 +6021,21 @@ export class ChatGptBrowserWorker {
               throw new Error("ChatGPT completed with visible text that could not be serialized as Markdown");
             }
             if (final.delta) emitMarkdownDelta(final.delta);
+            const receiptRemainder = receiptStream.finish();
+            if (receiptRemainder) {
+              const visible = checkpointStream ? checkpointStream.push(receiptRemainder) : receiptRemainder;
+              if (visible) turn.onTextDelta(visible);
+            }
             if (checkpointStream) {
-              const completed = checkpointStream.finishOptional(snapshot.visibleText);
+              const completed = checkpointStream.finishOptional(stripResponseMarker(snapshot.visibleText, responseMarker));
               if (completed.visibleRemainder) turn.onTextDelta(completed.visibleRemainder);
               if (completed.captured) turn.onLunaCheckpoint!(completed.captured);
               else console.warn(`[chatgpt-web] browser turn ${turn.traceId} completed without a Luna rolling checkpoint; preserving full native history`);
               finalText = completed.answer;
             } else {
-              finalText = final.markdown;
+              finalText = stripResponseMarker(final.markdown, responseMarker);
             }
+            if (!finalText && snapshot.visibleText) throw new Error("ChatGPT returned only a response receipt without an answer");
             break;
           }
           if (!loggedCompletionWait && Date.now() - sentAt >= 60_000) {
