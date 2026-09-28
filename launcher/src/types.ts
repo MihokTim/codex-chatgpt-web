@@ -1,5 +1,5 @@
 import languages from "../electron/languages.json";
-import type { LimitsSnapshot } from "./limits-types";
+import type { LimitsPeriod, LimitsSnapshot } from "./limits-types";
 
 export type Language = keyof typeof languages;
 export type LauncherProfile = "production" | "development";
@@ -150,6 +150,7 @@ export interface LauncherApi {
   snapshot(): Promise<LauncherSnapshot>;
   getLimits(): Promise<LimitsSnapshot>;
   setupLimits(): Promise<LimitsSnapshot>;
+  setLimitsPeriod(period: LimitsPeriod): Promise<LimitsSnapshot>;
   setLanguage(language: Language): Promise<LauncherState>;
   openSocial(target: "github" | "x"): Promise<LauncherState>;
   completeOnboarding(language: Language, browserInteractionMode: BrowserInteractionMode): Promise<LauncherState>;

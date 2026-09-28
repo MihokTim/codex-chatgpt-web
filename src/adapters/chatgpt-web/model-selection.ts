@@ -29,8 +29,7 @@ export async function selectChatGptModelFamily(
   page: Page,
   menu: EffortMenu,
   family: ChatGptWebModelFamily,
-  reopen: () => Promise<EffortMenu>,
-  dismiss: () => Promise<void> = () => page.keyboard.press("Escape"),
+  activate: () => Promise<EffortMenu>,
   signal?: AbortSignal,
 ): Promise<EffortMenu> {
   let stage = "family-option";
@@ -76,10 +75,12 @@ export async function selectChatGptModelFamily(
     stage = "family-choice";
     await option.waitFor({ state: "visible", timeout: 5_000 });
     await option.click({ timeout: 5_000 });
-    stage = "family-dismiss";
-    await dismiss();
+    // Reuse the open picker after family selection. Escape/reopen races React cleanup.
+    // Retain fork cancellation, document ownership and bounded view-transition recovery.
     stage = "family-readback";
-    const selected = await reopen();
+    signal?.throwIfAborted();
+    if (page.url?.() !== selectionUrl) throw familyError(family);
+    const selected = await activate();
     const deadline = Date.now() + 1_000;
     do {
       const current = familyOption(selected, family);

@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const { writePrivateFileAtomic } = require("./atomic-file.cjs");
 const policy = require("./limits-policy.json");
+const { summarizeGpt6Period } = require("./limits-period.cjs");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RETENTION_MS = 7 * DAY_MS;
@@ -103,7 +104,7 @@ function retainHistory(state, now) {
   return changed ? { ...state, accounts } : state;
 }
 
-function snapshotAt(state, now) {
+function snapshotAt(state, now, period) {
   const account = state.accounts[state.activeAccountKey];
   const plan = account?.plan ?? null;
   const events = (account?.events ?? []).filter(event => event.at > now - RETENTION_MS && event.at <= now);
@@ -116,6 +117,7 @@ function snapshotAt(state, now) {
     totalMessages: events.length, // All models in the rolling last 7 days, not a lifetime counter.
     unknownProMessages,
     incomplete: unknownProMessages > 0,
+    ...(period ? { gpt6Period: summarizeGpt6Period(events, account?.initializedAt ?? null, now, period, RETENTION_MS) } : {}),
     windows: (OFFICIAL_LIMITS[plan] ?? []).map(window => {
       const recent = events.filter(event => event.at > now - window.durationMs && event.model !== "other");
       return {
@@ -227,10 +229,10 @@ class LimitsStore {
     return accepted;
   }
 
-  snapshot() {
+  snapshot(period) {
     const now = this.#time();
     this.#commit(retainHistory(this.#state, now));
-    return snapshotAt(this.#state, now);
+    return snapshotAt(this.#state, now, period);
   }
 }
 

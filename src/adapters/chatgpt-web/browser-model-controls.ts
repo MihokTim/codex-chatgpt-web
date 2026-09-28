@@ -33,8 +33,10 @@ export async function closeChatGptModelMenu(page: Page, control: Locator, signal
     do {
       await sameDocument();
       if (await closed()) {
-        // Require the dismissal to survive deferred focus and React work before reading its label.
-        await cancellableDelay(100, signal);
+        // The upstream regression reproduces a deferred 150ms close callback. Let that
+        // cleanup finish before the fork's post-commit verification reopens the picker.
+        // This settles the closed UI; the bounded dismissal deadline is unchanged.
+        await cancellableDelay(200, signal);
         await sameDocument();
         if (await closed()) return;
       }

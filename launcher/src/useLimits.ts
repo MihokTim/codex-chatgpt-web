@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { LimitsApi, LimitsSnapshot, LimitsWindow } from "./limits-types";
+import type { LimitsApi, LimitsPeriod, LimitsSnapshot, LimitsWindow } from "./limits-types";
 
 export function limitNeedsAttention(window: LimitsWindow): boolean {
   return window.limit > 0 && window.used >= window.limit * 0.75;
@@ -10,6 +10,8 @@ export function useLimits(api: LimitsApi, manualMode: boolean) {
   const [snapshot, setSnapshot] = useState<LimitsSnapshot | null>(null);
   const [reading, setReading] = useState(true);
   const [settingUp, setSettingUp] = useState(false);
+  const [savingPeriod, setSavingPeriod] = useState(false);
+  const [periodError, setPeriodError] = useState<string | null>(null);
   const [readError, setReadError] = useState<string | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
@@ -79,12 +81,36 @@ export function useLimits(api: LimitsApi, manualMode: boolean) {
     }
   };
 
+  const savePeriod = async (period: LimitsPeriod) => {
+    if (manualMode || !snapshot || setupInFlight.current) return null;
+    setupInFlight.current = true;
+    const version = ++requestVersion.current;
+    setSavingPeriod(true);
+    setPeriodError(null);
+    try {
+      const next = await api.setLimitsPeriod(period);
+      if (!mounted.current || version !== requestVersion.current) return null;
+      setSnapshot(next);
+      setReadError(null);
+      return next;
+    } catch (cause) {
+      if (mounted.current && version === requestVersion.current) setPeriodError(errorMessage(cause));
+      throw cause;
+    } finally {
+      setupInFlight.current = false;
+      if (mounted.current && version === requestVersion.current) {
+        setSavingPeriod(false);
+        refresh();
+      }
+    }
+  };
+
   const needsAttention = !manualMode && readError === null && snapshot?.enabled === true
     && snapshot.disabledReason !== "zero-risk"
     && (snapshot.plan === "pro_100" || snapshot.plan === "pro_200")
     && snapshot.windows.some(limitNeedsAttention);
 
-  return { snapshot, reading, settingUp, readError, setupError, refresh, setup, needsAttention };
+  return { snapshot, reading, settingUp, savingPeriod, periodError, readError, setupError, refresh, setup, savePeriod, needsAttention };
 }
 
 export type LimitsTracker = ReturnType<typeof useLimits>;

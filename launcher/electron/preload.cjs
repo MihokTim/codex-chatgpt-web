@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("codexWebLauncher", {
   snapshot: () => ipcRenderer.invoke("launcher:snapshot"),
   getLimits: () => ipcRenderer.invoke("launcher:limits"),
   setupLimits: () => ipcRenderer.invoke("launcher:limits-setup"),
+  setLimitsPeriod: (period) => ipcRenderer.invoke("launcher:limits-period", period),
   setLanguage: (language) => ipcRenderer.invoke("launcher:set-language", language),
   openSocial: (target) => ipcRenderer.invoke("launcher:open-social", target),
   completeOnboarding: (language, browserInteractionMode) => ipcRenderer.invoke(

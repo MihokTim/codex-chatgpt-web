@@ -2,6 +2,46 @@
   container-type: inline-size;
 }
 
+.limits-period {
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-background-control);
+}
+
+.limits-period-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  padding: 0;
+  margin: 16px 0;
+  border: 0;
+  min-width: 0;
+}
+
+.limits-period-fields label {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.limits-period-mode { flex: 1 1 260px; }
+.limits-period-fields select,
+.limits-period-fields input {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  background: var(--color-background-control);
+  font: inherit;
+}
+.limits-period-result { margin-top: 20px; }
+
 .limits-page-header,
 .limits-section-heading {
   display: flex;

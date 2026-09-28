@@ -6,6 +6,7 @@ import { limitNeedsAttention, type LimitsTracker } from "./useLimits";
 import type { Language } from "./types";
 import "./limits.css";
 import policy from "../electron/limits-policy.json";
+import { Gpt6Period } from "./Gpt6Period";
 
 export const LIMITS_REFERENCE_URL = policy.sourceUrl;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -40,7 +41,7 @@ export function LimitsSurface({
   const unsupported = snapshot?.plan === "unsupported";
   const supported = snapshot?.plan === "pro_100" || snapshot?.plan === "pro_200";
   const tracking = snapshot?.enabled === true && supported && !zeroRisk;
-  const setupDisabled = zeroRisk || runtimeBusy || settingUp || !snapshot;
+  const setupDisabled = zeroRisk || runtimeBusy || settingUp || tracker.savingPeriod || !snapshot;
   const number = (value: number) => new Intl.NumberFormat(language).format(value);
   const date = (value: number | null) => value === null ? copy.unknown : new Intl.DateTimeFormat(language, {
     dateStyle: "medium", timeStyle: "short",
@@ -82,7 +83,7 @@ export function LimitsSurface({
           <button
             aria-label={copy.refresh}
             className="button-secondary limits-refresh"
-            disabled={reading || settingUp}
+            disabled={reading || settingUp || tracker.savingPeriod}
             onClick={tracker.refresh}
             title={copy.refresh}
             type="button"
@@ -154,6 +155,8 @@ export function LimitsSurface({
             {snapshot.windows.length === 0 ? <p className="limits-muted">{copy.noWindows}</p> : null}
           </section>
         ) : null}
+
+        {tracking && snapshot ? <Gpt6Period tracker={tracker} language={language} /> : null}
 
         {snapshot && snapshot.trackingSince !== null ? (
           <section aria-labelledby="limits-history-title" className="limits-history">

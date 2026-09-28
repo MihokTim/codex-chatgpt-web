@@ -1,4 +1,6 @@
 const { LimitsStore } = require("./limits-store.cjs");
+const path = require("node:path");
+const { readLimitsPeriod, saveLimitsPeriod } = require("./limits-period.cjs");
 
 const HISTORY_WARNING = "Local history may be incomplete. Check your plan again.";
 const emptySnapshot = () => ({
@@ -38,8 +40,13 @@ class LimitsController {
     let disabledReason = null;
     try {
       disabledReason = this.#mode() === "manual" ? "zero-risk" : null;
-      const snapshot = this.#getStore().snapshot();
-      return { ...snapshot, enabled: snapshot.enabled && disabledReason === null, disabledReason, error: this.#error };
+      const store = this.#getStore();
+      let period;
+      let periodError = null;
+      try { period = readLimitsPeriod(path.join(path.dirname(this.#filePath), "limits-period.json")); }
+      catch (cause) { periodError = `Could not load the counting period. ${describe(cause)}`; }
+      const snapshot = store.snapshot(period);
+      return { ...snapshot, period, periodError, enabled: snapshot.enabled && disabledReason === null, disabledReason, error: this.#error };
     } catch (cause) {
       this.#error = `Limits tracking is unavailable. ${describe(cause)} ${HISTORY_WARNING}`;
       return { ...emptySnapshot(), disabledReason, error: this.#error };
@@ -63,15 +70,23 @@ class LimitsController {
       const config = await detectPlan();
       // The mode may have changed while the browser detector was running.
       this.#requireAutomatic();
-      const snapshot = store.configure(config);
+      store.configure(config);
       this.#error = null;
-      return { ...snapshot, disabledReason: null, error: null };
+      return this.snapshot();
     } catch (cause) {
       this.#error = `Could not check the ChatGPT plan. ${describe(cause)} ${HISTORY_WARNING}`;
       throw new Error(this.#error, { cause });
     } finally {
       this.#settingUp = false;
     }
+  }
+
+  setPeriod(period) {
+    this.#requireAutomatic();
+    if (this.#settingUp) throw new Error("Finish the plan check before changing the counting period.");
+    if (!this.#getStore().snapshot().enabled) throw new Error("Enable tracking before changing the counting period.");
+    saveLimitsPeriod(path.join(path.dirname(this.#filePath), "limits-period.json"), period, (this.#now ?? Date.now)());
+    return this.snapshot();
   }
 
   // Optional telemetry must never fail generation. A later successful receipt or
