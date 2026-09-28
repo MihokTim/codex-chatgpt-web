@@ -115,11 +115,22 @@ function stage(source, output) {
   fs.writeFileSync(path.join(output,'manifest.json'),JSON.stringify(manifest,null,2));
   return manifest;
 }
+function blockingProcesses(processes, appDirectory) {
+  const executable=path.win32.resolve(appDirectory,'Orca.exe').toLowerCase();
+  return processes.filter(process=> {
+    if (!process.ExecutablePath || !process.CommandLine) return true;
+    // Normal Quit intentionally preserves the separately installed terminal daemon.
+    // Neither that daemon nor Crashpad loads the desktop's packed main/renderer files.
+    return path.win32.resolve(process.ExecutablePath).toLowerCase()===executable
+      && !/(?:^|\s)--type=crashpad-handler(?:\s|$)/.test(process.CommandLine);
+  });
+}
 function apply(manifestPath, rollback=false) {
   const manifest = JSON.parse(fs.readFileSync(manifestPath,'utf8'));
   if (process.platform !== 'win32') throw new Error('Deployment requires Windows process verification');
-  const running = cp.execFileSync('powershell.exe',['-NoProfile','-Command',"@(Get-Process -Name Orca -ErrorAction SilentlyContinue).Count"],{encoding:'utf8'}).trim();
-  if (running !== '0') throw new Error('Orca is running: coordinator must arrange an approved normal shutdown first');
+  const running = JSON.parse(cp.execFileSync('powershell.exe',['-NoProfile','-Command',"ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -Filter \"Name='Orca.exe'\" | Select-Object ExecutablePath,CommandLine)"],{encoding:'utf8'}));
+  if (blockingProcesses(running,path.dirname(path.dirname(manifest.source))).length)
+    throw new Error('Orca desktop is running: coordinator must arrange an approved normal shutdown first');
   const expected = rollback ? manifest.patchedSha256 : manifest.originalSha256;
   if (sha(fs.readFileSync(manifest.source)) !== expected) throw new Error('Installed ASAR changed; refusing deployment');
   const backup = fs.readFileSync(manifest.backup), candidate = fs.readFileSync(manifest.candidate);
@@ -133,7 +144,7 @@ function apply(manifestPath, rollback=false) {
   fs.writeFileSync(path.join(path.dirname(manifestPath),rollback?'rollback.json':'deployment.json'),JSON.stringify(receipt,null,2));
   return receipt;
 }
-module.exports={FILE,MAIN,sha,patchMain,patchRenderer,readAsar,entries,packedFile,rewriteAsar,verifyMembers,stage,apply};
+module.exports={FILE,MAIN,sha,patchMain,patchRenderer,readAsar,entries,packedFile,rewriteAsar,verifyMembers,stage,apply,blockingProcesses};
 if(require.main===module){
   const [verb,a,b]=process.argv.slice(2);
   try {

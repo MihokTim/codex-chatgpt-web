@@ -87,14 +87,39 @@ node scripts\orca-repair.cjs apply output\repair-20260928\orca\combined-patch\ma
 node scripts\orca-repair.cjs rollback output\repair-20260928\orca\combined-patch\manifest.json
 ```
 
-## 残る受入工程
+## 配備後の受入結果（13:06 JST追補）
+
+稼働Orcaを正式メニューで正常終了し、対象2memberのパッチを適用した。
+再起動後の構造化workerは `ready / input_accepted / turnStart=observed` になり、
+指定ファイルを読み取って正しいCLI版を回答した。`worker_done` 成功通知のACKと
+`worker-release` の `released / closed_agent_terminal / transcript captured` も確認した。
+起動要求の受付だけを成功扱いにしていない。日本語複数行は実ConPTYの修正前後試験で
+分割2件から正確な1件への改善を確認済み。旧Chat画面そのものの最終入力受入は別工程。
+
+通常起動後のOrcaの実モデルcatalogにも `gpt-6-sol` と `gpt-6-luna` が現れた。
+更新後CLIの各モデル実応答成功と、Orcaが実際に読み込むモデル一覧の両方を照合した。
+
+正常終了後もterminal daemonとCrashpadは残る。デスクトップ本体・rendererの停止を
+実行パスと引数で検証し、これら常駐補助プロセスを強制終了せずにパッチを配置する。
+プロセス情報が取得できない場合は安全側で配置を拒否する。判定の回帰試験は7件成功。
+
+### Windowsの起動経路とデータ仮想化
+
+MSIX版Codexから直接起動したOrcaは、同じAppData表記でもパッケージの古い仮想化データを
+読み込む場合があった。データベースを復元・上書きせず、そのOrcaを正常終了し、
+Windows Explorer経由でインストール済みOrca.exeを通常起動すると元のプロジェクトとRunが戻った。
+再起動の前後で必ず `repo list` のIDと `orchestration run-show` のRun IDを照合する。
+異なれば新しいRunやリポジトリを作って埋め合わせない。再起動後のcoordinatorは正式な
+`run-use` で同じRunへ再結合する。認証情報のコピーや仮想化設定の変更は行っていない。
+
+## 当初の受入計画（上記結果と照合）
 
 1. コーディネーターが他担当と自身の実行を安全に回収し、Orcaの正常終了、上記パッチ適用、再起動を行う。workerは中断権限を行使していない。
 2. 新runtimeのモデル一覧でGPT-6 Sol/Luna、構造化workerでAstra/highの `ready → 応答 → worker_done → cleanup` を実証する。旧pending probeを無条件再送しない。
 3. 必要なら最後にWindowsの現在ロック状態を一度確認し、旧Chat画面から日本語複数行を送る実受入をまとめて行う。ロック中は開始しない。
 4. 旧起動済みagentのhelper互換問題を正常な再起動で解消し、親への完了通知・ACK・resource解放を別々に確認する。
 
-従って、**CLIモデル利用は修復・実応答検証済み、本体パッチは実装・隔離検証済み、稼働Orcaへの適用と構造化子の最終受入は未完了**。
+上記計画のうち、本体パッチ配置・再起動・構造化子の完了回収は追補のとおり成立した。
 
 ## 再起動担当への追補（親からの最終依頼）
 

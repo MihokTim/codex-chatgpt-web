@@ -3433,12 +3433,17 @@ export class ChatGptBrowserWorker {
             });
           }
           const matches: string[] = [];
+          let allCandidatesObserved = true;
           for (const candidate of state.responseIdentities) {
             if (observationBaseline.initialTurnIdentities.includes(candidate)) continue;
             signal?.throwIfAborted();
             const snapshot = await this.responseDomSnapshot(
               observationPage.locator(chatGptAssistantTurnSelector(candidate)), {},
             );
+            // A bounded read can return an absent snapshot when the renderer stalls.
+            // That is unknown ownership, not evidence that this candidate cannot be
+            // another copy of the ACK. Never bind a partially observed candidate set.
+            if (!snapshot.responsePresent) allCandidatesObserved = false;
             if (snapshot.responsePresent && snapshot.visibleText.trim() === multipartAcknowledgement) matches.push(candidate);
           }
           if (matches.length > 1) {
@@ -3446,7 +3451,7 @@ export class ChatGptBrowserWorker {
               status: 502, errorType: "server_error", code: "chatgpt_turn_identity_conflict", retryable: false,
             });
           }
-          identity = matches[0];
+          identity = allCandidatesObserved ? matches[0] : undefined;
         }
         if (progress
           && externalProgress

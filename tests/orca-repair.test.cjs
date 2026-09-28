@@ -6,6 +6,17 @@ const vm=require('node:vm');
 const {patchRenderer,readAsar,packedFile,rewriteAsar,verifyMembers,FILE,MAIN,patchMain,sha}=require('../scripts/orca-repair.cjs');
 const root=process.env.ORCA_REPAIR_STAGE;
 
+test('deployment distinguishes the desktop from the preserved terminal daemon',()=>{
+  const {blockingProcesses}=require('../scripts/orca-repair.cjs');
+  const app='C:\\Programs\\Orca',exe=path.win32.join(app,'Orca.exe');
+  const daemon={ExecutablePath:'C:\\Local\\Orca\\daemon-host\\Orca.exe',CommandLine:'Orca.exe daemon-entry.js'};
+  const crash={ExecutablePath:exe,CommandLine:'Orca.exe --type=crashpad-handler --database=x'};
+  assert.equal(blockingProcesses([daemon,crash],app).length,0);
+  for(const process of [{ExecutablePath:exe,CommandLine:'Orca.exe'},
+    {ExecutablePath:exe.toLowerCase(),CommandLine:'Orca.exe --type=renderer'},
+    {ExecutablePath:null,CommandLine:null}]) assert.equal(blockingProcesses([process],app).length,1);
+});
+
 test('unknown bundles and repeated patches fail closed',()=>{
   assert.throws(()=>patchRenderer('not the known bundle'),/anchor/);
   assert.throws(()=>patchRenderer('function orcaLegacyPasteOptions('),/Already patched/);

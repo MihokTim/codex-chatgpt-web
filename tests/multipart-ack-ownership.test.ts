@@ -85,6 +85,25 @@ test.each(["ordinary", "wrong-transaction", "new-user", "duplicate"])("unmounted
   } finally { await page.close(); }
 }, 30_000);
 
+test("a failed candidate read cannot turn duplicate multipart ACKs into unique ownership", async () => {
+  const page = await context.newPage();
+  try {
+    const { worker, baseline } = await submitted(page);
+    await page.locator("main").evaluate((node, html) => { node.innerHTML = html; },
+      assistant("ack", stage.acknowledgement) + assistant("unread", stage.acknowledgement));
+    const snapshot = worker.responseDomSnapshot.bind(worker);
+    worker.responseDomSnapshot = async (locator: any, cache: any) => {
+      // Reproduce the existing bounded DOM reader's absent result on timeout.
+      if (await locator.getAttribute("data-turn-id") === "unread") {
+        return { responsePresent: false, visibleText: "" };
+      }
+      return snapshot(locator, cache);
+    };
+    await expect(worker.waitForNewAssistantTurn(page, baseline, undefined, undefined,
+      undefined, 150, undefined, undefined, stage.acknowledgement)).rejects.toThrow();
+  } finally { await page.close(); }
+}, 30_000);
+
 test.each(["ordinary", "wrong-transaction", "wrong-part", "wrong-hash", "extra-text", "quoted-user", "new-user"])("detached user never grants ownership to %s", async scenario => {
   const page = await context.newPage();
   try {
