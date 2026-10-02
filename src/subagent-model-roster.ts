@@ -10,7 +10,7 @@ export const COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS = [
   "chatgpt-web/gpt-6-pro",
   "chatgpt-web/gpt-5.6-pro",
   "gpt-6-astra",
-  "gpt-6-sol",
+  "gpt-6.1-sol",
   "gpt-6-luna",
 ] as const;
 
@@ -44,7 +44,11 @@ export function resolveCompatibilityV1PreferredRoster(models: readonly unknown[]
   const eligibleSlugs = new Set(models.filter(delegationModel).map(modelSlug));
   const roster: Array<string | undefined> = COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS.map(slug => {
     if (eligibleSlugs.has(slug)) return slug;
-    if (slug === "gpt-6-sol" && eligibleSlugs.has("gpt-5.6-sol")) return "gpt-5.6-sol";
+    if (slug === "gpt-6.1-sol") {
+      // Older CLIs can return a pre-6.1 catalog. Use only an existing native row.
+      if (eligibleSlugs.has("gpt-6-sol")) return "gpt-6-sol";
+      if (eligibleSlugs.has("gpt-5.6-sol")) return "gpt-5.6-sol";
+    }
     if (slug === "gpt-6-luna" && eligibleSlugs.has("gpt-5.6-luna")) return "gpt-5.6-luna";
     return undefined;
   });

@@ -73,3 +73,53 @@ test("MCP observation failures, arbitrary IDs and unknown names never alter tran
   transport.onclose?.();
   expect(closed).toBeTrue();
 });
+
+test("settled duplicate IDs release observation capacity and idle closes are observable", async () => {
+  const events: Array<Record<string, unknown>> = [];
+  const transport: Transport = {
+    start: async () => {}, close: async () => {}, send: async () => {},
+  };
+  observeMcpToolCalls(transport, new Set(["codex_exec"]), event => events.push(event));
+  for (let id = 0; id < 1_025; id += 1) {
+    const call = { jsonrpc: "2.0" as const, id, method: "tools/call", params: { name: "codex_exec" } };
+    transport.onmessage?.(call);
+    transport.onmessage?.(call);
+    await transport.send({ jsonrpc: "2.0", id, result: {} });
+    await transport.send({ jsonrpc: "2.0", id, result: {} });
+  }
+  expect(events.some(event => event.reason === "tracking_limit")).toBeFalse();
+  transport.onmessage?.({ jsonrpc: "2.0", id: 2_000, method: "tools/call", params: { name: "codex_exec" } });
+  expect(events.at(-1)).toMatchObject({ event: "call_received", call: 1_026 });
+  await transport.send({ jsonrpc: "2.0", id: 2_000, result: {} });
+  transport.onclose?.();
+  expect(events.at(-1)).toMatchObject({ event: "transport_closed", tracked_calls: 0 });
+  expect(events.every(event => typeof event.at === "string" && Number.isFinite(Date.parse(event.at)))).toBeTrue();
+});
+
+test("late duplicate replies cannot be attributed to a newer call reusing the same ID", async () => {
+  const events: Array<Record<string, unknown>> = [];
+  let finishFirst!: () => void;
+  let sends = 0;
+  const transport: Transport = {
+    start: async () => {}, close: async () => {},
+    send: async () => { if (++sends === 1) await new Promise<void>(resolve => { finishFirst = resolve; }); },
+  };
+  observeMcpToolCalls(transport, new Set(["codex_exec", "codex_view_image"]), event => events.push(event));
+  const receive = (tool: string) => transport.onmessage?.({
+    jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: tool },
+  });
+  receive("codex_exec");
+  const firstReply = transport.send({ jsonrpc: "2.0", id: 7, result: {} });
+  receive("codex_exec"); // A duplicate can arrive while the first send is pending.
+  finishFirst();
+  await firstReply;
+  receive("codex_view_image");
+  await transport.send({ jsonrpc: "2.0", id: 7, result: { isError: true } });
+  await transport.send({ jsonrpc: "2.0", id: 7, result: { isError: false } });
+  expect(events.filter(event => event.event === "reply_sent")).toHaveLength(0);
+  receive("codex_view_image"); // All three prior responses have now settled.
+  await transport.send({ jsonrpc: "2.0", id: 7, result: { isError: false } });
+  expect(events.filter(event => event.event === "reply_sent")).toEqual([
+    expect.objectContaining({ call: 2, tool: "codex_view_image", is_error: false }),
+  ]);
+});

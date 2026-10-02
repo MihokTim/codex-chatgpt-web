@@ -51,6 +51,57 @@ Runを作っただけでは自動的に仕事は配分されない。親がworke
 完了は起動時に返されたtaskIdとdispatchIdに結び付ける。廃止されたrun/coordinator-start系のコマンドを使わない。
 安定版の機能不足、モデル利用資格不足、認証待ちは、それぞれ独立した未完了理由として残す。
 
+### Orca外のCodexチャットから独立レビューを起動する
+
+
+Orca外のチャットにはOrcaの送信者IDがない。そこで直接`run-create`を呼ぶと
+`no_active_sender_terminal`でRun作成前に止まる。モデル一覧の欠落とは別の問題。
+別ペインのIDを`--from`へ渡す代わりに、`scripts/orca-external-review.py start`を使う。
+新しい証跡ディレクトリ、登録済みworktreeの絶対パス、UTF-8の仕様ファイル、解決済みCLIを指定する。
+
+専用Orca端末の内部だけが、その端末自身のidentityでRun・Task・Dispatchを作成し、
+担当の出力を保存、release/retain後にDeliveryをACKする。外部チャットは保存された状態と結果を読む。
+モデルの既定は`gpt-6.1-sol`、推論量は`high`。要求・実効モデルはworker-startのreceiptで確認する。
+未処理メッセージ、質問、未知の結果、タイムアウトは担当とDeliveryを保持し、成功に書き換えない。
+resumeは元の専用端末とRunを検証し、同じRun/workerの回収だけを再開する。
+
+2026-09-30にはOrca 1.4.215でstructured方式の6.1 Sol/high担当を実際に起動し、
+正式なworker_done、結果保存、担当のrelease、DeliveryのACKまで確認した。
+共通スキルにも同じ外部起動経路を追加した。これはゲーム等の別チャットで止まった仕事を再送した記録ではない。
+
+### Windows computer-useの確認範囲
+
+Windowsで`computer permissions`の`unsupported`は権限設定管理の非対応を示す。
+機能の対応可否は`computer capabilities`と実際のsnapshotで確認する。
+1.4.215のスクリーンショットは可視デスクトップの領域コピーであり、背面の対象を指定すると
+前面の別アプリの画像が混ざり得た。`scripts/orca-computer-repair.py`は検証済みの元ファイルの
+SHA-256を条件に修正をstage/applyし、対象HWNDの前面一致を取得前後で確認する。
+一致しなければ無画像と明示的なscreenshotErrorを返す。元ファイルと修正候補は保存する。
+Orca更新で差し替わる可能性があるローカル修正であり、未知の版へ自動適用しない。
+
+背景のアクセシビリティ照会は`--no-screenshot`で行う。実入力には最終確認時に一度だけ
+`--restore-window`を使い、拒否が続けば入力を止める。Windowsの前面化制限を迂回しない。
+この修正は最前面overlayを除外するHWND指定画像取得を追加しない。
+
+同じ受入試験で`CmdOrCtrl+A`が置換にならず追記になる問題も確認した。
+WindowsのSendKeysは大文字キーを暗黙のShift付きとして扱うため、hotkeyの英字キー名を
+小文字へ正規化し、明示的なShiftはそのまま保持する修正を加えた。
+
+通常のWindows画面操作では、Codexの`computer-use:computer-use`プラグインと
+`node_repl`が利用できる場合は、同プラグインの`@oai/sky`を優先する。
+Orcaによる担当管理と、画面操作プロバイダーの選択は別々に行う。
+この環境で`@oai/sky`の初期化とWindowsウィンドウ一覧取得は成功した。
+Orcaのcomputer-useを明示的に検証する工程には、引き続きOrca自身のCLIを使う。
+
+2026-09-30の検証専用WinFormsアプリでは、Orcaの全選択→入力で`ORCA_INPUT_61_OK`、
+Codexの全選択→入力で`CODEX_INPUT_OK`への完全な置換を確認した。
+同アプリはCtrl+Aの処理を明示し、実際に届いた修飾キーと文字列を記録する。
+Orcaの修正後のイベントは`A, Control`であり、暗黙のShiftを含まなかった。
+背面のOrcaウィンドウに対する画像照会は`ok: true`のアクセシビリティ結果と、
+`screenshot: null`・`screenshotStatus.state: failed`を返し、誤画像を成功扱いしなかった。
+Codex側は編集欄・ボタン・現在のフォーカスを取得し、クリックによる正常終了まで成立した。
+任意のゲームや別アプリの操作も同じように成功することを、この試験だけで保証しない。
+
 ### Windowsでの起動と承認
 
 Orcaから起動するCodexの保存先を起動時に確認する。必要なら子プロセスの`CODEX_HOME`だけに既存の保存先を指定し、モデルと推論量も実行単位で明示する。

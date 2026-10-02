@@ -1,10 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { atomicWriteFile, stripUtf8Bom } from "./config";
 import {
   CODEX_REALTIME_WEBRTC_CALL_BASE_URL,
   getCodexConfigPath,
-  getCodexHooksPath,
   getCodexJournalPath,
   getCodexJournalRecoveryPath,
   serializeJournal,
@@ -32,16 +31,22 @@ function isPreviousAssignment(value: unknown): boolean {
     || (typeof assignment.rawLine === "string" && typeof assignment.value === "string");
 }
 
-function isInstalledInterruptHook(value: unknown): boolean {
+function pathIdentity(value: string): string {
+  const normalized = resolve(value);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function isInstalledInterruptHook(value: unknown, configPath: string): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const hook = value as Record<string, unknown>;
   const format = hook.format;
   if (format !== undefined && format !== "toml" && format !== "json") return false;
   if (format === "json") {
-    if (typeof hook.filePath !== "string" || resolve(hook.filePath) !== resolve(getCodexHooksPath())) return false;
+    if (typeof hook.filePath !== "string"
+      || pathIdentity(hook.filePath) !== pathIdentity(join(dirname(configPath), "hooks.json"))) return false;
     if (typeof hook.previousText !== "string") return false;
   } else if (format === "toml") {
-    if (typeof hook.filePath !== "string" || resolve(hook.filePath) !== resolve(getCodexConfigPath())) return false;
+    if (typeof hook.filePath !== "string" || pathIdentity(hook.filePath) !== pathIdentity(configPath)) return false;
     if (hook.previousText !== undefined) return false;
   } else if (hook.filePath !== undefined || hook.previousText !== undefined) return false;
   return typeof hook.command === "string" && hook.command.length > 0
@@ -68,8 +73,8 @@ function parseJournal(path: string): AnyCodexIntegrationJournal {
         && installed.agent_max_depth >= 2))
     && value.previous
     && isPreviousAssignment(value.previousRealtimeWebrtcCallBaseUrl)
-    && isInstalledInterruptHook(value.interruptHook)
-    && typeof value.configPath === "string") {
+    && typeof value.configPath === "string"
+    && isInstalledInterruptHook(value.interruptHook, value.configPath)) {
     return value as unknown as CodexIntegrationJournal;
   }
   if (value.version === 9
@@ -175,6 +180,11 @@ export function readJournal(): AnyCodexIntegrationJournal | undefined {
     if (recoveryError) throw recoveryError;
     return undefined;
   }
+  // Parsing validates the journal's own paths. Every reader (including uninstall)
+  // must also own the active home before using it or repairing either copy.
+  for (const journal of [primary, recovery]) {
+    if (journal) assertJournalTargetsConfig(journal, getCodexConfigPath());
+  }
   if (primary && recovery && serializeJournal(primary) === serializeJournal(recovery)) return primary;
   if (primary && !recovery && !recoveryError) {
     atomicWriteFile(recoveryPath, serializeJournal(primary));
@@ -210,10 +220,6 @@ export function assertJournalTargetsConfig(
   journal: AnyCodexIntegrationJournal,
   configPath: string,
 ): void {
-  const pathIdentity = (value: string): string => {
-    const normalized = resolve(value);
-    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
-  };
   if (pathIdentity(journal.configPath) !== pathIdentity(configPath)) {
     throw new Error(
       `Codex integration journal belongs to ${journal.configPath}, not the active config ${configPath}`,

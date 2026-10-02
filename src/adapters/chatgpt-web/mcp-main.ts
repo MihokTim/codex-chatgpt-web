@@ -1,5 +1,7 @@
-import { defaultBrokerEndpoint, resolveBrokerEndpoint } from "../../config";
+import { join } from "node:path";
+import { defaultBrokerEndpoint, getConfigDir, resolveBrokerEndpoint } from "../../config";
 import { runChatGptMcpServer, type ChatGptMcpContract } from "./mcp-server";
+import { createMcpObservationLog } from "./mcp-observation-log";
 
 function option(args: string[], name: string, fallback: string): string {
   const index = args.indexOf(name);
@@ -18,8 +20,15 @@ export async function runChatGptMcpMain(args: string[]): Promise<void> {
     throw new Error(`--contract must be native or safe, received ${requestedContract}`);
   }
   if (remaining.length > 0) throw new Error(`Unknown MCP arguments: ${remaining.join(" ")}`);
-  await runChatGptMcpServer({
-    brokerSocketPath,
-    contract: requestedContract as ChatGptMcpContract,
-  });
+  const observation = createMcpObservationLog({ directory: join(getConfigDir(), "diagnostics", "mcp") });
+  try {
+    await runChatGptMcpServer({
+      brokerSocketPath,
+      contract: requestedContract as ChatGptMcpContract,
+      observe: observation.write,
+    });
+  } catch (error) {
+    observation.close();
+    throw error;
+  }
 }

@@ -445,6 +445,7 @@ function execCommandGatewayProgram(
 export async function runChatGptMcpServer(options: {
   brokerSocketPath: string;
   contract?: ChatGptMcpContract;
+  observe?: (event: Record<string, unknown>) => void;
 }): Promise<void> {
   const contract = options.contract ?? "native";
   const server = new McpServer(
@@ -974,5 +975,5 @@ export async function runChatGptMcpServer(options: {
     );
   }
 
-  await server.connect(observeMcpToolCalls(new StdioServerTransport(), BRIDGE_TOOL_NAMES));
+  await server.connect(observeMcpToolCalls(new StdioServerTransport(), BRIDGE_TOOL_NAMES, options.observe));
 }

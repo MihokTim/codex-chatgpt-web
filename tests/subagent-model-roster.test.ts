@@ -21,6 +21,7 @@ function row(slug: string, priority: number, overrides: ModelCatalogRow = {}): M
 function completeRoster(): ModelCatalogRow[] {
   return [
     row("gpt-6-astra", 1),
+    row("gpt-6.1-sol", 1),
     row("gpt-6-sol", 2),
     row("gpt-6-luna", 3),
     row("gpt-reserve", 0, { visibility: "hide" }),
@@ -42,7 +43,7 @@ function delegationRoster(models: readonly ModelCatalogRow[]): unknown[] {
 }
 
 describe("Compatibility V1 subagent model roster", () => {
-  test.each(["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"])("preserves the original native default %s", slug => {
+  test.each(["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna"])("preserves the original native default %s", slug => {
     const source = completeRoster();
     source.find(model => model.slug === slug)!.priority = -1;
     const result = prioritizeCompatibilityV1Models(source, "compatibility-v1");
@@ -50,34 +51,50 @@ describe("Compatibility V1 subagent model roster", () => {
     expect(delegationRoster(result).toSorted()).toEqual([...COMPATIBILITY_V1_PREFERRED_MODEL_SLUGS].sort());
   });
 
-  test.each(["gpt-5.6-sol", "future-native-default"])("does not replace a native default outside the requested five-model set: %s", slug => {
-    const source = [...completeRoster(), row(slug, 0)];
+  test.each(["gpt-6-sol", "gpt-5.6-sol", "future-native-default"])("does not replace a native default outside the requested five-model set: %s", slug => {
+    const source = [...completeRoster().filter(model => model.slug !== slug), row(slug, 0)];
     expect(prioritizeCompatibilityV1Models(source, "compatibility-v1")).toEqual(source);
   });
 
-  test("prefers GPT-6 while accepting older native catalogs without rewriting model capabilities", () => {
+  test("prefers GPT-6.1 Sol while accepting older native catalogs without rewriting model capabilities", () => {
     const current = completeRoster();
-    const older = current.map(model => ({ ...model, slug: model.slug === "gpt-6-sol" ? "gpt-5.6-sol"
+    const previous = current.filter(model => model.slug !== "gpt-6.1-sol");
+    expect(resolveCompatibilityV1PreferredRoster(previous)).toEqual([
+      "gpt-6-astra", "chatgpt-web/gpt-6-pro", "chatgpt-web/gpt-5.6-pro", "gpt-6-sol", "gpt-6-luna",
+    ]);
+    const older = previous.map(model => ({ ...model, slug: model.slug === "gpt-6-sol" ? "gpt-5.6-sol"
       : model.slug === "gpt-6-luna" ? "gpt-5.6-luna" : model.slug }));
     expect(resolveCompatibilityV1PreferredRoster(older)).toEqual([
       "gpt-6-astra", "chatgpt-web/gpt-6-pro", "chatgpt-web/gpt-5.6-pro", "gpt-5.6-sol", "gpt-5.6-luna",
     ]);
     const mixed = [...current, row("gpt-5.6-sol", 10), row("gpt-5.6-luna", 10)];
     expect(delegationRoster(prioritizeCompatibilityV1Models(mixed, "compatibility-v1")))
-      .toEqual(["gpt-6-astra", "chatgpt-web/gpt-6-pro", "chatgpt-web/gpt-5.6-pro", "gpt-6-sol", "gpt-6-luna"]);
+      .toEqual(["gpt-6-astra", "chatgpt-web/gpt-6-pro", "chatgpt-web/gpt-5.6-pro", "gpt-6.1-sol", "gpt-6-luna"]);
   });
   test("reserves the five explicit override slots and leaves all rows selectable", () => {
     const source = completeRoster();
     const snapshot = structuredClone(source);
     const result = prioritizeCompatibilityV1Models(source, "compatibility-v1");
 
-    expect(delegationRoster(result)).toEqual(["gpt-6-astra", "chatgpt-web/gpt-6-pro", "chatgpt-web/gpt-5.6-pro", "gpt-6-sol", "gpt-6-luna"]);
+    expect(delegationRoster(result)).toEqual(["gpt-6-astra", "chatgpt-web/gpt-6-pro", "chatgpt-web/gpt-5.6-pro", "gpt-6.1-sol", "gpt-6-luna"]);
     expect(source).toEqual(snapshot);
     expect(result.find(model => model.slug === "gpt-reserve")?.priority).toBe(0);
-    for (const slug of ["chatgpt-web/medium", "chatgpt-web/high", "chatgpt-web/extra-high", "gpt-5.5"]) {
+    for (const slug of ["gpt-6-sol", "chatgpt-web/medium", "chatgpt-web/high", "chatgpt-web/extra-high", "gpt-5.5"]) {
       expect(result.find(model => model.slug === slug)?.visibility).toBe("list");
       expect(Number(result.find(model => model.slug === slug)?.priority)).toBeGreaterThanOrEqual(5);
     }
+  });
+
+  test.each(["missing", "hidden", "unsupported"])("uses an eligible older Sol when GPT-6.1 Sol is %s", condition => {
+    const source = completeRoster();
+    const sol = source.find(model => model.slug === "gpt-6.1-sol")!;
+    const models = condition === "missing" ? source.filter(model => model !== sol) : source;
+    if (condition === "hidden") sol.visibility = "hide";
+    if (condition === "unsupported") sol.supported_in_api = false;
+    const snapshot = structuredClone(models);
+    expect(delegationRoster(prioritizeCompatibilityV1Models(models, "compatibility-v1")))
+      .toEqual(["gpt-6-astra", "chatgpt-web/gpt-6-pro", "chatgpt-web/gpt-5.6-pro", "gpt-6-sol", "gpt-6-luna"]);
+    expect(models).toEqual(snapshot);
   });
 
   test("is idempotent and preserves non-priority metadata", () => {

@@ -66,6 +66,93 @@ afterEach(() => {
 });
 
 describe("reversible native Codex route integration", () => {
+  for (const format of ["toml", "json"] as const) {
+    for (const copies of ["both", "primary", "recovery", "divergent"] as const) {
+      test(`${format} journal reports a different Codex home without changing ${copies} copies or either home`, () => {
+        const { root, codexHome } = fixture();
+        const configPath = join(codexHome, "config.toml");
+        writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
+        if (format === "json") writeFileSync(getCodexHooksPath(), '{"hooks":{}}\n');
+        const config = nativeConfig("browser-only");
+        installCodexIntegration(config);
+        const primary = getCodexJournalPath();
+        const recovery = getCodexJournalRecoveryPath();
+        if (copies === "primary") rmSync(recovery);
+        if (copies === "recovery") rmSync(primary);
+        if (copies === "divergent") {
+          const value = JSON.parse(readFileSync(recovery, "utf8"));
+          value.active = false;
+          writeFileSync(recovery, JSON.stringify(value));
+        }
+        const otherHome = join(root, "orca-codex");
+        mkdirSync(otherHome);
+        const otherConfig = join(otherHome, "config.toml");
+        const otherHooks = join(otherHome, "hooks.json");
+        writeFileSync(otherConfig, 'model = "gpt-5.6-luna"\n');
+        writeFileSync(otherHooks, '{"hooks":{}}\n');
+        const paths = [configPath, getCodexHooksPath(), primary, recovery, otherConfig, otherHooks];
+        const snapshot = () => paths.map(path => existsSync(path) ? readFileSync(path) : null);
+        const before = snapshot();
+        process.env.CODEX_HOME = otherHome;
+        const mismatch = `Codex integration journal belongs to ${configPath}, not the active config ${otherConfig}`;
+
+        expect(() => inspectCodexIntegration()).toThrow(mismatch);
+        for (const action of [
+          () => preflightCodexIntegration(config, { replaceExistingRoute: true }),
+          () => installCodexIntegration(config, { replaceExistingRoute: true }),
+          () => deactivateCodexIntegration(),
+          () => activateCodexIntegration(),
+          () => uninstallCodexIntegration(),
+        ]) {
+          expect(action).toThrow(mismatch);
+          expect(snapshot()).toEqual(before);
+        }
+      });
+    }
+
+    test(`${format} journal rejects malformed hooks and paths outside its own home without writes`, () => {
+      const { root, codexHome } = fixture();
+      const configPath = join(codexHome, "config.toml");
+      writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
+      if (format === "json") writeFileSync(getCodexHooksPath(), '{"hooks":{}}\n');
+      const config = nativeConfig("browser-only");
+      const journal = installCodexIntegration(config);
+      const outsidePath = join(root, format === "json" ? "hooks.json" : "config.toml");
+      writeFileSync(outsidePath, "outside sentinel\n");
+      const paths = [configPath, getCodexHooksPath(), getCodexJournalPath(), getCodexJournalRecoveryPath(), outsidePath];
+      const snapshot = () => paths.map(path => existsSync(path) ? readFileSync(path) : null);
+      for (const invalid of [
+        { filePath: outsidePath }, { filePath: 42 }, { command: "" }, { trustedHash: "invalid" },
+        { groupIndex: -1 }, { format: "unsupported" },
+        format === "json" ? { previousText: null } : { previousText: "unexpected" },
+      ]) {
+        const changed = { ...journal, interruptHook: { ...journal.interruptHook, ...invalid } };
+        for (const path of [getCodexJournalPath(), getCodexJournalRecoveryPath()]) {
+          writeFileSync(path, JSON.stringify(changed));
+        }
+        const before = snapshot();
+        expect(() => inspectCodexIntegration()).toThrow("Invalid Codex integration journal");
+        expect(() => installCodexIntegration(config, { replaceExistingRoute: true })).toThrow("Invalid Codex integration journal");
+        expect(() => uninstallCodexIntegration()).toThrow("Invalid Codex integration journal");
+        expect(snapshot()).toEqual(before);
+      }
+    });
+  }
+
+  test.skipIf(process.platform !== "win32")("journal paths accept Windows case and separator aliases for the same files", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    writeFileSync(configPath, 'model = "gpt-5.6-sol"\n');
+    writeFileSync(getCodexHooksPath(), '{"hooks":{}}\n');
+    const journal = installCodexIntegration(nativeConfig("browser-only"));
+    journal.interruptHook.filePath = journal.interruptHook.filePath!.toUpperCase().replaceAll("\\", "/");
+    for (const path of [getCodexJournalPath(), getCodexJournalRecoveryPath()]) {
+      writeFileSync(path, JSON.stringify(journal));
+    }
+    expect(inspectCodexIntegration().errors).toEqual([]);
+    expect(deactivateCodexIntegration()).toEqual({ changed: true, active: false });
+  });
+
   test("JSON hooks migrate from TOML and replace the old runtime command on upgrade", () => {
     const { codexHome } = fixture();
     writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5.6-sol"\n');

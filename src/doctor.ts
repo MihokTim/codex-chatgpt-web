@@ -148,13 +148,22 @@ export async function runDoctor(): Promise<DoctorReport> {
     }
   }
 
-  const codex = inspectCodexIntegration();
-  if (!codex.installed) {
-    checks.push({ id: "codex", status: "error", message: "Codex model route is not installed" });
-  } else if (codex.errors.length > 0) {
-    checks.push({ id: "codex", status: "error", message: "Codex integration is inconsistent", detail: codex.errors.join("; ") });
-  } else {
-    checks.push({ id: "codex", status: "ok", message: "Codex native model route is installed" });
+  try {
+    const codex = inspectCodexIntegration();
+    if (!codex.installed) {
+      checks.push({ id: "codex", status: "error", message: "Codex model route is not installed" });
+    } else if (codex.errors.length > 0) {
+      checks.push({ id: "codex", status: "error", message: "Codex integration is inconsistent", detail: codex.errors.join("; ") });
+    } else {
+      checks.push({ id: "codex", status: "ok", message: "Codex native model route is installed" });
+    }
+  } catch (error) {
+    checks.push({
+      id: "codex",
+      status: "error",
+      message: "Codex integration inspection failed",
+      detail: error instanceof Error ? error.message : String(error),
+    });
   }
 
   const service = getServiceStatus();
